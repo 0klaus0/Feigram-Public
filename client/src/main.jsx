@@ -141,11 +141,13 @@ function MessageMedia({ accountId, chatId, message }) {
     const orientation = Number(media.height || 0) > Number(media.width || 0) ? "portrait" : "landscape";
     return (
       <div className={cx("media-preview", "video-preview", orientation)} style={{ "--video-ratio": ratio }}>
-        {!active && !failed ? <button className="video-load-button" type="button" onClick={() => setActive(true)}>点击播放视频</button> : null}
-        {active && !failed ? <video controls autoPlay preload="auto" playsInline onError={() => setFailed(true)}>
-          <source src={previewUrl} type={media.mimeType || "video/mp4"} />
-        </video> : null}
-        {failed ? <div className="video-fallback">当前浏览器无法直接播放这个视频格式，请下载后播放。</div> : null}
+        <div className="video-stage">
+          {!active && !failed ? <button className="video-load-button" type="button" onClick={() => setActive(true)}>点击播放视频</button> : null}
+          {active && !failed ? <video controls autoPlay preload="metadata" playsInline onError={() => setFailed(true)}>
+            <source src={previewUrl} type={media.mimeType || "video/mp4"} />
+          </video> : null}
+          {failed ? <div className="video-fallback">当前浏览器无法直接播放这个视频格式，请下载后播放。</div> : null}
+        </div>
         <a className="media-chip" href={downloadUrl} target="_blank" rel="noreferrer"><Download size={15} />{label}</a>
       </div>
     );
@@ -310,7 +312,7 @@ function AccountLogin({ socket, onDone }) {
   );
 }
 
-function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountLogout, onAccountsChanged, open, onClose, initialTab = "accounts", socket }) {
+function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountLogout, onAccountsChanged, onSettingsChanged, open, onClose, initialTab = "accounts", socket }) {
   const [tab, setTab] = useState(initialTab);
   const [users, setUsers] = useState([]);
   const [settings, setSettings] = useState({
@@ -321,7 +323,14 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
     imageCacheDir: "",
     videoCacheDir: "",
     fileCacheDir: "",
-    cacheRetentionDays: "30"
+    cacheRetentionDays: "30",
+    notificationEnabled: true,
+    notificationPreview: true,
+    privacyOpenTelegramLinksInApp: true,
+    privacyMediaPreview: true,
+    foldersEnabled: true,
+    foldersShowArchived: false,
+    foldersAutoSelectFirst: true
   });
   const [apiIdPlaceholder, setApiIdPlaceholder] = useState("");
   const [hashPlaceholder, setHashPlaceholder] = useState("");
@@ -348,7 +357,14 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
         imageCacheDir: nextSettings.imageCacheDir || "",
         videoCacheDir: nextSettings.videoCacheDir || "",
         fileCacheDir: nextSettings.fileCacheDir || "",
-        cacheRetentionDays: nextSettings.cacheRetentionDays || "30"
+        cacheRetentionDays: nextSettings.cacheRetentionDays || "30",
+        notificationEnabled: nextSettings.notificationEnabled !== false,
+        notificationPreview: nextSettings.notificationPreview !== false,
+        privacyOpenTelegramLinksInApp: nextSettings.privacyOpenTelegramLinksInApp !== false,
+        privacyMediaPreview: nextSettings.privacyMediaPreview !== false,
+        foldersEnabled: nextSettings.foldersEnabled !== false,
+        foldersShowArchived: Boolean(nextSettings.foldersShowArchived),
+        foldersAutoSelectFirst: nextSettings.foldersAutoSelectFirst !== false
       });
       setApiIdPlaceholder(nextSettings.telegramApiIdSet ? "已保存，留空则不修改" : "请输入 Telegram API ID");
       setHashPlaceholder(nextSettings.telegramApiHashSet ? "已保存，留空则不修改" : "请输入 Telegram API Hash");
@@ -387,6 +403,7 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
       if (!payload.telegramApiHash) delete payload.telegramApiHash;
       await api("/api/settings", { method: "PUT", body: JSON.stringify(payload) });
       setSaved("已保存");
+      onSettingsChanged?.();
       refresh();
     } catch (err) {
       setError(err.message);
@@ -405,6 +422,9 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
           {canAdmin && <button className={cx(tab === "users" && "active")} onClick={() => setTab("users")}>飞牛账户</button>}
           {canAdmin && <button className={cx(tab === "settings" && "active")} onClick={() => setTab("settings")}>覆盖 API 设置</button>}
           {canAdmin && <button className={cx(tab === "cache" && "active")} onClick={() => setTab("cache")}>缓存下载</button>}
+          {canAdmin && <button className={cx(tab === "notifications" && "active")} onClick={() => setTab("notifications")}>通知</button>}
+          {canAdmin && <button className={cx(tab === "privacy" && "active")} onClick={() => setTab("privacy")}>隐私</button>}
+          {canAdmin && <button className={cx(tab === "folders" && "active")} onClick={() => setTab("folders")}>分组</button>}
         </div>
         {error && <p className="error">{error}</p>}
         {tab === "accounts" && <div className="account-admin">
@@ -461,6 +481,25 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
           {saved && <p className="success">{saved}</p>}
           <button className="primary"><Settings size={18} />保存缓存设置</button>
         </form>}
+        {canAdmin && tab === "notifications" && <form className="stack" onSubmit={saveSettings}>
+          <label className="check-row"><input type="checkbox" checked={settings.notificationEnabled} onChange={(e) => setSettings({ ...settings, notificationEnabled: e.target.checked })} /><span>启用桌面通知</span></label>
+          <label className="check-row"><input type="checkbox" checked={settings.notificationPreview} onChange={(e) => setSettings({ ...settings, notificationPreview: e.target.checked })} /><span>通知显示消息预览</span></label>
+          {saved && <p className="success">{saved}</p>}
+          <button className="primary"><Settings size={18} />保存通知设置</button>
+        </form>}
+        {canAdmin && tab === "privacy" && <form className="stack" onSubmit={saveSettings}>
+          <label className="check-row"><input type="checkbox" checked={settings.privacyOpenTelegramLinksInApp} onChange={(e) => setSettings({ ...settings, privacyOpenTelegramLinksInApp: e.target.checked })} /><span>Telegram 链接优先在客户端内打开</span></label>
+          <label className="check-row"><input type="checkbox" checked={settings.privacyMediaPreview} onChange={(e) => setSettings({ ...settings, privacyMediaPreview: e.target.checked })} /><span>聊天中显示图片和视频预览</span></label>
+          {saved && <p className="success">{saved}</p>}
+          <button className="primary"><Settings size={18} />保存隐私设置</button>
+        </form>}
+        {canAdmin && tab === "folders" && <form className="stack" onSubmit={saveSettings}>
+          <label className="check-row"><input type="checkbox" checked={settings.foldersEnabled} onChange={(e) => setSettings({ ...settings, foldersEnabled: e.target.checked })} /><span>同步 Telegram 聊天文件夹</span></label>
+          <label className="check-row"><input type="checkbox" checked={settings.foldersShowArchived} onChange={(e) => setSettings({ ...settings, foldersShowArchived: e.target.checked })} /><span>会话列表显示归档会话</span></label>
+          <label className="check-row"><input type="checkbox" checked={settings.foldersAutoSelectFirst} onChange={(e) => setSettings({ ...settings, foldersAutoSelectFirst: e.target.checked })} /><span>打开账号后自动选择第一个会话</span></label>
+          {saved && <p className="success">{saved}</p>}
+          <button className="primary"><Settings size={18} />保存分组设置</button>
+        </form>}
       </div>
     </div>
   );
@@ -502,6 +541,15 @@ function App() {
   const [accountId, setAccountId] = useState("");
   const [chats, setChats] = useState([]);
   const [folders, setFolders] = useState([]);
+  const [appSettings, setAppSettings] = useState({
+    notificationEnabled: true,
+    notificationPreview: true,
+    privacyOpenTelegramLinksInApp: true,
+    privacyMediaPreview: true,
+    foldersEnabled: true,
+    foldersShowArchived: false,
+    foldersAutoSelectFirst: true
+  });
   const [activeFolder, setActiveFolder] = useState("all");
   const [activeChat, setActiveChat] = useState(null);
   const [chatStack, setChatStack] = useState([]);
@@ -521,12 +569,17 @@ function App() {
   const [announcementOpen, setAnnouncementOpen] = useState(false);
   const socket = useSocket(token);
   const messagesRef = useRef(null);
+  const shouldScrollBottomRef = useRef(false);
   const activeAccount = accounts.find((account) => account.id === accountId);
   const newestAnnouncementId = announcements[0]?.id || "";
   const unreadAnnouncement = newestAnnouncementId && localStorage.getItem("feigrame.lastAnnouncement") !== newestAnnouncementId;
   const visibleChats = useMemo(() => {
     const folder = folders.find((item) => String(item.id) === String(activeFolder));
     if (!folder) return chats;
+    if (folder.chatIds?.length) {
+      const ids = new Set(folder.chatIds);
+      return chats.filter((chat) => ids.has(chat.id));
+    }
     const include = new Set([...(folder.includePeerIds || []), ...(folder.pinnedPeerIds || [])]);
     const exclude = new Set(folder.excludePeerIds || []);
     return chats.filter((chat) => {
@@ -549,6 +602,7 @@ function App() {
   useEffect(() => {
     if (!token) return;
     api("/api/me").then(setMe).catch(() => setTokenState(""));
+    loadSettings();
     loadAnnouncements();
     loadAbout();
     refreshAccounts();
@@ -557,25 +611,42 @@ function App() {
   useEffect(() => {
     if (!accountId) return;
     socket?.emit("account:join", accountId);
-    loadFolders();
+    if (appSettings.foldersEnabled) loadFolders();
+    else {
+      setFolders([]);
+      setActiveFolder("all");
+    }
     loadChats();
-  }, [accountId, socket]);
+  }, [accountId, socket, appSettings.foldersEnabled]);
 
   useEffect(() => {
     if (!socket) return;
     const handler = ({ accountId: incomingAccount, message }) => {
       if (incomingAccount !== accountId) return;
-      if (notifications && !message.outgoing && message.text) new Notification("Feigram 新消息", { body: message.text.slice(0, 120) });
+      const stick = isNearBottom(messagesRef.current);
+      if (notifications && appSettings.notificationEnabled && !message.outgoing && message.text) {
+        new Notification("Feigram 新消息", { body: appSettings.notificationPreview ? message.text.slice(0, 120) : "收到一条新消息" });
+      }
+      shouldScrollBottomRef.current = stick;
       setMessages((current) => [...current, message]);
     };
     socket.on("message:new", handler);
     return () => socket.off("message:new", handler);
-  }, [socket, accountId, notifications]);
+  }, [socket, accountId, notifications, appSettings.notificationEnabled, appSettings.notificationPreview]);
 
   useEffect(() => {
     const element = messagesRef.current;
-    if (element && !loadingOlder) element.scrollTop = element.scrollHeight;
+    if (!element || loadingOlder || !shouldScrollBottomRef.current) return;
+    shouldScrollBottomRef.current = false;
+    requestAnimationFrame(() => {
+      element.scrollTop = element.scrollHeight;
+    });
   }, [activeChat?.id, messages.length, loadingOlder]);
+
+  function isNearBottom(element) {
+    if (!element) return true;
+    return element.scrollHeight - element.scrollTop - element.clientHeight < 96;
+  }
 
   async function refreshAccounts(preferFirst = false) {
     setError("");
@@ -591,8 +662,9 @@ function App() {
     setError("");
     try {
       const list = await api(`/api/chats?account=${encodeURIComponent(accountId)}&query=${encodeURIComponent(nextQuery)}`);
-      setChats(list);
-      if (!activeChat && list[0]) selectChat(list[0]);
+      const visible = appSettings.foldersShowArchived ? list : list.filter((chat) => !chat.archived);
+      setChats(visible);
+      if (appSettings.foldersAutoSelectFirst && !activeChat && visible[0]) selectChat(visible[0]);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -609,6 +681,7 @@ function App() {
 
   async function selectChat(chat) {
     setActiveChat(chat);
+    shouldScrollBottomRef.current = true;
     setBusy(true);
     try {
       const list = await api(`/api/messages?account=${encodeURIComponent(accountId)}&peer=${encodeURIComponent(chat.id)}&limit=80`);
@@ -630,9 +703,14 @@ function App() {
 
   async function reloadActiveMessages() {
     if (!activeChat) return;
+    const element = messagesRef.current;
+    const top = element?.scrollTop || 0;
     const list = await api(`/api/messages?account=${encodeURIComponent(accountId)}&peer=${encodeURIComponent(activeChat.id)}&limit=80`);
     setMessages(list);
     setHasOlder(list.length >= 80);
+    requestAnimationFrame(() => {
+      if (element) element.scrollTop = top;
+    });
   }
 
   async function loadOlderMessages() {
@@ -684,6 +762,10 @@ function App() {
       window.open(normalized, "_blank", "noopener,noreferrer");
       return;
     }
+    if (!appSettings.privacyOpenTelegramLinksInApp) {
+      window.open(normalized, "_blank", "noopener,noreferrer");
+      return;
+    }
     try {
       const chat = await api("/api/resolve-link", {
         method: "POST",
@@ -731,6 +813,7 @@ function App() {
     setDraft("");
     try {
       const sent = await api("/api/messages", { method: "POST", body: JSON.stringify({ account: accountId, peer: activeChat.id, text }) });
+      shouldScrollBottomRef.current = true;
       setMessages((current) => [...current, sent]);
     } catch (err) {
       setError(err.message);
@@ -754,6 +837,19 @@ function App() {
   async function loadAbout() {
     const info = await api("/api/about").catch(() => ({}));
     setAbout(info);
+  }
+
+  async function loadSettings() {
+    const settings = await api("/api/settings").catch(() => ({}));
+    setAppSettings({
+      notificationEnabled: settings.notificationEnabled !== false,
+      notificationPreview: settings.notificationPreview !== false,
+      privacyOpenTelegramLinksInApp: settings.privacyOpenTelegramLinksInApp !== false,
+      privacyMediaPreview: settings.privacyMediaPreview !== false,
+      foldersEnabled: settings.foldersEnabled !== false,
+      foldersShowArchived: Boolean(settings.foldersShowArchived),
+      foldersAutoSelectFirst: settings.foldersAutoSelectFirst !== false
+    });
   }
 
   if (!token) return <AuthGate onReady={(nextToken, user) => { setTokenState(nextToken); setMe(user); }} />;
@@ -787,7 +883,7 @@ function App() {
             </select>}
           </> : <button className="secondary action-button" onClick={() => { setAdminInitialTab("accounts"); setAdminOpen(true); }}><Plus size={18} />添加 Telegram 账号</button>}
         </div>
-        {!!folders.length && <div className="folder-tabs">
+        {appSettings.foldersEnabled && !!folders.length && <div className="folder-tabs">
           <button className={cx(activeFolder === "all" && "active")} onClick={() => setActiveFolder("all")}>全部</button>
           {folders.map((folder) => <button key={folder.id} className={cx(String(activeFolder) === String(folder.id) && "active")} onClick={() => setActiveFolder(folder.id)}>
             {folder.emoticon ? `${folder.emoticon} ` : ""}{folder.title}
@@ -818,7 +914,7 @@ function App() {
             {hasOlder && <button className="history-button" onClick={loadOlderMessages} disabled={loadingOlder}>{loadingOlder ? "加载中" : "加载更早消息"}</button>}
             {messages.map((message) => <article key={`${message.id}-${message.date}`} className={cx("bubble", message.outgoing && "mine")}>
               <MessageText text={message.text} entities={message.entities} onOpenLink={openTelegramLink} />
-              <MessageMedia accountId={accountId} chatId={activeChat.id} message={message} />
+              {appSettings.privacyMediaPreview && <MessageMedia accountId={accountId} chatId={activeChat.id} message={message} />}
               {!!message.buttons?.length && <div className="inline-buttons">
                 {message.buttons.map((row, rowIndex) => <div className="inline-button-row" key={`${message.id}-row-${rowIndex}`}>
                   {row.map((button, buttonIndex) => <button type="button" key={`${button.text}-${buttonIndex}`} onClick={() => clickInlineButton(message, button)} disabled={button.type === "unsupported"}>
@@ -851,6 +947,7 @@ function App() {
         }}
         onAccountLogout={logoutAccount}
         onAccountsChanged={() => refreshAccounts(true)}
+        onSettingsChanged={loadSettings}
         open={adminOpen}
         initialTab={adminInitialTab}
         onClose={() => setAdminOpen(false)}

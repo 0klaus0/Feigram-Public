@@ -17,12 +17,20 @@ function envDefaults() {
     imageCacheDir: process.env.IMAGE_CACHE_DIR || "",
     videoCacheDir: process.env.VIDEO_CACHE_DIR || "",
     fileCacheDir: process.env.FILE_CACHE_DIR || "",
-    cacheRetentionDays: process.env.CACHE_RETENTION_DAYS || "30"
+    cacheRetentionDays: process.env.CACHE_RETENTION_DAYS || "30",
+    notificationEnabled: process.env.NOTIFICATION_ENABLED !== "false",
+    notificationPreview: process.env.NOTIFICATION_PREVIEW !== "false",
+    privacyOpenTelegramLinksInApp: process.env.PRIVACY_OPEN_TG_LINKS_IN_APP !== "false",
+    privacyMediaPreview: process.env.PRIVACY_MEDIA_PREVIEW !== "false",
+    foldersEnabled: process.env.FOLDERS_ENABLED !== "false",
+    foldersShowArchived: process.env.FOLDERS_SHOW_ARCHIVED === "true",
+    foldersAutoSelectFirst: process.env.FOLDERS_AUTO_SELECT_FIRST !== "false"
   };
 }
 
 function sanitize(input = {}) {
   const retention = Math.max(1, Math.min(3650, Number(input.cacheRetentionDays || 30)));
+  const bool = (value, fallback) => value === undefined ? fallback : Boolean(value);
   return {
     appPassword: String(input.appPassword ?? "").trim(),
     publicBaseUrl: String(input.publicBaseUrl ?? "").trim(),
@@ -32,7 +40,14 @@ function sanitize(input = {}) {
     imageCacheDir: String(input.imageCacheDir ?? "").trim(),
     videoCacheDir: String(input.videoCacheDir ?? "").trim(),
     fileCacheDir: String(input.fileCacheDir ?? "").trim(),
-    cacheRetentionDays: String(Number.isFinite(retention) ? retention : 30)
+    cacheRetentionDays: String(Number.isFinite(retention) ? retention : 30),
+    notificationEnabled: bool(input.notificationEnabled, true),
+    notificationPreview: bool(input.notificationPreview, true),
+    privacyOpenTelegramLinksInApp: bool(input.privacyOpenTelegramLinksInApp, true),
+    privacyMediaPreview: bool(input.privacyMediaPreview, true),
+    foldersEnabled: bool(input.foldersEnabled, true),
+    foldersShowArchived: bool(input.foldersShowArchived, false),
+    foldersAutoSelectFirst: bool(input.foldersAutoSelectFirst, true)
   };
 }
 
@@ -69,7 +84,14 @@ function publicSettings(settings) {
     imageCacheDir: settings.imageCacheDir,
     videoCacheDir: settings.videoCacheDir,
     fileCacheDir: settings.fileCacheDir,
-    cacheRetentionDays: settings.cacheRetentionDays
+    cacheRetentionDays: settings.cacheRetentionDays,
+    notificationEnabled: settings.notificationEnabled,
+    notificationPreview: settings.notificationPreview,
+    privacyOpenTelegramLinksInApp: settings.privacyOpenTelegramLinksInApp,
+    privacyMediaPreview: settings.privacyMediaPreview,
+    foldersEnabled: settings.foldersEnabled,
+    foldersShowArchived: settings.foldersShowArchived,
+    foldersAutoSelectFirst: settings.foldersAutoSelectFirst
   };
 }
 

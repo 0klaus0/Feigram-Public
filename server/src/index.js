@@ -164,6 +164,9 @@ app.get("/api/avatar/:account/:peer?", asyncRoute(async (req, res) => {
 }));
 
 app.get("/api/media/:account/:peer/:messageId", asyncRoute(async (req, res) => {
+  if (req.query.inline === "1" && await tg.streamVideoMedia(req.user.id, req.params.account, req.params.peer, req.params.messageId, req.headers.range, res)) {
+    return;
+  }
   const media = await tg.downloadMedia(req.user.id, req.params.account, req.params.peer, req.params.messageId);
   const range = req.headers.range;
   if (media.buffer) {

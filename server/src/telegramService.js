@@ -1,6 +1,7 @@
 const path = require("path");
 const fs = require("fs-extra");
 const mime = require("mime-types");
+const bigInt = require("big-integer");
 const { Api, TelegramClient } = require("telegram");
 const { StringSession } = require("telegram/sessions");
 const { NewMessage } = require("telegram/events");
@@ -153,6 +154,38 @@ function serializeDialogFilterShallow(filter) {
       excludeArchived: Boolean(filter.excludeArchived)
     }
   };
+}
+
+function normalizeDialogFilters(result) {
+  const filters = Array.isArray(result) ? result : result?.filters || [];
+  return filters.filter((filter) => {
+    const klass = filter.className || filter.constructor?.name || "";
+    return klass !== "DialogFilterDefault";
+  });
+}
+
+function dialogMuted(dialog) {
+  const muteUntil = Number(dialog.notifySettings?.muteUntil || dialog.dialog?.notifySettings?.muteUntil || 0);
+  return muteUntil > Math.floor(Date.now() / 1000);
+}
+
+function filterMatchesChat(filter, chat, dialog) {
+  const include = new Set([...(filter.includePeerIds || []), ...(filter.pinnedPeerIds || [])]);
+  const exclude = new Set(filter.excludePeerIds || []);
+  const flags = filter.flags || {};
+  if (exclude.has(chat.id)) return false;
+  if (include.has(chat.id)) return true;
+  if ((chat.folderIds || []).some((id) => String(id) === String(filter.id))) return true;
+  if (flags.excludeArchived && chat.archived) return false;
+  if (flags.excludeMuted && dialogMuted(dialog)) return false;
+  if (flags.excludeRead && !chat.unreadCount) return false;
+  const entity = dialog.entity || {};
+  if (chat.type === "group" && flags.groups) return true;
+  if (chat.type === "channel" && flags.broadcasts) return true;
+  if (chat.type === "private" && entity.bot && flags.bots) return true;
+  if (chat.type === "private" && entity.contact && flags.contacts) return true;
+  if (chat.type === "private" && !entity.contact && !entity.bot && flags.nonContacts) return true;
+  return false;
 }
 
 function messageText(message) {
@@ -407,13 +440,42 @@ async function listChats(userId, accountId, query = "") {
 
 async function listFolders(userId, accountId) {
   const client = await getClient(userId, accountId);
-  const filters = await client.invoke(new Api.messages.GetDialogFilters()).catch(() => []);
-  const shallow = (filters || []).map(serializeDialogFilterShallow).filter(Boolean);
+  const [filterResult, dialogs] = await Promise.all([
+    client.invoke(new Api.messages.GetDialogFilters()).catch(() => []),
+    client.getDialogs({ limit: 200 }).catch(() => [])
+  ]);
+  const accountPeers = new Map();
+  const chatsById = new Map();
+  const chatDialogs = [];
+  dialogs.forEach((dialog) => {
+    if (!dialog.entity) return;
+    const chat = serializeEntity(dialog.entity);
+    const folderId = Number(dialog.folderId || 0);
+    const item = {
+      ...chat,
+      folderId,
+      folderIds: folderId ? [folderId] : [],
+      unreadCount: dialog.unreadCount || 0,
+      pinned: Boolean(dialog.pinned),
+      archived: Boolean(dialog.archived),
+      lastMessage: dialog.message ? serializeMessage(dialog.message) : null
+    };
+    accountPeers.set(chat.id, dialog.entity);
+    chatsById.set(chat.id, item);
+    chatDialogs.push({ chat: item, dialog });
+  });
+  if (accountPeers.size) peerCache.set(accountId, accountPeers);
+
+  const filters = normalizeDialogFilters(filterResult);
+  const shallow = filters.map(serializeDialogFilterShallow).filter(Boolean).map((filter) => ({
+    ...filter,
+    chatIds: chatDialogs
+      .filter(({ chat, dialog }) => filterMatchesChat(filter, chat, dialog))
+      .map(({ chat }) => chat.id)
+  })).filter((filter) => filter.chatIds.length || filter.includePeerIds.length || filter.pinnedPeerIds.length);
   if (shallow.length) {
-    Promise.all((filters || []).map((filter) => serializeDialogFilter(client, filter))).catch(() => []);
     return shallow;
   }
-  const dialogs = await client.getDialogs({ limit: 200 }).catch(() => []);
   const folderIds = [...new Set(dialogs.map((dialog) => Number(dialog.folderId || 0)).filter(Boolean))];
   return folderIds.map((id) => ({
     id,
@@ -422,7 +484,8 @@ async function listFolders(userId, accountId) {
     includePeerIds: [],
     pinnedPeerIds: [],
     excludePeerIds: [],
-    flags: {}
+    flags: {},
+    chatIds: [...chatsById.values()].filter((chat) => Number(chat.folderId || 0) === id).map((chat) => chat.id)
   }));
 }
 
@@ -537,6 +600,68 @@ async function downloadMedia(userId, accountId, peerId, messageId) {
   };
 }
 
+async function streamVideoMedia(userId, accountId, peerId, messageId, rangeHeader, res) {
+  const client = await getClient(userId, accountId);
+  const entity = await resolvePeer(userId, accountId, peerId);
+  const [message] = await client.getMessages(entity, { ids: [Number(messageId)] });
+  if (!message || !message.media) throw Object.assign(new Error("这条消息没有可播放媒体"), { status: 404 });
+  const contentType = message.document?.mimeType || "";
+  const kind = mediaKind(message, contentType);
+  if (kind !== "video") return false;
+  const size = Number(message.file?.size || message.document?.size || 0);
+  if (!size) return false;
+  const fileName = safeName(message.file?.name || `telegram-${accountId}-${messageId}.${mime.extension(contentType) || "mp4"}`);
+  let start = 0;
+  let end = size - 1;
+  let statusCode = 200;
+  if (rangeHeader) {
+    const match = String(rangeHeader).match(/bytes=(\d*)-(\d*)/);
+    if (match) {
+      if (match[1]) start = Number(match[1]);
+      if (match[2]) end = Number(match[2]);
+      if (!match[1] && match[2]) {
+        const suffix = Number(match[2]);
+        start = Math.max(0, size - suffix);
+        end = size - 1;
+      }
+      statusCode = 206;
+    }
+  }
+  start = Math.max(0, Math.min(start, size - 1));
+  end = Math.max(start, Math.min(end, size - 1));
+  const contentLength = end - start + 1;
+  res.writeHead(statusCode, {
+    "Accept-Ranges": "bytes",
+    "Cache-Control": "no-store",
+    "Content-Disposition": `inline; filename="${encodeURIComponent(fileName)}"`,
+    "Content-Length": contentLength,
+    "Content-Type": contentType || mime.lookup(fileName) || "video/mp4",
+    ...(statusCode === 206 ? { "Content-Range": `bytes ${start}-${end}/${size}` } : {})
+  });
+  const chunkSize = 512 * 1024;
+  const limit = Math.ceil(contentLength / chunkSize);
+  let sent = 0;
+  for await (const chunk of client.iterDownload({
+    file: message,
+    offset: bigInt(start),
+    chunkSize,
+    requestSize: chunkSize,
+    limit,
+    fileSize: bigInt(size)
+  })) {
+    if (res.destroyed) break;
+    const remaining = contentLength - sent;
+    if (remaining <= 0) break;
+    const piece = chunk.length > remaining ? chunk.slice(0, remaining) : chunk;
+    sent += piece.length;
+    if (!res.write(piece)) {
+      await new Promise((resolve) => res.once("drain", resolve));
+    }
+  }
+  res.end();
+  return true;
+}
+
 async function profilePhoto(userId, accountId, peerId = "__self") {
   const client = await getClient(userId, accountId);
   const entity = peerId === "__self" ? await client.getMe() : await resolvePeer(userId, accountId, peerId);
@@ -584,6 +709,7 @@ module.exports = {
   completeCode,
   completePassword,
   downloadMedia,
+  streamVideoMedia,
   listAccounts,
   listChats,
   listFolders,

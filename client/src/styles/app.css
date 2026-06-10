@@ -557,6 +557,25 @@ textarea {
   width: 100%;
 }
 
+.video-stage {
+  aspect-ratio: var(--video-ratio, 16 / 9);
+  background: #000;
+  border-radius: 8px;
+  max-height: 460px;
+  max-width: min(560px, 100%);
+  overflow: hidden;
+  width: 100%;
+}
+
+.video-stage video,
+.video-stage .video-load-button,
+.video-stage .video-fallback {
+  height: 100%;
+  max-height: none;
+  max-width: none;
+  width: 100%;
+}
+
 .video-load-button {
   aspect-ratio: var(--video-ratio, 16 / 9);
   background: #000;
@@ -576,6 +595,7 @@ textarea {
   aspect-ratio: 16 / 9;
 }
 
+.video-preview.portrait .video-stage,
 .video-preview.portrait video {
   aspect-ratio: 9 / 16;
   max-width: min(320px, 100%);
@@ -707,6 +727,22 @@ textarea {
 .tabs button.active {
   background: var(--accent);
   color: white;
+}
+
+.check-row {
+  align-items: center;
+  background: var(--soft);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: flex;
+  gap: 10px;
+  min-height: 42px;
+  padding: 10px 12px;
+}
+
+.check-row input {
+  height: 18px;
+  width: 18px;
 }
 
 .admin-grid {

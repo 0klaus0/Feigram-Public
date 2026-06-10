@@ -2,9 +2,9 @@ const about = {
   title: "关于 Feigram",
   publisherName: "g-star1024",
   supportEmail: "",
-  releaseUrl: "https://github.com/g-star1024/Feigram",
-  privacyPolicyUrl: "docs/privacy-policy.md",
-  termsUrl: "docs/terms-of-service.md",
+  releaseUrl: "https://github.com/g-star1024/Feigram-Public",
+  privacyPolicyUrl: "https://github.com/g-star1024/Feigram-Public/blob/main/docs/privacy-policy.md",
+  termsUrl: "https://github.com/g-star1024/Feigram-Public/blob/main/docs/terms-of-service.md",
   body: [
     "Feigram Public 是第三方开发的非官方 Telegram 客户端，仅适用于飞牛 OS / fnOS。",
     "Feigram 不隶属于 Telegram、Telegram Messenger Inc. 或飞牛官方。",
@@ -14,16 +14,16 @@ const about = {
 
 const announcements = [
   {
-    id: "release-1.5.1",
-    title: "Feigram 1.5.1 更新",
-    version: "1.5.1",
+    id: "release-1.5.3",
+    title: "Feigram 1.5.3 更新",
+    version: "1.5.3",
     level: "success",
     createdAt: "2026-06-10T00:00:00.000Z",
     body: [
-      "修复 Telegram 文件夹同步。",
-      "公告和关于 Feigram 改为随 GitHub 仓库发布，应用端只展示。",
-      "优化媒体缓存策略：图片默认缓存，超过 100MB 的视频才缓存，其他文件不缓存。",
-      "视频改为点击后加载，优先播放当前视频。"
+      "更新公开仓库、隐私政策和服务条款跳转地址。",
+      "改进 Telegram 文件夹同步，由后端按官方 filter 计算会话归属。",
+      "优化视频播放尺寸和 Range 流式播放，减少等待完整下载。",
+      "新增通知、隐私和分组相关管理员设置。"
     ].join("\n")
   }
 ];

@@ -1,8 +1,22 @@
 # Feigram Public 发布说明
 
-## 版本 1.5.1
+## 版本 1.5.3
 
 Feigram Public 是第三方开发的非官方 Telegram 客户端，仅适用于飞牛 OS / fnOS 设备。Feigram 不隶属于 Telegram、Telegram Messenger Inc. 或飞牛官方。
+
+### 新增
+
+- 公开仓库更新为 https://github.com/g-star1024/Feigram-Public，应用内隐私政策和服务条款跳转到仓库最新文档。
+- 文件夹同步改为后端按 Telegram dialog filter 计算会话归属，减少前端猜规则导致的分组失效。
+- 视频预览和播放窗口保持同一尺寸，在线播放支持 HTTP Range 分块响应，减少等待完整下载。
+- 管理员后台新增通知、隐私、分组设置，用于控制 Feigram 的桌面通知、消息预览、媒体预览、站内链接打开和文件夹展示。
+- 内容刷新、机器人按钮回调和消息追加时尽量保留当前滚动位置，避免正在查看的内容跳走。
+
+### 已知限制
+
+- Telegram 官方客户端的完整通知、隐私和分组设置并不是一个可直接嵌入第三方 Web 客户端的模块。本版本同步的是 Feigram 客户端侧行为设置；Telegram 账号级隐私规则后续需逐项接入 MTProto 方法。
+
+## 版本 1.5.1
 
 ### 新增
 
