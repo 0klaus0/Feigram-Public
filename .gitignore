@@ -8,3 +8,5 @@ server/data
 *.fpk
 release/
 fnos-native-package/app/bin/node
+fnos-native-package/app/bin/ffmpeg
+fnos-native-package/app/bin/ffprobe

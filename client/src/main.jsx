@@ -1,11 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import Hls from "hls.js";
 import { io } from "socket.io-client";
 import {
   Bell,
   Download,
   ExternalLink,
   Folder,
+  Info,
   LogOut,
   MessageSquare,
   Moon,
@@ -133,6 +135,39 @@ function mediaUrl(accountId, chatId, messageId, inline = false) {
   return `/api/media/${accountId}/${encodeURIComponent(chatId)}/${messageId}?${params.toString()}`;
 }
 
+function hlsMediaUrl(accountId, chatId, messageId) {
+  const params = new URLSearchParams({ token: getToken() });
+  return `/api/media/${accountId}/${encodeURIComponent(chatId)}/${messageId}/hls/master.m3u8?${params.toString()}`;
+}
+
+function FeigramVideo({ src, hlsSrc, onError }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const video = ref.current;
+    if (!video) return undefined;
+    if (video.canPlayType("application/vnd.apple.mpegurl")) {
+      video.src = hlsSrc;
+      return undefined;
+    }
+    if (Hls.isSupported()) {
+      const hls = new Hls({ enableWorker: true, lowLatencyMode: false });
+      hls.loadSource(hlsSrc);
+      hls.attachMedia(video);
+      hls.on(Hls.Events.ERROR, (_event, data) => {
+        if (data?.fatal) {
+          hls.destroy();
+          video.src = src;
+          video.load();
+        }
+      });
+      return () => hls.destroy();
+    }
+    video.src = src;
+    return undefined;
+  }, [src, hlsSrc]);
+  return <video ref={ref} controls autoPlay preload="metadata" playsInline onError={onError} />;
+}
+
 function MessageMedia({ accountId, chatId, message, compact = false, onCache, task }) {
   const [failed, setFailed] = useState(false);
   const [active, setActive] = useState(false);
@@ -140,6 +175,7 @@ function MessageMedia({ accountId, chatId, message, compact = false, onCache, ta
   const media = message.media;
   if (!media) return null;
   const previewUrl = mediaUrl(accountId, chatId, message.id, true);
+  const hlsUrl = hlsMediaUrl(accountId, chatId, message.id);
   const downloadUrl = mediaUrl(accountId, chatId, message.id);
   const label = media.fileName || media.mimeType || "下载媒体";
   const cacheStatus = task?.status || localStatus;
@@ -177,7 +213,7 @@ function MessageMedia({ accountId, chatId, message, compact = false, onCache, ta
             <Download size={14} />{cacheLabel}
           </button>
           {!active && !failed ? <button className="video-load-button" type="button" onClick={() => setActive(true)}>点击播放视频</button> : null}
-          {active && !failed ? <video src={previewUrl} controls autoPlay preload="metadata" playsInline onError={() => setFailed(true)} /> : null}
+          {active && !failed ? <FeigramVideo src={previewUrl} hlsSrc={hlsUrl} onError={() => setFailed(true)} /> : null}
           {failed ? <div className="video-fallback">这个视频编码当前内置播放器无法直接解码，可先缓存后用本地播放器打开。</div> : null}
         </div>
       </div>
@@ -614,7 +650,7 @@ function InfoModal({ announcements, about, open, onClose }) {
   );
 }
 
-function DownloadCenter({ open, downloads, onStart, onCancel, onDelete, onClose }) {
+function DownloadCenter({ open, downloads, onStart, onCancel, onClear, onDelete, onClose }) {
   const [menu, setMenu] = useState(null);
   useEffect(() => {
     if (!open) setMenu(null);
@@ -664,7 +700,8 @@ function DownloadCenter({ open, downloads, onStart, onCancel, onDelete, onClose 
                 <div className="download-actions">
                   {item.status !== "downloading" && item.status !== "completed" && <button onClick={() => onStart(item)}><Play size={14} />开始</button>}
                   {item.status === "downloading" && <button onClick={() => onCancel(item)}><X size={14} />取消</button>}
-                  <button onClick={() => onDelete(item)}><Trash2 size={14} />删除</button>
+                  <button onClick={() => onClear(item)}><X size={14} />清除列表</button>
+                  <button onClick={() => onDelete(item)}><Trash2 size={14} />删除缓存</button>
                 </div>
               </article>
             );
@@ -674,10 +711,51 @@ function DownloadCenter({ open, downloads, onStart, onCancel, onDelete, onClose 
         {menu && <div className="download-menu" style={{ left: menu.x, top: menu.y }} onClick={(event) => event.stopPropagation()}>
           {menu.task.status !== "downloading" && menu.task.status !== "completed" && <button onClick={() => { onStart(menu.task); setMenu(null); }}>开始/继续</button>}
           {menu.task.status === "downloading" && <button onClick={() => { onCancel(menu.task); setMenu(null); }}>取消</button>}
-          <button onClick={() => { onDelete(menu.task); setMenu(null); }}>删除任务和缓存</button>
+          <button onClick={() => { onClear(menu.task); setMenu(null); }}>清除列表记录</button>
+          <button onClick={() => { onDelete(menu.task); setMenu(null); }}>删除缓存文件</button>
         </div>}
       </section>
     </div>
+  );
+}
+
+function ChatInfoPanel({ open, accountId, chat, details, loading, onClose }) {
+  if (!open || !chat) return null;
+  const info = details || chat;
+  return (
+    <aside className="chat-info-panel">
+      <header>
+        <button className="icon-button" onClick={onClose} title="关闭"><X size={18} /></button>
+        <strong>群组信息</strong>
+      </header>
+      <div className="chat-info-profile">
+        <Avatar accountId={accountId} peerId={chat.id} label={chat.title} size={72} />
+        <h2>{info.title}</h2>
+        <p>{info.username ? `@${info.username}` : info.type}</p>
+        {!!info.participantsCount && <span>{info.participantsCount.toLocaleString("zh-CN")} 位成员/订阅者</span>}
+      </div>
+      {loading ? <div className="empty">加载中</div> : <>
+        {info.about && <section className="chat-info-section"><h3>简介</h3><p>{info.about}</p></section>}
+        <section className="chat-info-section">
+          <h3>文件与媒体</h3>
+          <div className="media-summary">
+            <span><b>{info.mediaSummary?.images || 0}</b>图片</span>
+            <span><b>{info.mediaSummary?.videos || 0}</b>视频</span>
+            <span><b>{info.mediaSummary?.files || 0}</b>文件</span>
+          </div>
+        </section>
+        <section className="chat-info-section">
+          <h3>最近文件</h3>
+          <div className="info-file-list">
+            {(info.files || []).map((file) => <div className="info-file-item" key={`${file.id}-${file.fileName}`}>
+              <Folder size={17} />
+              <span><strong>{file.fileName}</strong><small>{file.kind} · {formatBytes(file.size)} · {formatTime(file.date)}</small></span>
+            </div>)}
+            {!info.files?.length && <div className="empty">暂无最近文件</div>}
+          </div>
+        </section>
+      </>}
+    </aside>
   );
 }
 
@@ -718,6 +796,9 @@ function App() {
   const [announcementOpen, setAnnouncementOpen] = useState(false);
   const [downloads, setDownloads] = useState([]);
   const [downloadOpen, setDownloadOpen] = useState(false);
+  const [chatInfoOpen, setChatInfoOpen] = useState(false);
+  const [chatDetails, setChatDetails] = useState(null);
+  const [chatDetailsLoading, setChatDetailsLoading] = useState(false);
   const socket = useSocket(token);
   const messagesRef = useRef(null);
   const shouldScrollBottomRef = useRef(false);
@@ -860,6 +941,8 @@ function App() {
 
   async function selectChat(chat) {
     setActiveChat(chat);
+    setChatInfoOpen(false);
+    setChatDetails(null);
     shouldScrollBottomRef.current = true;
     setBusy(true);
     try {
@@ -878,6 +961,20 @@ function App() {
     if (!previous) return;
     setChatStack((current) => current.slice(0, -1));
     await selectChat(previous);
+  }
+
+  async function openChatInfo() {
+    if (!activeChat) return;
+    setChatInfoOpen(true);
+    setChatDetailsLoading(true);
+    try {
+      const info = await api(`/api/chats/${encodeURIComponent(accountId)}/${encodeURIComponent(activeChat.id)}/details`);
+      setChatDetails(info);
+    } catch (err) {
+      notify(err.message);
+    } finally {
+      setChatDetailsLoading(false);
+    }
   }
 
   async function reloadActiveMessages() {
@@ -1057,6 +1154,15 @@ function App() {
     return updateDownload(task, "cancel");
   }
 
+  async function clearDownload(task) {
+    try {
+      await api(`/api/downloads/${encodeURIComponent(task.id)}/clear`, { method: "POST" });
+      setDownloads((current) => current.filter((item) => item.id !== task.id));
+    } catch (err) {
+      notify(err.message);
+    }
+  }
+
   async function deleteDownload(task) {
     try {
       await api(`/api/downloads/${encodeURIComponent(task.id)}`, { method: "DELETE" });
@@ -1150,7 +1256,11 @@ function App() {
         {activeChat ? <>
           <header className="conversation-head">
             <button className={cx("icon-button", chatStack.length ? "nav-back-button" : "back-button")} onClick={chatStack.length ? returnToPreviousChat : () => setActiveChat(null)} title={chatStack.length ? "返回上层位置" : "返回会话列表"}><ArrowLeft size={18} /></button>
-            <div><h2>{activeChat.title}</h2><p>{activeChat.type} {activeChat.username ? `@${activeChat.username}` : ""}</p></div>
+            <button className="conversation-title-button" type="button" onClick={openChatInfo} title="查看群组信息">
+              <Avatar accountId={accountId} peerId={activeChat.id} label={activeChat.title} size={42} />
+              <span><h2>{activeChat.title}</h2><p>{activeChat.type} {activeChat.username ? `@${activeChat.username}` : ""}</p></span>
+            </button>
+            <button className="icon-button" onClick={openChatInfo} title="群组信息"><Info size={18} /></button>
           </header>
           {error && <p className="error inline">{error}</p>}
           <div className="messages" ref={messagesRef}>
@@ -1177,6 +1287,14 @@ function App() {
           }} placeholder="输入消息" rows={1} /><button className="primary" title="发送"><Send size={18} /></button></form>
         </> : <div className="blank-state"><MessageSquare size={40} /><h2>选择或添加一个 Telegram 账号</h2></div>}
       </section>
+      <ChatInfoPanel
+        open={chatInfoOpen}
+        accountId={accountId}
+        chat={activeChat}
+        details={chatDetails}
+        loading={chatDetailsLoading}
+        onClose={() => setChatInfoOpen(false)}
+      />
       <AdminPanel
         accounts={accounts}
         accountId={accountId}
@@ -1202,6 +1320,7 @@ function App() {
         downloads={downloads}
         onStart={startDownload}
         onCancel={cancelDownload}
+        onClear={clearDownload}
         onDelete={deleteDownload}
         onClose={() => setDownloadOpen(false)}
       />

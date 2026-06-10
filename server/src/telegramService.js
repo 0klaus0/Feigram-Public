@@ -1,4 +1,5 @@
 const path = require("path");
+const { spawn } = require("child_process");
 const fs = require("fs-extra");
 const mime = require("mime-types");
 const bigInt = require("big-integer");
@@ -13,8 +14,10 @@ const clients = new Map();
 const peerCache = new Map();
 const pendingLogins = new Map();
 const downloadTasks = new Map();
+const hlsTasks = new Map();
 const VIDEO_CACHE_THRESHOLD = 100 * 1024 * 1024;
 const DOWNLOAD_CHUNK_SIZE = 512 * 1024;
+const FFMPEG_BIN = process.env.FFMPEG_BIN || path.join(__dirname, "..", "..", "bin", "ffmpeg");
 
 async function cacheSettings() {
   const settings = await readSettings();
@@ -25,6 +28,7 @@ async function cacheSettings() {
     video: settings.videoCacheDir || path.join(base, "videos"),
     file: settings.fileCacheDir || path.join(base, "files"),
     avatars: path.join(base, "avatars"),
+    hls: path.join(settings.videoCacheDir || path.join(base, "videos"), "hls"),
     retentionDays: Math.max(1, Number(settings.cacheRetentionDays || 30))
   };
 }
@@ -217,6 +221,10 @@ function mediaKind(message, mimeType = "") {
   if (mimeType.startsWith("image/")) return "image";
   if (mimeType.startsWith("video/") || message.video) return "video";
   return "file";
+}
+
+function inputFileLocation(message) {
+  return message.document || message.photo || message.media;
 }
 
 function serializeMessageEntities(message) {
@@ -535,6 +543,46 @@ async function listMessages(userId, accountId, peerId, limit = 50, before = 0) {
   return messages.map(serializeMessage).reverse();
 }
 
+async function chatDetails(userId, accountId, peerId) {
+  const client = await getClient(userId, accountId);
+  const entity = await resolvePeer(userId, accountId, peerId);
+  const chat = serializeEntity(entity);
+  let full = null;
+  try {
+    if (chat.type === "channel" || chat.type === "group") {
+      full = await client.invoke(new Api.channels.GetFullChannel({ channel: entity }));
+    } else if ((entity.className || entity.constructor?.name || "") === "Chat") {
+      full = await client.invoke(new Api.messages.GetFullChat({ chatId: entity.id }));
+    } else {
+      full = await client.invoke(new Api.users.GetFullUser({ id: entity }));
+    }
+  } catch {}
+  const fullChat = full?.fullChat || full?.fullUser || {};
+  const recent = await client.getMessages(entity, { limit: 80 }).catch(() => []);
+  const mediaMessages = recent.filter((message) => message.media).map(serializeMessage);
+  return {
+    ...chat,
+    about: fullChat.about || "",
+    participantsCount: Number(fullChat.participantsCount || fullChat.membersCount || entity.participantsCount || 0),
+    mediaSummary: {
+      images: mediaMessages.filter((message) => message.media?.kind === "image").length,
+      videos: mediaMessages.filter((message) => message.media?.kind === "video").length,
+      files: mediaMessages.filter((message) => message.media?.kind === "file").length
+    },
+    files: mediaMessages
+      .filter((message) => message.media?.kind !== "image")
+      .slice(0, 24)
+      .map((message) => ({
+        id: message.id,
+        date: message.date,
+        text: message.text,
+        fileName: message.media?.fileName || message.media?.mimeType || "Telegram 媒体",
+        kind: message.media?.kind || "file",
+        size: message.media?.size || ""
+      }))
+  };
+}
+
 async function sendText(userId, accountId, peerId, text) {
   const client = await getClient(userId, accountId);
   const entity = await resolvePeer(userId, accountId, peerId);
@@ -724,7 +772,7 @@ async function runDownloadTask(task, io) {
     const stream = fs.createWriteStream(task.partPath, { flags: "a" });
     try {
       for await (const chunk of client.iterDownload({
-        file: message,
+        file: inputFileLocation(message),
         offset: bigInt(downloaded),
         chunkSize: DOWNLOAD_CHUNK_SIZE,
         requestSize: DOWNLOAD_CHUNK_SIZE,
@@ -799,12 +847,118 @@ function cancelDownloadTask(userId, taskId, io) {
   return serializeDownloadTask(task);
 }
 
+function waitForDownload(task) {
+  if (task.status === "completed") return Promise.resolve(task);
+  return new Promise((resolve, reject) => {
+    const started = Date.now();
+    const timer = setInterval(() => {
+      if (task.status === "completed") {
+        clearInterval(timer);
+        resolve(task);
+      } else if (task.status === "error") {
+        clearInterval(timer);
+        reject(Object.assign(new Error(task.error || "视频缓存失败"), { status: 500 }));
+      } else if (Date.now() - started > 30 * 60 * 1000) {
+        clearInterval(timer);
+        reject(Object.assign(new Error("视频缓存超时"), { status: 504 }));
+      }
+    }, 800);
+  });
+}
+
+function runFfmpeg(args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(FFMPEG_BIN, args, { stdio: ["ignore", "ignore", "pipe"] });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+      if (stderr.length > 8000) stderr = stderr.slice(-8000);
+    });
+    child.on("error", (error) => reject(Object.assign(new Error(`ffmpeg 启动失败：${error.message}`), { status: 500 })));
+    child.on("close", (code) => {
+      if (code === 0) resolve();
+      else reject(Object.assign(new Error(`ffmpeg 转码失败：${stderr || `exit ${code}`}`), { status: 500 }));
+    });
+  });
+}
+
+async function hlsInfoForTask(task) {
+  const directories = await cacheSettings();
+  const hlsDir = path.join(directories.hls, task.userId, task.id);
+  return {
+    hlsDir,
+    playlistPath: path.join(hlsDir, "master.m3u8")
+  };
+}
+
+async function prepareHlsMedia(userId, accountId, peerId, messageId, io) {
+  const task = await ensureDownloadTask(userId, accountId, peerId, messageId);
+  if (task.kind !== "video") throw Object.assign(new Error("这条消息不是视频"), { status: 400 });
+  const { hlsDir, playlistPath } = await hlsInfoForTask(task);
+  if (await fs.pathExists(playlistPath)) return { hlsDir, playlistPath };
+  const running = hlsTasks.get(task.id);
+  if (running) {
+    await running;
+    return { hlsDir, playlistPath };
+  }
+  const promise = (async () => {
+    await startDownloadTask(userId, accountId, peerId, messageId, io);
+    await waitForDownload(task);
+    await fs.ensureDir(hlsDir);
+    const segmentPattern = path.join(hlsDir, "segment-%05d.ts");
+    await runFfmpeg([
+      "-y",
+      "-i", task.filePath,
+      "-map", "0:v:0",
+      "-map", "0:a:0?",
+      "-c:v", "libx264",
+      "-preset", "veryfast",
+      "-crf", "23",
+      "-vf", "format=yuv420p",
+      "-c:a", "aac",
+      "-b:a", "128k",
+      "-f", "hls",
+      "-hls_time", "6",
+      "-hls_playlist_type", "vod",
+      "-hls_segment_filename", segmentPattern,
+      playlistPath
+    ]);
+  })().finally(() => hlsTasks.delete(task.id));
+  hlsTasks.set(task.id, promise);
+  await promise;
+  return { hlsDir, playlistPath };
+}
+
+async function hlsMediaFile(userId, accountId, peerId, messageId, fileName, io) {
+  const { hlsDir, playlistPath } = await prepareHlsMedia(userId, accountId, peerId, messageId, io);
+  const safeFile = path.basename(fileName || "master.m3u8");
+  const filePath = safeFile === "master.m3u8" ? playlistPath : path.join(hlsDir, safeFile);
+  if (!filePath.startsWith(hlsDir) || !(await fs.pathExists(filePath))) {
+    throw Object.assign(new Error("HLS 文件不存在"), { status: 404 });
+  }
+  return {
+    filePath,
+    contentType: safeFile.endsWith(".m3u8") ? "application/vnd.apple.mpegurl" : "video/mp2t"
+  };
+}
+
 async function deleteDownloadTask(userId, taskId, io) {
   const task = downloadTasks.get(taskId);
   if (!task || task.userId !== userId) throw Object.assign(new Error("找不到下载任务"), { status: 404 });
   if (task.cancelToken) task.cancelToken.cancelled = true;
   await fs.remove(task.partPath).catch(() => {});
   await fs.remove(task.filePath).catch(() => {});
+  const directories = await cacheSettings();
+  await fs.remove(path.join(directories.hls, userId, task.id)).catch(() => {});
+  downloadTasks.delete(taskId);
+  if (io) io.to(`user:${userId}`).emit("download:delete", { id: taskId });
+  return { ok: true };
+}
+
+function clearDownloadTask(userId, taskId, io) {
+  const task = downloadTasks.get(taskId);
+  if (!task || task.userId !== userId) throw Object.assign(new Error("找不到下载任务"), { status: 404 });
+  if (task.cancelToken) task.cancelToken.cancelled = true;
   downloadTasks.delete(taskId);
   if (io) io.to(`user:${userId}`).emit("download:delete", { id: taskId });
   return { ok: true };
@@ -897,7 +1051,7 @@ async function streamVideoMedia(userId, accountId, peerId, messageId, rangeHeade
   const limit = Math.ceil(contentLength / chunkSize);
   let sent = 0;
   for await (const chunk of client.iterDownload({
-    file: message,
+    file: inputFileLocation(message),
     offset: bigInt(start),
     chunkSize,
     requestSize: chunkSize,
@@ -969,7 +1123,7 @@ async function profilePhoto(userId, accountId, peerId = "__self") {
 async function cleanupCache() {
   const settings = await cacheSettings();
   const cutoff = Date.now() - settings.retentionDays * 24 * 60 * 60 * 1000;
-  for (const dir of [settings.image, settings.video, settings.file, settings.avatars]) {
+  for (const dir of [settings.image, settings.video, settings.file, settings.avatars, settings.hls]) {
     if (!(await fs.pathExists(dir))) continue;
     const entries = await fs.readdir(dir).catch(() => []);
     for (const entry of entries) {
@@ -996,8 +1150,11 @@ module.exports = {
   completePassword,
   cacheMedia,
   cancelDownloadTask,
+  chatDetails,
+  clearDownloadTask,
   deleteDownloadTask,
   downloadMedia,
+  hlsMediaFile,
   listDownloadTasks,
   resumeDownloadTask,
   startDownloadTask,

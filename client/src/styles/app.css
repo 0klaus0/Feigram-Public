@@ -243,7 +243,7 @@ textarea {
 .app-shell {
   background: var(--page);
   display: grid;
-  grid-template-columns: 420px minmax(0, 1fr);
+  grid-template-columns: 420px minmax(0, 1fr) auto;
   height: 100dvh;
   max-height: 100%;
   min-height: 0;
@@ -480,9 +480,35 @@ textarea {
   background: var(--panel);
   border-bottom: 1px solid var(--line);
   gap: 10px;
-  justify-content: flex-start;
+  justify-content: space-between;
   min-height: 68px;
   padding: 14px 18px;
+}
+
+.conversation-title-button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  display: flex;
+  flex: 1;
+  gap: 10px;
+  min-width: 0;
+  padding: 0;
+  text-align: left;
+}
+
+.conversation-title-button span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.conversation-title-button h2,
+.conversation-title-button p {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .back-button {
@@ -509,7 +535,8 @@ textarea {
   align-items: flex-start;
   display: flex;
   gap: 8px;
-  max-width: min(700px, 92%);
+  max-width: 100%;
+  width: 100%;
 }
 
 .message-row.mine {
@@ -522,7 +549,7 @@ textarea {
   background: var(--bubble);
   border: 1px solid var(--line);
   border-radius: 8px;
-  max-width: min(620px, 86%);
+  max-width: calc(100% - 48px);
   padding: 10px 12px;
 }
 
@@ -611,7 +638,8 @@ textarea {
   display: grid;
   gap: 4px;
   margin-top: 8px;
-  max-width: min(560px, 100%);
+  max-width: 100%;
+  width: 100%;
 }
 
 .media-grid.multi {
@@ -628,6 +656,7 @@ textarea {
 
 .media-group-bubble {
   padding: 8px;
+  width: min(860px, 100%);
 }
 
 .image-preview {
@@ -640,7 +669,7 @@ textarea {
 .image-preview img {
   display: block;
   max-height: 420px;
-  max-width: min(520px, 100%);
+  max-width: 100%;
   object-fit: contain;
   width: 100%;
 }
@@ -657,7 +686,7 @@ textarea {
   border-radius: 8px;
   display: block;
   max-height: 460px;
-  max-width: min(560px, 100%);
+  max-width: 100%;
   object-fit: contain;
   width: 100%;
 }
@@ -667,7 +696,7 @@ textarea {
   background: #000;
   border-radius: 8px;
   max-height: 460px;
-  max-width: min(560px, 100%);
+  max-width: 100%;
   overflow: hidden;
   position: relative;
   width: 100%;
@@ -690,7 +719,7 @@ textarea {
   color: #dce7e3;
   display: block;
   max-height: 460px;
-  max-width: min(560px, 100%);
+  max-width: 100%;
   min-height: 160px;
   padding: 18px;
   text-align: center;
@@ -741,7 +770,7 @@ textarea {
   color: #dce7e3;
   display: flex;
   justify-content: center;
-  max-width: min(560px, 100%);
+  max-width: 100%;
   padding: 18px;
   text-align: center;
 }
@@ -934,6 +963,112 @@ textarea {
   padding: 8px;
   position: fixed;
   z-index: 80;
+}
+
+.chat-info-panel {
+  background: var(--panel);
+  border-left: 1px solid var(--line);
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  height: 100%;
+  min-width: 320px;
+  overflow: auto;
+  width: 340px;
+}
+
+.chat-info-panel header {
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  gap: 10px;
+  padding: 14px;
+}
+
+.chat-info-profile {
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  display: grid;
+  gap: 8px;
+  justify-items: center;
+  padding: 22px 16px;
+  text-align: center;
+}
+
+.chat-info-profile h2 {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-info-profile p,
+.chat-info-profile span {
+  color: var(--muted);
+}
+
+.chat-info-section {
+  border-bottom: 1px solid var(--line);
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+}
+
+.chat-info-section h3 {
+  font-size: 0.9rem;
+  margin: 0;
+}
+
+.media-summary {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.media-summary span {
+  background: var(--soft);
+  border-radius: 8px;
+  color: var(--muted);
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+  text-align: center;
+}
+
+.media-summary b {
+  color: inherit;
+  font-size: 1.1rem;
+}
+
+.info-file-list {
+  display: grid;
+  gap: 8px;
+}
+
+.info-file-item {
+  align-items: center;
+  background: var(--soft);
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 24px minmax(0, 1fr);
+  padding: 9px;
+}
+
+.info-file-item span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.info-file-item strong,
+.info-file-item small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.info-file-item small {
+  color: var(--muted);
 }
 
 .modal-backdrop {
@@ -1175,6 +1310,13 @@ textarea {
 
   .app-shell.chat-open .conversation {
     display: grid;
+  }
+
+  .chat-info-panel {
+    inset: 0 0 0 auto;
+    max-width: 92vw;
+    position: fixed;
+    z-index: 50;
   }
 
   .back-button {

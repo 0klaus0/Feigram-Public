@@ -14,6 +14,20 @@ const about = {
 
 const announcements = [
   {
+    id: "release-1.5.6",
+    title: "Feigram 1.5.6 更新",
+    version: "1.5.6",
+    level: "success",
+    createdAt: "2026-06-10T10:00:00.000Z",
+    body: [
+      "修复视频缓存下载 Cannot cast Message to any kind of InputFileLocation 的问题。",
+      "下载中心区分清除列表记录和删除缓存文件。",
+      "聊天消息和视频预览按窗口宽度展开，未播放和播放后的窗口尺寸保持一致。",
+      "新增群组信息侧栏，点击聊天头部可查看基础信息、媒体统计和最近文件。",
+      "FPK 内置 ffmpeg，服务端可将视频转成 H.264/AAC HLS 后供客户端播放。"
+    ].join("\n")
+  },
+  {
     id: "release-1.5.5",
     title: "Feigram 1.5.5 更新",
     version: "1.5.5",
