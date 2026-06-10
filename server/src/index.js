@@ -205,6 +205,17 @@ app.get("/api/media/:account/:peer/:messageId", asyncRoute(async (req, res) => {
   res.download(media.filePath, media.fileName);
 }));
 
+app.post("/api/media/:account/:peer/:messageId/cache", asyncRoute(async (req, res) => {
+  const media = await tg.cacheMedia(req.user.id, req.params.account, req.params.peer, req.params.messageId);
+  res.json({
+    ok: true,
+    fileName: media.fileName,
+    kind: media.kind,
+    size: media.size,
+    inlineUrl: `/api/media/${req.params.account}/${encodeURIComponent(req.params.peer)}/${req.params.messageId}?inline=1`
+  });
+}));
+
 app.use(express.static(path.join(__dirname, "..", "public")));
 app.get("*", (_req, res) => {
   res.sendFile(path.join(__dirname, "..", "public", "index.html"));

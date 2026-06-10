@@ -22,6 +22,7 @@ function envDefaults() {
     notificationPreview: process.env.NOTIFICATION_PREVIEW !== "false",
     privacyOpenTelegramLinksInApp: process.env.PRIVACY_OPEN_TG_LINKS_IN_APP !== "false",
     privacyMediaPreview: process.env.PRIVACY_MEDIA_PREVIEW !== "false",
+    messageShowSender: process.env.MESSAGE_SHOW_SENDER !== "false",
     foldersEnabled: process.env.FOLDERS_ENABLED !== "false",
     foldersShowArchived: process.env.FOLDERS_SHOW_ARCHIVED === "true",
     foldersAutoSelectFirst: process.env.FOLDERS_AUTO_SELECT_FIRST !== "false"
@@ -45,6 +46,7 @@ function sanitize(input = {}) {
     notificationPreview: bool(input.notificationPreview, true),
     privacyOpenTelegramLinksInApp: bool(input.privacyOpenTelegramLinksInApp, true),
     privacyMediaPreview: bool(input.privacyMediaPreview, true),
+    messageShowSender: bool(input.messageShowSender, true),
     foldersEnabled: bool(input.foldersEnabled, true),
     foldersShowArchived: bool(input.foldersShowArchived, false),
     foldersAutoSelectFirst: bool(input.foldersAutoSelectFirst, true)
@@ -89,6 +91,7 @@ function publicSettings(settings) {
     notificationPreview: settings.notificationPreview,
     privacyOpenTelegramLinksInApp: settings.privacyOpenTelegramLinksInApp,
     privacyMediaPreview: settings.privacyMediaPreview,
+    messageShowSender: settings.messageShowSender,
     foldersEnabled: settings.foldersEnabled,
     foldersShowArchived: settings.foldersShowArchived,
     foldersAutoSelectFirst: settings.foldersAutoSelectFirst

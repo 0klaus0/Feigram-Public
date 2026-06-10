@@ -5,6 +5,7 @@ import {
   Bell,
   Download,
   ExternalLink,
+  Folder,
   LogOut,
   MessageSquare,
   Moon,
@@ -14,6 +15,7 @@ import {
   Send,
   Settings,
   Shield,
+  SlidersHorizontal,
   Sun,
   ArrowLeft,
   UserRound,
@@ -121,9 +123,11 @@ function mediaUrl(accountId, chatId, messageId, inline = false) {
   return `/api/media/${accountId}/${encodeURIComponent(chatId)}/${messageId}?${params.toString()}`;
 }
 
-function MessageMedia({ accountId, chatId, message }) {
+function MessageMedia({ accountId, chatId, message, compact = false, onCache }) {
   const [failed, setFailed] = useState(false);
   const [active, setActive] = useState(false);
+  const [cached, setCached] = useState(false);
+  const [caching, setCaching] = useState(false);
   const media = message.media;
   if (!media) return null;
   const previewUrl = mediaUrl(accountId, chatId, message.id, true);
@@ -131,7 +135,7 @@ function MessageMedia({ accountId, chatId, message }) {
   const label = media.fileName || media.mimeType || "下载媒体";
   if (media.kind === "image") {
     return (
-      <a className="media-preview image-preview" href={downloadUrl} target="_blank" rel="noreferrer" title="打开原图">
+      <a className={cx("media-preview image-preview", compact && "compact-media")} href={previewUrl} target="_blank" rel="noreferrer" title="打开原图">
         <img src={previewUrl} alt={label} loading="lazy" />
       </a>
     );
@@ -140,19 +144,78 @@ function MessageMedia({ accountId, chatId, message }) {
     const ratio = media.width && media.height ? `${media.width} / ${media.height}` : "16 / 9";
     const orientation = Number(media.height || 0) > Number(media.width || 0) ? "portrait" : "landscape";
     return (
-      <div className={cx("media-preview", "video-preview", orientation)} style={{ "--video-ratio": ratio }}>
+      <div className={cx("media-preview", "video-preview", orientation, compact && "compact-media")} style={{ "--video-ratio": ratio }}>
         <div className="video-stage">
           {!active && !failed ? <button className="video-load-button" type="button" onClick={() => setActive(true)}>点击播放视频</button> : null}
-          {active && !failed ? <video controls autoPlay preload="metadata" playsInline onError={() => setFailed(true)}>
-            <source src={previewUrl} type={media.mimeType || "video/mp4"} />
-          </video> : null}
-          {failed ? <div className="video-fallback">当前浏览器无法直接播放这个视频格式，请下载后播放。</div> : null}
+          {active && !failed ? <video src={previewUrl} controls autoPlay preload="metadata" playsInline onError={() => setFailed(true)} /> : null}
+          {failed ? <div className="video-fallback">当前浏览器无法直接播放这个编码，缓存到本地后可重试播放。</div> : null}
         </div>
-        <a className="media-chip" href={downloadUrl} target="_blank" rel="noreferrer"><Download size={15} />{label}</a>
+        <button
+          className="media-chip"
+          type="button"
+          disabled={caching}
+          onClick={async () => {
+            setCaching(true);
+            try {
+              await onCache?.(message);
+              setCached(true);
+              setFailed(false);
+              setActive(true);
+            } finally {
+              setCaching(false);
+            }
+          }}
+        >
+          <Download size={15} />{caching ? "缓存中" : cached ? "已缓存" : "缓存视频"}
+        </button>
       </div>
     );
   }
-  return <a className="media-chip" href={downloadUrl} target="_blank" rel="noreferrer"><Download size={15} />{label}</a>;
+  return <a className="media-chip" href={downloadUrl}><Download size={15} />{label}</a>;
+}
+
+function buildMessageItems(messages) {
+  const items = [];
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index];
+    if (message.groupedId && message.media) {
+      const group = [message];
+      while (index + 1 < messages.length && messages[index + 1].groupedId === message.groupedId && messages[index + 1].media) {
+        group.push(messages[index + 1]);
+        index += 1;
+      }
+      items.push({ type: "group", id: `group-${message.groupedId}-${message.id}`, messages: group });
+    } else {
+      items.push({ type: "message", id: `${message.id}-${message.date}`, message });
+    }
+  }
+  return items;
+}
+
+function MessageBubble({ item, accountId, chatId, showSender, showMedia, onOpenLink, onInlineButton, onCacheMedia }) {
+  const messages = item.type === "group" ? item.messages : [item.message];
+  const first = messages[0];
+  const caption = messages.find((message) => message.text) || first;
+  return (
+    <article className={cx("message-row", first.outgoing && "mine")}>
+      {showSender && !first.outgoing && <Avatar accountId={accountId} peerId={first.sender?.id} label={first.sender?.title || first.senderId} size={34} />}
+      <div className={cx("bubble", first.outgoing && "mine", item.type === "group" && "media-group-bubble")}>
+        {showSender && !first.outgoing && <div className="sender-line">{first.sender?.title || first.senderId}<span>{first.sender?.username ? `@${first.sender.username}` : first.senderId}</span></div>}
+        {caption.text && <MessageText text={caption.text} entities={caption.entities} onOpenLink={onOpenLink} />}
+        {showMedia && item.type === "group" ? <div className={cx("media-grid", messages.length > 1 && "multi")}>
+          {messages.map((message) => <MessageMedia key={message.id} accountId={accountId} chatId={chatId} message={message} compact onCache={onCacheMedia} />)}
+        </div> : showMedia && <MessageMedia accountId={accountId} chatId={chatId} message={first} onCache={onCacheMedia} />}
+        {!!caption.buttons?.length && <div className="inline-buttons">
+          {caption.buttons.map((row, rowIndex) => <div className="inline-button-row" key={`${caption.id}-row-${rowIndex}`}>
+            {row.map((button, buttonIndex) => <button type="button" key={`${button.text}-${buttonIndex}`} onClick={() => onInlineButton(caption, button)} disabled={button.type === "unsupported"}>
+              {button.text || "按钮"}
+            </button>)}
+          </div>)}
+        </div>}
+        <time>{formatTime(messages[messages.length - 1].date)}</time>
+      </div>
+    </article>
+  );
 }
 
 function useSocket(token) {
@@ -328,6 +391,7 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
     notificationPreview: true,
     privacyOpenTelegramLinksInApp: true,
     privacyMediaPreview: true,
+    messageShowSender: true,
     foldersEnabled: true,
     foldersShowArchived: false,
     foldersAutoSelectFirst: true
@@ -362,6 +426,7 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
         notificationPreview: nextSettings.notificationPreview !== false,
         privacyOpenTelegramLinksInApp: nextSettings.privacyOpenTelegramLinksInApp !== false,
         privacyMediaPreview: nextSettings.privacyMediaPreview !== false,
+        messageShowSender: nextSettings.messageShowSender !== false,
         foldersEnabled: nextSettings.foldersEnabled !== false,
         foldersShowArchived: Boolean(nextSettings.foldersShowArchived),
         foldersAutoSelectFirst: nextSettings.foldersAutoSelectFirst !== false
@@ -490,6 +555,7 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
         {canAdmin && tab === "privacy" && <form className="stack" onSubmit={saveSettings}>
           <label className="check-row"><input type="checkbox" checked={settings.privacyOpenTelegramLinksInApp} onChange={(e) => setSettings({ ...settings, privacyOpenTelegramLinksInApp: e.target.checked })} /><span>Telegram 链接优先在客户端内打开</span></label>
           <label className="check-row"><input type="checkbox" checked={settings.privacyMediaPreview} onChange={(e) => setSettings({ ...settings, privacyMediaPreview: e.target.checked })} /><span>聊天中显示图片和视频预览</span></label>
+          <label className="check-row"><input type="checkbox" checked={settings.messageShowSender} onChange={(e) => setSettings({ ...settings, messageShowSender: e.target.checked })} /><span>群聊消息显示发言人头像和 ID</span></label>
           {saved && <p className="success">{saved}</p>}
           <button className="primary"><Settings size={18} />保存隐私设置</button>
         </form>}
@@ -546,6 +612,7 @@ function App() {
     notificationPreview: true,
     privacyOpenTelegramLinksInApp: true,
     privacyMediaPreview: true,
+    messageShowSender: true,
     foldersEnabled: true,
     foldersShowArchived: false,
     foldersAutoSelectFirst: true
@@ -573,6 +640,7 @@ function App() {
   const activeAccount = accounts.find((account) => account.id === accountId);
   const newestAnnouncementId = announcements[0]?.id || "";
   const unreadAnnouncement = newestAnnouncementId && localStorage.getItem("feigrame.lastAnnouncement") !== newestAnnouncementId;
+  const messageItems = useMemo(() => buildMessageItems(messages), [messages]);
   const visibleChats = useMemo(() => {
     const folder = folders.find((item) => String(item.id) === String(activeFolder));
     if (!folder) return chats;
@@ -670,6 +738,11 @@ function App() {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function clearSearch() {
+    setQuery("");
+    await loadChats("");
   }
 
   async function loadFolders() {
@@ -806,6 +879,18 @@ function App() {
     }
   }
 
+  async function cacheMedia(message) {
+    setError("");
+    try {
+      const result = await api(`/api/media/${accountId}/${encodeURIComponent(activeChat.id)}/${message.id}/cache`, { method: "POST" });
+      notify(`${result.fileName || "媒体"} 已缓存`);
+      return result;
+    } catch (err) {
+      notify(err.message);
+      throw err;
+    }
+  }
+
   async function sendMessage(event) {
     event.preventDefault();
     if (!draft.trim() || !activeChat) return;
@@ -846,6 +931,7 @@ function App() {
       notificationPreview: settings.notificationPreview !== false,
       privacyOpenTelegramLinksInApp: settings.privacyOpenTelegramLinksInApp !== false,
       privacyMediaPreview: settings.privacyMediaPreview !== false,
+      messageShowSender: settings.messageShowSender !== false,
       foldersEnabled: settings.foldersEnabled !== false,
       foldersShowArchived: Boolean(settings.foldersShowArchived),
       foldersAutoSelectFirst: settings.foldersAutoSelectFirst !== false
@@ -883,24 +969,35 @@ function App() {
             </select>}
           </> : <button className="secondary action-button" onClick={() => { setAdminInitialTab("accounts"); setAdminOpen(true); }}><Plus size={18} />添加 Telegram 账号</button>}
         </div>
-        {appSettings.foldersEnabled && !!folders.length && <div className="folder-tabs">
-          <button className={cx(activeFolder === "all" && "active")} onClick={() => setActiveFolder("all")}>全部</button>
-          {folders.map((folder) => <button key={folder.id} className={cx(String(activeFolder) === String(folder.id) && "active")} onClick={() => setActiveFolder(folder.id)}>
-            {folder.emoticon ? `${folder.emoticon} ` : ""}{folder.title}
-          </button>)}
-        </div>}
-        <form className="search" onSubmit={(event) => { event.preventDefault(); loadChats(query); }}>
-          <Search size={17} />
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索私聊、群组、频道" />
-          <button title="搜索"><RefreshCw size={16} /></button>
-        </form>
-        <div className="chat-list">
-          {visibleChats.map((chat) => <button key={chat.id} className={cx("chat-item", activeChat?.id === chat.id && "active")} onClick={() => selectChat(chat)}>
-            <Avatar accountId={accountId} peerId={chat.id} label={chat.title} />
-            <span className="chat-copy"><strong>{chat.title}</strong><small>{chat.lastMessage?.text || chat.type}</small></span>
-            {chat.unreadCount > 0 && <span className="badge">{chat.unreadCount}</span>}
-          </button>)}
-          {!visibleChats.length && <div className="empty">暂无会话</div>}
+        <div className="sidebar-main">
+          {appSettings.foldersEnabled && <nav className="folder-tabs">
+            <button className={cx(activeFolder === "all" && "active")} onClick={() => setActiveFolder("all")}>
+              <MessageSquare size={24} /><span>全部</span>
+            </button>
+            {folders.map((folder) => <button key={folder.id} className={cx(String(activeFolder) === String(folder.id) && "active")} onClick={() => setActiveFolder(folder.id)}>
+              <Folder size={24} /><span>{folder.emoticon ? `${folder.emoticon} ` : ""}{folder.title}</span>
+              {!!folder.chatIds?.length && <b>{folder.chatIds.length}</b>}
+            </button>)}
+            <button onClick={() => { setAdminInitialTab("folders"); setAdminOpen(true); }}>
+              <SlidersHorizontal size={24} /><span>编辑</span>
+            </button>
+          </nav>}
+          <div className="chat-pane">
+            <form className="search" onSubmit={(event) => { event.preventDefault(); loadChats(query); }}>
+              <Search size={17} />
+              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索私聊、群组、频道" />
+              {query && <button type="button" title="清除搜索" onClick={clearSearch}><X size={16} /></button>}
+              <button title="搜索"><RefreshCw size={16} /></button>
+            </form>
+            <div className="chat-list">
+              {visibleChats.map((chat) => <button key={chat.id} className={cx("chat-item", activeChat?.id === chat.id && "active")} onClick={() => selectChat(chat)}>
+                <Avatar accountId={accountId} peerId={chat.id} label={chat.title} />
+                <span className="chat-copy"><strong>{chat.title}</strong><small>{chat.lastMessage?.text || chat.type}</small></span>
+                {chat.unreadCount > 0 && <span className="badge">{chat.unreadCount}</span>}
+              </button>)}
+              {!visibleChats.length && <div className="empty">暂无会话</div>}
+            </div>
+          </div>
         </div>
       </aside>
       <section className="conversation">
@@ -912,18 +1009,17 @@ function App() {
           {error && <p className="error inline">{error}</p>}
           <div className="messages" ref={messagesRef}>
             {hasOlder && <button className="history-button" onClick={loadOlderMessages} disabled={loadingOlder}>{loadingOlder ? "加载中" : "加载更早消息"}</button>}
-            {messages.map((message) => <article key={`${message.id}-${message.date}`} className={cx("bubble", message.outgoing && "mine")}>
-              <MessageText text={message.text} entities={message.entities} onOpenLink={openTelegramLink} />
-              {appSettings.privacyMediaPreview && <MessageMedia accountId={accountId} chatId={activeChat.id} message={message} />}
-              {!!message.buttons?.length && <div className="inline-buttons">
-                {message.buttons.map((row, rowIndex) => <div className="inline-button-row" key={`${message.id}-row-${rowIndex}`}>
-                  {row.map((button, buttonIndex) => <button type="button" key={`${button.text}-${buttonIndex}`} onClick={() => clickInlineButton(message, button)} disabled={button.type === "unsupported"}>
-                    {button.text || "按钮"}
-                  </button>)}
-                </div>)}
-              </div>}
-              <time>{formatTime(message.date)}</time>
-            </article>)}
+            {messageItems.map((item) => <MessageBubble
+              key={item.id}
+              item={item}
+              accountId={accountId}
+              chatId={activeChat.id}
+              showSender={appSettings.messageShowSender}
+              showMedia={appSettings.privacyMediaPreview}
+              onOpenLink={openTelegramLink}
+              onInlineButton={clickInlineButton}
+              onCacheMedia={cacheMedia}
+            />)}
             {busy && <div className="empty">加载中</div>}
           </div>
           <form className="composer" onSubmit={sendMessage}><textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => {

@@ -15,8 +15,8 @@ export TELEGRAM_API_ID="${wizard_telegram_api_id}"
 export TELEGRAM_API_HASH="${wizard_telegram_api_hash}"
 export DATA_DIR="${DATA_HOME}/data"
 export DOWNLOAD_DIR="${DATA_HOME}/data/downloads"
-export APP_VERSION="1.5.3"
-export APP_CHANGELOG="更新公开仓库政策链接；改进 Telegram 文件夹同步；支持视频 Range 流式播放；新增通知、隐私和分组设置。"
+export APP_VERSION="1.5.4"
+export APP_CHANGELOG="优化文件夹竖栏、搜索清除、发言人展示、媒体组布局和站内视频缓存下载体验。"
 export NODE_ENV="production"
 
 is_running() {

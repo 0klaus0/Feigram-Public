@@ -96,6 +96,24 @@ function serializeEntity(entity) {
   };
 }
 
+function serializeSender(entity, fallbackId = "") {
+  if (!entity) {
+    return {
+      id: fallbackId,
+      title: fallbackId || "Unknown",
+      username: "",
+      rawId: fallbackId
+    };
+  }
+  const chat = serializeEntity(entity);
+  return {
+    id: chat.id,
+    title: chat.title,
+    username: chat.username,
+    rawId: chat.rawId
+  };
+}
+
 async function filterPeerToChat(client, peer) {
   const entity = await client.getEntity(peer).catch(() => null);
   if (!entity) return null;
@@ -263,10 +281,19 @@ function serializeMessage(message) {
     entities: serializeMessageEntities(message),
     outgoing: Boolean(message.out),
     senderId: toText(message.senderId),
+    sender: serializeSender(message.sender, toText(message.senderId)),
     groupedId: toText(message.groupedId),
     buttons,
     media
   };
+}
+
+function rememberMessageSenders(accountId, messages) {
+  if (!peerCache.has(accountId)) peerCache.set(accountId, new Map());
+  const cache = peerCache.get(accountId);
+  messages.forEach((message) => {
+    if (message.sender) cache.set(peerKey(message.sender), message.sender);
+  });
 }
 
 async function createClient(sessionString = "") {
@@ -502,6 +529,7 @@ async function listMessages(userId, accountId, peerId, limit = 50, before = 0) {
   const request = { limit: Number(limit) || 50 };
   if (Number(before) > 0) request.offsetId = Number(before);
   const messages = await client.getMessages(entity, request);
+  rememberMessageSenders(accountId, messages);
   return messages.map(serializeMessage).reverse();
 }
 
@@ -509,6 +537,7 @@ async function sendText(userId, accountId, peerId, text) {
   const client = await getClient(userId, accountId);
   const entity = await resolvePeer(userId, accountId, peerId);
   const message = await client.sendMessage(entity, { message: text });
+  rememberMessageSenders(accountId, [message]);
   return serializeMessage(message);
 }
 
@@ -559,7 +588,19 @@ async function search(userId, accountId, query) {
   };
 }
 
-async function downloadMedia(userId, accountId, peerId, messageId) {
+async function mediaFileInfo(userId, accountId, message, contentType, kind) {
+  const directories = await cacheSettings();
+  const extension = mime.extension(contentType);
+  const guessedName = safeName(message.file?.name || `telegram-${accountId}-${message.id}${extension ? `.${extension}` : ""}`);
+  const downloadDir = path.join(kind === "image" ? directories.image : kind === "video" ? directories.video : directories.file, userId);
+  return {
+    fileName: guessedName,
+    filePath: path.join(downloadDir, guessedName),
+    downloadDir
+  };
+}
+
+async function downloadMedia(userId, accountId, peerId, messageId, options = {}) {
   const client = await getClient(userId, accountId);
   const entity = await resolvePeer(userId, accountId, peerId);
   const [message] = await client.getMessages(entity, { ids: [Number(messageId)] });
@@ -567,24 +608,20 @@ async function downloadMedia(userId, accountId, peerId, messageId) {
   const contentType = message.photo ? "image/jpeg" : message.document?.mimeType || "";
   const kind = mediaKind(message, contentType);
   const rawSize = Number(message.file?.size || message.document?.size || 0);
-  const cacheable = kind === "image" || (kind === "video" && rawSize > VIDEO_CACHE_THRESHOLD);
-  const directories = await cacheSettings();
-  const extension = mime.extension(contentType);
-  const guessedName = safeName(message.file?.name || `telegram-${accountId}-${messageId}${extension ? `.${extension}` : ""}`);
+  const cacheable = options.forceCache || kind === "image" || (kind === "video" && rawSize > VIDEO_CACHE_THRESHOLD);
+  const { fileName, filePath, downloadDir } = await mediaFileInfo(userId, accountId, message, contentType, kind);
   if (!cacheable) {
     const buffer = await client.downloadMedia(message, {});
     return {
       buffer,
-      fileName: guessedName,
-      contentType: contentType || mime.lookup(guessedName) || "application/octet-stream",
+      fileName,
+      contentType: contentType || mime.lookup(fileName) || "application/octet-stream",
       size: buffer.length,
       kind,
       cacheable: false
     };
   }
-  const downloadDir = path.join(kind === "image" ? directories.image : directories.video, userId);
   await fs.ensureDir(downloadDir);
-  const filePath = path.join(downloadDir, guessedName);
   if (!(await fs.pathExists(filePath))) {
     const buffer = await client.downloadMedia(message, {});
     await fs.writeFile(filePath, buffer);
@@ -592,12 +629,16 @@ async function downloadMedia(userId, accountId, peerId, messageId) {
   const stat = await fs.stat(filePath);
   return {
     filePath,
-    fileName: guessedName,
+    fileName,
     contentType: contentType || mime.lookup(filePath) || "application/octet-stream",
     size: stat.size,
     kind,
     cacheable: true
   };
+}
+
+async function cacheMedia(userId, accountId, peerId, messageId) {
+  return downloadMedia(userId, accountId, peerId, messageId, { forceCache: true });
 }
 
 async function streamVideoMedia(userId, accountId, peerId, messageId, rangeHeader, res) {
@@ -610,7 +651,11 @@ async function streamVideoMedia(userId, accountId, peerId, messageId, rangeHeade
   if (kind !== "video") return false;
   const size = Number(message.file?.size || message.document?.size || 0);
   if (!size) return false;
-  const fileName = safeName(message.file?.name || `telegram-${accountId}-${messageId}.${mime.extension(contentType) || "mp4"}`);
+  const { fileName, filePath } = await mediaFileInfo(userId, accountId, message, contentType, kind);
+  if (await fs.pathExists(filePath)) {
+    const stat = await fs.stat(filePath);
+    return streamLocalFile(filePath, fileName, contentType || mime.lookup(filePath) || "video/mp4", stat.size, rangeHeader, res, "private, max-age=86400");
+  }
   let start = 0;
   let end = size - 1;
   let statusCode = 200;
@@ -662,6 +707,37 @@ async function streamVideoMedia(userId, accountId, peerId, messageId, rangeHeade
   return true;
 }
 
+function streamLocalFile(filePath, fileName, contentType, size, rangeHeader, res, cacheControl = "private, max-age=86400") {
+  let start = 0;
+  let end = size - 1;
+  let statusCode = 200;
+  if (rangeHeader) {
+    const match = String(rangeHeader).match(/bytes=(\d*)-(\d*)/);
+    if (match) {
+      if (match[1]) start = Number(match[1]);
+      if (match[2]) end = Number(match[2]);
+      if (!match[1] && match[2]) {
+        const suffix = Number(match[2]);
+        start = Math.max(0, size - suffix);
+        end = size - 1;
+      }
+      statusCode = 206;
+    }
+  }
+  start = Math.max(0, Math.min(start, size - 1));
+  end = Math.max(start, Math.min(end, size - 1));
+  res.writeHead(statusCode, {
+    "Accept-Ranges": "bytes",
+    "Cache-Control": cacheControl,
+    "Content-Disposition": `inline; filename="${encodeURIComponent(fileName)}"`,
+    "Content-Length": end - start + 1,
+    "Content-Type": contentType,
+    ...(statusCode === 206 ? { "Content-Range": `bytes ${start}-${end}/${size}` } : {})
+  });
+  fs.createReadStream(filePath, { start, end }).pipe(res);
+  return true;
+}
+
 async function profilePhoto(userId, accountId, peerId = "__self") {
   const client = await getClient(userId, accountId);
   const entity = peerId === "__self" ? await client.getMe() : await resolvePeer(userId, accountId, peerId);
@@ -708,6 +784,7 @@ module.exports = {
   clickMessageButton,
   completeCode,
   completePassword,
+  cacheMedia,
   downloadMedia,
   streamVideoMedia,
   listAccounts,
