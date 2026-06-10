@@ -25,7 +25,8 @@ function envDefaults() {
     messageShowSender: process.env.MESSAGE_SHOW_SENDER !== "false",
     foldersEnabled: process.env.FOLDERS_ENABLED !== "false",
     foldersShowArchived: process.env.FOLDERS_SHOW_ARCHIVED === "true",
-    foldersAutoSelectFirst: process.env.FOLDERS_AUTO_SELECT_FIRST !== "false"
+    foldersAutoSelectFirst: process.env.FOLDERS_AUTO_SELECT_FIRST !== "false",
+    playerMode: process.env.PLAYER_MODE || "hls"
   };
 }
 
@@ -49,7 +50,8 @@ function sanitize(input = {}) {
     messageShowSender: bool(input.messageShowSender, true),
     foldersEnabled: bool(input.foldersEnabled, true),
     foldersShowArchived: bool(input.foldersShowArchived, false),
-    foldersAutoSelectFirst: bool(input.foldersAutoSelectFirst, true)
+    foldersAutoSelectFirst: bool(input.foldersAutoSelectFirst, true),
+    playerMode: ["hls", "browser", "local"].includes(input.playerMode) ? input.playerMode : "hls"
   };
 }
 
@@ -94,7 +96,8 @@ function publicSettings(settings) {
     messageShowSender: settings.messageShowSender,
     foldersEnabled: settings.foldersEnabled,
     foldersShowArchived: settings.foldersShowArchived,
-    foldersAutoSelectFirst: settings.foldersAutoSelectFirst
+    foldersAutoSelectFirst: settings.foldersAutoSelectFirst,
+    playerMode: settings.playerMode
   };
 }
 

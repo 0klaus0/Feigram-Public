@@ -14,6 +14,21 @@ const about = {
 
 const announcements = [
   {
+    id: "release-1.5.7",
+    title: "Feigram 1.5.7 更新",
+    version: "1.5.7",
+    level: "success",
+    createdAt: "2026-06-10T11:00:00.000Z",
+    body: [
+      "修复下载失败后被播放器重试反复拉起的问题。",
+      "下载缓存改用 GramJS 官方 downloadMedia 流程，降低 InputFileLocation 兼容问题。",
+      "下载完成的视频可在下载列表中直接点击播放。",
+      "管理员后台新增播放器模式设置：内置 HLS、浏览器原始、本地播放器。",
+      "公告和管理员后台弹窗统一限制高度，内容区支持滚动。",
+      "群组信息中的图片、视频和文件支持快捷访问。"
+    ].join("\n")
+  },
+  {
     id: "release-1.5.6",
     title: "Feigram 1.5.6 更新",
     version: "1.5.6",

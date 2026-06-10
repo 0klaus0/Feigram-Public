@@ -140,38 +140,48 @@ function hlsMediaUrl(accountId, chatId, messageId) {
   return `/api/media/${accountId}/${encodeURIComponent(chatId)}/${messageId}/hls/master.m3u8?${params.toString()}`;
 }
 
-function FeigramVideo({ src, hlsSrc, onError }) {
+function FeigramVideo({ src, hlsSrc, mode = "hls", onError, onMode }) {
   const ref = useRef(null);
   useEffect(() => {
     const video = ref.current;
     if (!video) return undefined;
+    if (mode === "browser") {
+      onMode?.("浏览器原始播放");
+      video.src = src;
+      return undefined;
+    }
     if (video.canPlayType("application/vnd.apple.mpegurl")) {
+      onMode?.("内置 HLS 转码播放");
       video.src = hlsSrc;
       return undefined;
     }
     if (Hls.isSupported()) {
+      onMode?.("内置 HLS 转码播放");
       const hls = new Hls({ enableWorker: true, lowLatencyMode: false });
       hls.loadSource(hlsSrc);
       hls.attachMedia(video);
       hls.on(Hls.Events.ERROR, (_event, data) => {
         if (data?.fatal) {
           hls.destroy();
+          onMode?.("浏览器原始播放");
           video.src = src;
           video.load();
         }
       });
       return () => hls.destroy();
     }
+    onMode?.("浏览器原始播放");
     video.src = src;
     return undefined;
-  }, [src, hlsSrc]);
+  }, [src, hlsSrc, mode, onMode]);
   return <video ref={ref} controls autoPlay preload="metadata" playsInline onError={onError} />;
 }
 
-function MessageMedia({ accountId, chatId, message, compact = false, onCache, task }) {
+function MessageMedia({ accountId, chatId, message, compact = false, onCache, task, playerMode = "hls" }) {
   const [failed, setFailed] = useState(false);
   const [active, setActive] = useState(false);
   const [localStatus, setLocalStatus] = useState("");
+  const [playModeLabel, setPlayModeLabel] = useState("");
   const media = message.media;
   if (!media) return null;
   const previewUrl = mediaUrl(accountId, chatId, message.id, true);
@@ -212,9 +222,11 @@ function MessageMedia({ accountId, chatId, message, compact = false, onCache, ta
           >
             <Download size={14} />{cacheLabel}
           </button>
-          {!active && !failed ? <button className="video-load-button" type="button" onClick={() => setActive(true)}>点击播放视频</button> : null}
-          {active && !failed ? <FeigramVideo src={previewUrl} hlsSrc={hlsUrl} onError={() => setFailed(true)} /> : null}
-          {failed ? <div className="video-fallback">这个视频编码当前内置播放器无法直接解码，可先缓存后用本地播放器打开。</div> : null}
+          {!active && !failed && playerMode !== "local" ? <button className="video-load-button" type="button" onClick={() => setActive(true)}>点击播放视频</button> : null}
+          {active && !failed && playerMode !== "local" ? <FeigramVideo src={previewUrl} hlsSrc={hlsUrl} mode={playerMode} onMode={setPlayModeLabel} onError={() => setFailed(true)} /> : null}
+          {playerMode === "local" ? <a className="video-load-button local-player-link" href={downloadUrl}>下载后用本地播放器打开</a> : null}
+          {playModeLabel && active && !failed ? <span className="video-mode-pill">{playModeLabel}</span> : null}
+          {failed ? <div className="video-fallback">当前模式无法播放这个视频，请切换播放器模式或先缓存后下载到本地播放。</div> : null}
         </div>
       </div>
     );
@@ -240,7 +252,7 @@ function buildMessageItems(messages) {
   return items;
 }
 
-function MessageBubble({ item, accountId, chatId, showSender, showMedia, onOpenLink, onInlineButton, onCacheMedia, downloadTasks }) {
+function MessageBubble({ item, accountId, chatId, showSender, showMedia, playerMode, onOpenLink, onInlineButton, onCacheMedia, downloadTasks }) {
   const messages = item.type === "group" ? item.messages : [item.message];
   const first = messages[0];
   const caption = messages.find((message) => message.text) || first;
@@ -254,8 +266,8 @@ function MessageBubble({ item, accountId, chatId, showSender, showMedia, onOpenL
         {showSender && !first.outgoing && <div className="sender-line">{first.sender?.title || first.senderId}<span>{first.sender?.username ? `@${first.sender.username}` : first.senderId}</span></div>}
         {caption.text && <MessageText text={caption.text} entities={caption.entities} onOpenLink={onOpenLink} />}
         {showMedia && item.type === "group" ? <div className={cx("media-grid", messages.length > 1 && "multi")}>
-          {messages.map((message) => <MessageMedia key={message.id} accountId={accountId} chatId={chatId} message={message} compact onCache={onCacheMedia} task={taskFor(message)} />)}
-        </div> : showMedia && <MessageMedia accountId={accountId} chatId={chatId} message={first} onCache={onCacheMedia} task={taskFor(first)} />}
+          {messages.map((message) => <MessageMedia key={message.id} accountId={accountId} chatId={chatId} message={message} compact onCache={onCacheMedia} task={taskFor(message)} playerMode={playerMode} />)}
+        </div> : showMedia && <MessageMedia accountId={accountId} chatId={chatId} message={first} onCache={onCacheMedia} task={taskFor(first)} playerMode={playerMode} />}
         {!!caption.buttons?.length && <div className="inline-buttons">
           {caption.buttons.map((row, rowIndex) => <div className="inline-button-row" key={`${caption.id}-row-${rowIndex}`}>
             {row.map((button, buttonIndex) => <button type="button" key={`${button.text}-${buttonIndex}`} onClick={() => onInlineButton(caption, button)} disabled={button.type === "unsupported"}>
@@ -445,7 +457,8 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
     messageShowSender: true,
     foldersEnabled: true,
     foldersShowArchived: false,
-    foldersAutoSelectFirst: true
+    foldersAutoSelectFirst: true,
+    playerMode: "hls"
   });
   const [apiIdPlaceholder, setApiIdPlaceholder] = useState("");
   const [hashPlaceholder, setHashPlaceholder] = useState("");
@@ -480,7 +493,8 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
         messageShowSender: nextSettings.messageShowSender !== false,
         foldersEnabled: nextSettings.foldersEnabled !== false,
         foldersShowArchived: Boolean(nextSettings.foldersShowArchived),
-        foldersAutoSelectFirst: nextSettings.foldersAutoSelectFirst !== false
+        foldersAutoSelectFirst: nextSettings.foldersAutoSelectFirst !== false,
+        playerMode: nextSettings.playerMode || "hls"
       });
       setApiIdPlaceholder(nextSettings.telegramApiIdSet ? "已保存，留空则不修改" : "请输入 Telegram API ID");
       setHashPlaceholder(nextSettings.telegramApiHashSet ? "已保存，留空则不修改" : "请输入 Telegram API Hash");
@@ -540,6 +554,7 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
           {canAdmin && <button className={cx(tab === "cache" && "active")} onClick={() => setTab("cache")}>缓存下载</button>}
           {canAdmin && <button className={cx(tab === "notifications" && "active")} onClick={() => setTab("notifications")}>通知</button>}
           {canAdmin && <button className={cx(tab === "privacy" && "active")} onClick={() => setTab("privacy")}>隐私</button>}
+          {canAdmin && <button className={cx(tab === "player" && "active")} onClick={() => setTab("player")}>播放器</button>}
           {canAdmin && <button className={cx(tab === "folders" && "active")} onClick={() => setTab("folders")}>分组</button>}
         </div>
         {error && <p className="error">{error}</p>}
@@ -610,6 +625,16 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
           {saved && <p className="success">{saved}</p>}
           <button className="primary"><Settings size={18} />保存隐私设置</button>
         </form>}
+        {canAdmin && tab === "player" && <form className="stack" onSubmit={saveSettings}>
+          <label><span>视频在线播放模式</span><select value={settings.playerMode} onChange={(e) => setSettings({ ...settings, playerMode: e.target.value })}>
+            <option value="hls">内置播放器（ffmpeg 转码 HLS，推荐）</option>
+            <option value="browser">浏览器原始播放器</option>
+            <option value="local">本地播放器（下载后打开）</option>
+          </select></label>
+          <p className="hint">内置模式会优先缓存并转码为 H.264/AAC HLS，兼容性最好；首次播放需要等待转码。</p>
+          {saved && <p className="success">{saved}</p>}
+          <button className="primary"><Settings size={18} />保存播放器设置</button>
+        </form>}
         {canAdmin && tab === "folders" && <form className="stack" onSubmit={saveSettings}>
           <label className="check-row"><input type="checkbox" checked={settings.foldersEnabled} onChange={(e) => setSettings({ ...settings, foldersEnabled: e.target.checked })} /><span>同步 Telegram 聊天文件夹</span></label>
           <label className="check-row"><input type="checkbox" checked={settings.foldersShowArchived} onChange={(e) => setSettings({ ...settings, foldersShowArchived: e.target.checked })} /><span>会话列表显示归档会话</span></label>
@@ -650,7 +675,7 @@ function InfoModal({ announcements, about, open, onClose }) {
   );
 }
 
-function DownloadCenter({ open, downloads, onStart, onCancel, onClear, onDelete, onClose }) {
+function DownloadCenter({ open, downloads, onStart, onCancel, onClear, onDelete, onPlay, onClose }) {
   const [menu, setMenu] = useState(null);
   useEffect(() => {
     if (!open) setMenu(null);
@@ -682,6 +707,17 @@ function DownloadCenter({ open, downloads, onStart, onCancel, onClear, onDelete,
               <article
                 className={cx("download-item", item.status)}
                 key={item.id}
+                role={item.status === "completed" && item.kind === "video" ? "button" : undefined}
+                tabIndex={item.status === "completed" && item.kind === "video" ? 0 : undefined}
+                onClick={() => {
+                  if (item.status === "completed" && item.kind === "video") onPlay?.(item);
+                }}
+                onKeyDown={(event) => {
+                  if ((event.key === "Enter" || event.key === " ") && item.status === "completed" && item.kind === "video") {
+                    event.preventDefault();
+                    onPlay?.(item);
+                  }
+                }}
                 onContextMenu={(event) => {
                   event.preventDefault();
                   setMenu({ task: item, x: event.clientX, y: event.clientY });
@@ -697,7 +733,7 @@ function DownloadCenter({ open, downloads, onStart, onCancel, onClear, onDelete,
                 </div>
                 <div className="download-progress"><i style={{ width: `${progress}%` }} /></div>
                 {item.error && <p className="download-error">{item.error}</p>}
-                <div className="download-actions">
+                <div className="download-actions" onClick={(event) => event.stopPropagation()}>
                   {item.status !== "downloading" && item.status !== "completed" && <button onClick={() => onStart(item)}><Play size={14} />开始</button>}
                   {item.status === "downloading" && <button onClick={() => onCancel(item)}><X size={14} />取消</button>}
                   <button onClick={() => onClear(item)}><X size={14} />清除列表</button>
@@ -719,7 +755,31 @@ function DownloadCenter({ open, downloads, onStart, onCancel, onClear, onDelete,
   );
 }
 
-function ChatInfoPanel({ open, accountId, chat, details, loading, onClose }) {
+function PlaybackModal({ item, playerMode, onClose }) {
+  const [modeLabel, setModeLabel] = useState("");
+  const [failed, setFailed] = useState(false);
+  if (!item) return null;
+  const src = mediaUrl(item.accountId, item.peerId, item.messageId, true);
+  const hlsSrc = hlsMediaUrl(item.accountId, item.peerId, item.messageId);
+  const download = mediaUrl(item.accountId, item.peerId, item.messageId);
+  return (
+    <div className="modal-backdrop playback-backdrop">
+      <div className="modal playback-modal">
+        <button className="close" onClick={onClose} title="关闭"><X size={18} /></button>
+        <h2>{item.fileName || "视频播放"}</h2>
+        <div className="playback-stage">
+          {playerMode === "local"
+            ? <a className="video-load-button local-player-link" href={download}>下载后用本地播放器打开</a>
+            : <FeigramVideo src={src} hlsSrc={hlsSrc} mode={playerMode} onMode={setModeLabel} onError={() => setFailed(true)} />}
+          {modeLabel && playerMode !== "local" ? <span className="video-mode-pill">{modeLabel}</span> : null}
+          {failed ? <div className="video-fallback">当前模式无法播放，请切换播放器模式或下载到本地播放。</div> : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ChatInfoPanel({ open, accountId, chat, details, loading, onClose, onOpenMedia }) {
   if (!open || !chat) return null;
   const info = details || chat;
   return (
@@ -747,10 +807,10 @@ function ChatInfoPanel({ open, accountId, chat, details, loading, onClose }) {
         <section className="chat-info-section">
           <h3>最近文件</h3>
           <div className="info-file-list">
-            {(info.files || []).map((file) => <div className="info-file-item" key={`${file.id}-${file.fileName}`}>
+            {(info.files || []).map((file) => <button className="info-file-item" type="button" key={`${file.id}-${file.fileName}`} onClick={() => onOpenMedia?.(file)}>
               <Folder size={17} />
               <span><strong>{file.fileName}</strong><small>{file.kind} · {formatBytes(file.size)} · {formatTime(file.date)}</small></span>
-            </div>)}
+            </button>)}
             {!info.files?.length && <div className="empty">暂无最近文件</div>}
           </div>
         </section>
@@ -775,7 +835,8 @@ function App() {
     messageShowSender: true,
     foldersEnabled: true,
     foldersShowArchived: false,
-    foldersAutoSelectFirst: true
+    foldersAutoSelectFirst: true,
+    playerMode: "hls"
   });
   const [activeFolder, setActiveFolder] = useState("all");
   const [activeChat, setActiveChat] = useState(null);
@@ -799,6 +860,7 @@ function App() {
   const [chatInfoOpen, setChatInfoOpen] = useState(false);
   const [chatDetails, setChatDetails] = useState(null);
   const [chatDetailsLoading, setChatDetailsLoading] = useState(false);
+  const [playback, setPlayback] = useState(null);
   const socket = useSocket(token);
   const messagesRef = useRef(null);
   const shouldScrollBottomRef = useRef(false);
@@ -974,6 +1036,27 @@ function App() {
       notify(err.message);
     } finally {
       setChatDetailsLoading(false);
+    }
+  }
+
+  function playDownload(item) {
+    if (!item || item.kind !== "video") return;
+    setPlayback(item);
+    setDownloadOpen(false);
+  }
+
+  function openInfoMedia(file) {
+    if (!activeChat || !file) return;
+    const item = {
+      ...file,
+      accountId,
+      peerId: activeChat.id,
+      messageId: file.id
+    };
+    if (file.kind === "video") {
+      setPlayback(item);
+    } else {
+      window.open(mediaUrl(accountId, activeChat.id, file.id, file.kind === "image"), "_blank", "noopener,noreferrer");
     }
   }
 
@@ -1182,7 +1265,8 @@ function App() {
       messageShowSender: settings.messageShowSender !== false,
       foldersEnabled: settings.foldersEnabled !== false,
       foldersShowArchived: Boolean(settings.foldersShowArchived),
-      foldersAutoSelectFirst: settings.foldersAutoSelectFirst !== false
+      foldersAutoSelectFirst: settings.foldersAutoSelectFirst !== false,
+      playerMode: settings.playerMode || "hls"
     });
   }
 
@@ -1272,6 +1356,7 @@ function App() {
               chatId={activeChat.id}
               showSender={appSettings.messageShowSender}
               showMedia={appSettings.privacyMediaPreview}
+              playerMode={appSettings.playerMode}
               onOpenLink={openTelegramLink}
               onInlineButton={clickInlineButton}
               onCacheMedia={cacheMedia}
@@ -1293,6 +1378,7 @@ function App() {
         chat={activeChat}
         details={chatDetails}
         loading={chatDetailsLoading}
+        onOpenMedia={openInfoMedia}
         onClose={() => setChatInfoOpen(false)}
       />
       <AdminPanel
@@ -1322,8 +1408,10 @@ function App() {
         onCancel={cancelDownload}
         onClear={clearDownload}
         onDelete={deleteDownload}
+        onPlay={playDownload}
         onClose={() => setDownloadOpen(false)}
       />
+      <PlaybackModal item={playback} playerMode={appSettings.playerMode} onClose={() => setPlayback(null)} />
     </main>
   );
 }

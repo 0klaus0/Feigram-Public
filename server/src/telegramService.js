@@ -16,7 +16,6 @@ const pendingLogins = new Map();
 const downloadTasks = new Map();
 const hlsTasks = new Map();
 const VIDEO_CACHE_THRESHOLD = 100 * 1024 * 1024;
-const DOWNLOAD_CHUNK_SIZE = 512 * 1024;
 const FFMPEG_BIN = process.env.FFMPEG_BIN || path.join(__dirname, "..", "..", "bin", "ffmpeg");
 
 async function cacheSettings() {
@@ -570,7 +569,6 @@ async function chatDetails(userId, accountId, peerId) {
       files: mediaMessages.filter((message) => message.media?.kind === "file").length
     },
     files: mediaMessages
-      .filter((message) => message.media?.kind !== "image")
       .slice(0, 24)
       .map((message) => ({
         id: message.id,
@@ -578,7 +576,9 @@ async function chatDetails(userId, accountId, peerId) {
         text: message.text,
         fileName: message.media?.fileName || message.media?.mimeType || "Telegram 媒体",
         kind: message.media?.kind || "file",
-        size: message.media?.size || ""
+        size: message.media?.size || "",
+        width: message.media?.width || 0,
+        height: message.media?.height || 0
       }))
   };
 }
@@ -762,47 +762,30 @@ async function runDownloadTask(task, io) {
       emitDownloadTask(io, task);
       return;
     }
-    const partStat = await fs.stat(task.partPath).catch(() => null);
-    let downloaded = partStat?.size || 0;
-    task.downloaded = downloaded;
     const total = task.size || Number(message.file?.size || message.document?.size || 0);
     task.size = total;
-    let lastBytes = downloaded;
+    let lastBytes = 0;
     let lastTick = Date.now();
-    const stream = fs.createWriteStream(task.partPath, { flags: "a" });
-    try {
-      for await (const chunk of client.iterDownload({
-        file: inputFileLocation(message),
-        offset: bigInt(downloaded),
-        chunkSize: DOWNLOAD_CHUNK_SIZE,
-        requestSize: DOWNLOAD_CHUNK_SIZE,
-        limit: total ? Math.ceil((total - downloaded) / DOWNLOAD_CHUNK_SIZE) : undefined,
-        fileSize: total ? bigInt(total) : undefined
-      })) {
-        if (cancelToken.cancelled) {
-          task.status = "cancelled";
-          task.speedBps = 0;
-          task.updatedAt = new Date().toISOString();
-          emitDownloadTask(io, task);
-          return;
-        }
-        await new Promise((resolve, reject) => {
-          stream.write(chunk, (error) => error ? reject(error) : resolve());
-        });
-        downloaded += chunk.length;
-        task.downloaded = downloaded;
-        const now = Date.now();
-        if (now - lastTick >= 800) {
-          task.speedBps = Math.round((downloaded - lastBytes) / ((now - lastTick) / 1000));
-          task.updatedAt = new Date().toISOString();
-          lastTick = now;
-          lastBytes = downloaded;
-          emitDownloadTask(io, task);
-        }
+    task.downloaded = 0;
+    await fs.remove(task.partPath).catch(() => {});
+    const progressCallback = async (downloadedValue, totalValue) => {
+      if (cancelToken.cancelled) {
+        throw Object.assign(new Error("下载已取消"), { status: 499 });
       }
-    } finally {
-      await new Promise((resolve) => stream.end(resolve));
-    }
+      const downloaded = Number(downloadedValue?.toString?.() || downloadedValue || 0);
+      const fullSize = Number(totalValue?.toString?.() || totalValue || total || 0);
+      task.downloaded = downloaded;
+      task.size = fullSize || task.size;
+      const now = Date.now();
+      if (now - lastTick >= 800 || downloaded >= fullSize) {
+        task.speedBps = Math.max(0, Math.round((downloaded - lastBytes) / Math.max(0.001, (now - lastTick) / 1000)));
+        task.updatedAt = new Date().toISOString();
+        lastTick = now;
+        lastBytes = downloaded;
+        emitDownloadTask(io, task);
+      }
+    };
+    await client.downloadMedia(message, { outputFile: task.partPath, progressCallback });
     if (cancelToken.cancelled) return;
     await fs.move(task.partPath, task.filePath, { overwrite: true });
     const stat = await fs.stat(task.filePath);
@@ -813,8 +796,8 @@ async function runDownloadTask(task, io) {
     task.updatedAt = new Date().toISOString();
     emitDownloadTask(io, task);
   } catch (error) {
-    task.status = "error";
-    task.error = error.message || "下载失败";
+    task.status = error.status === 499 ? "cancelled" : "error";
+    task.error = error.status === 499 ? "" : error.message || "下载失败";
     task.speedBps = 0;
     task.updatedAt = new Date().toISOString();
     emitDownloadTask(io, task);
@@ -896,6 +879,9 @@ async function prepareHlsMedia(userId, accountId, peerId, messageId, io) {
   if (task.kind !== "video") throw Object.assign(new Error("这条消息不是视频"), { status: 400 });
   const { hlsDir, playlistPath } = await hlsInfoForTask(task);
   if (await fs.pathExists(playlistPath)) return { hlsDir, playlistPath };
+  if (task.status === "error") {
+    throw Object.assign(new Error(task.error || "视频缓存失败，请在下载列表中手动重试"), { status: 500 });
+  }
   const running = hlsTasks.get(task.id);
   if (running) {
     await running;
@@ -1020,6 +1006,7 @@ async function streamVideoMedia(userId, accountId, peerId, messageId, rangeHeade
     const stat = await fs.stat(filePath);
     return streamLocalFile(filePath, fileName, contentType || mime.lookup(filePath) || "video/mp4", stat.size, rangeHeader, res, "private, max-age=86400");
   }
+  return false;
   let start = 0;
   let end = size - 1;
   let statusCode = 200;

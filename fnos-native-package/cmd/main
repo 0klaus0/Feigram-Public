@@ -16,8 +16,8 @@ export TELEGRAM_API_HASH="${wizard_telegram_api_hash}"
 export DATA_DIR="${DATA_HOME}/data"
 export DOWNLOAD_DIR="${DATA_HOME}/data/downloads"
 export FFMPEG_BIN="${APP_HOME}/bin/ffmpeg"
-export APP_VERSION="1.5.6"
-export APP_CHANGELOG="修复视频缓存下载失败，拆分清除列表和删除缓存，新增群组信息侧栏，并内置 ffmpeg 支持 HLS 转码播放。"
+export APP_VERSION="1.5.7"
+export APP_CHANGELOG="优化视频在线播放和缓存下载策略，新增播放器模式设置，修复失败任务反复生成，下载完成可直接播放。"
 export NODE_ENV="production"
 
 is_running() {

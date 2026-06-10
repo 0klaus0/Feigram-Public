@@ -752,6 +752,27 @@ textarea {
   background: rgba(29, 128, 112, 0.88);
 }
 
+.video-mode-pill {
+  background: rgba(16, 24, 22, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  bottom: 8px;
+  color: #fff;
+  font-size: 0.76rem;
+  left: 8px;
+  padding: 5px 8px;
+  position: absolute;
+  z-index: 3;
+}
+
+.local-player-link {
+  align-items: center;
+  color: #dce7e3;
+  display: flex;
+  justify-content: center;
+  text-decoration: none;
+}
+
 .video-preview.landscape video {
   aspect-ratio: 16 / 9;
 }
@@ -894,6 +915,14 @@ textarea {
 
 .download-item.completed {
   background: color-mix(in srgb, var(--accent) 10%, var(--soft));
+}
+
+.download-item.completed[role="button"] {
+  cursor: pointer;
+}
+
+.download-item.completed[role="button"]:hover {
+  border-color: var(--accent);
 }
 
 .download-item-head,
@@ -1047,11 +1076,19 @@ textarea {
 .info-file-item {
   align-items: center;
   background: var(--soft);
+  border: 0;
   border-radius: 8px;
+  color: inherit;
   display: grid;
   gap: 8px;
   grid-template-columns: 24px minmax(0, 1fr);
   padding: 9px;
+  text-align: left;
+  width: 100%;
+}
+
+.info-file-item:hover {
+  background: color-mix(in srgb, var(--accent) 12%, var(--soft));
 }
 
 .info-file-item span {
@@ -1083,6 +1120,7 @@ textarea {
 }
 
 .modal {
+  max-height: min(760px, calc(100dvh - 36px));
   padding: 24px;
   position: relative;
 }
@@ -1092,13 +1130,64 @@ textarea {
 }
 
 .announcement-modal {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  max-height: min(760px, calc(100dvh - 36px));
   width: min(560px, 100%);
 }
 
 .admin-modal {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
   width: min(760px, 100%);
-  max-height: min(780px, calc(100vh - 36px));
+  height: min(760px, calc(100dvh - 36px));
+  max-height: min(760px, calc(100dvh - 36px));
   overflow: auto;
+}
+
+.announcement-list {
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.admin-modal > form,
+.admin-modal > .account-admin,
+.admin-modal > .user-list,
+.admin-modal > .stack {
+  min-height: 0;
+  overflow: auto;
+}
+
+.hint {
+  color: var(--muted);
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+
+.playback-backdrop {
+  z-index: 90;
+}
+
+.playback-modal {
+  display: grid;
+  gap: 14px;
+  width: min(860px, calc(100vw - 36px));
+}
+
+.playback-stage {
+  aspect-ratio: 16 / 9;
+  background: #000;
+  border-radius: 8px;
+  overflow: hidden;
+  position: relative;
+  width: 100%;
+}
+
+.playback-stage video,
+.playback-stage .video-load-button,
+.playback-stage .video-fallback {
+  height: 100%;
+  width: 100%;
 }
 
 .tabs {
