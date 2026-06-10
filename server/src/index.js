@@ -1,0 +1,270 @@
+require("dotenv").config();
+
+const path = require("path");
+const fs = require("fs");
+const express = require("express");
+const cors = require("cors");
+const { createServer } = require("http");
+const { Server } = require("socket.io");
+const {
+  adminOnly,
+  authMiddleware,
+  bootstrap,
+  bootstrapStatus,
+  login,
+  publicUser,
+  verifyUserToken
+} = require("./auth");
+const { ensureStore, findUserByUsername, readUsers, safeId, upsertUser } = require("./store");
+const { hashPassword } = require("./cryptoBox");
+const { publicSettings, readSettings, writeSettings } = require("./settings");
+const { readPolicies } = require("./policies");
+const { readAbout, readAnnouncements } = require("./releaseContent");
+const { rateLimit } = require("./rateLimit");
+const tg = require("./telegramService");
+
+const port = Number(process.env.APP_PORT || 3088);
+const app = express();
+const server = createServer(app);
+const io = new Server(server, {
+  cors: { origin: true, credentials: true }
+});
+
+app.use(cors({ origin: true, credentials: true }));
+app.use(express.json({ limit: "1mb" }));
+
+function asyncRoute(handler) {
+  return async (req, res, next) => {
+    try {
+      await handler(req, res, next);
+    } catch (error) {
+      next(error);
+    }
+  };
+}
+
+app.get("/api/health", (_req, res) => res.json({ ok: true }));
+app.get("/api/bootstrap/status", asyncRoute(bootstrapStatus));
+app.post("/api/bootstrap", rateLimit({ windowMs: 60000, max: 5 }), asyncRoute(bootstrap));
+app.post("/api/login", rateLimit({ windowMs: 60000, max: 12 }), asyncRoute(login));
+app.get("/api/policies", asyncRoute(async (_req, res) => res.json(await readPolicies())));
+app.get("/api/about", asyncRoute(async (_req, res) => res.json(readAbout())));
+
+app.use("/api", authMiddleware());
+
+app.get("/api/me", asyncRoute(async (req, res) => {
+  res.json(publicUser(req.user));
+}));
+
+app.get("/api/settings", asyncRoute(async (_req, res) => {
+  res.json(publicSettings(await readSettings()));
+}));
+
+app.put("/api/settings", adminOnly, asyncRoute(async (req, res) => {
+  const next = await writeSettings(req.body || {});
+  await tg.reconnectAll(io);
+  res.json({ settings: publicSettings(next) });
+}));
+
+app.get("/api/admin/users", adminOnly, asyncRoute(async (_req, res) => {
+  res.json((await readUsers()).map(publicUser));
+}));
+
+app.post("/api/admin/users", adminOnly, asyncRoute(async (req, res) => {
+  const { username, password, displayName, role } = req.body || {};
+  if (!username || !password || String(password).length < 8) {
+    res.status(400).json({ error: "请输入飞牛账户和至少 8 位密码" });
+    return;
+  }
+  if (await findUserByUsername(username)) {
+    res.status(409).json({ error: "飞牛账户已存在" });
+    return;
+  }
+  const user = await upsertUser({
+    id: safeId("user"),
+    username: String(username).trim(),
+    displayName: displayName || username,
+    role: role === "admin" ? "admin" : "user",
+    disabled: false,
+    passwordHash: hashPassword(password),
+    createdAt: new Date().toISOString()
+  });
+  res.json(publicUser(user));
+}));
+
+app.put("/api/admin/users/:id", adminOnly, asyncRoute(async (req, res) => {
+  const users = await readUsers();
+  const user = users.find((item) => item.id === req.params.id);
+  if (!user) {
+    res.status(404).json({ error: "飞牛账户不存在" });
+    return;
+  }
+  const next = {
+    ...user,
+    displayName: req.body.displayName ?? user.displayName,
+    role: req.body.role === "admin" ? "admin" : "user",
+    disabled: req.body.disabled === undefined ? user.disabled : Boolean(req.body.disabled)
+  };
+  if (req.body.password) next.passwordHash = hashPassword(req.body.password);
+  await upsertUser(next);
+  res.json(publicUser(next));
+}));
+
+app.get("/api/announcements", asyncRoute(async (_req, res) => res.json(await readAnnouncements())));
+
+app.get("/api/accounts", asyncRoute(async (req, res) => {
+  res.json(await tg.listAccounts(req.user.id));
+}));
+
+app.delete("/api/accounts/:id", asyncRoute(async (req, res) => {
+  await tg.logout(req.user.id, req.params.id);
+  res.json({ ok: true });
+}));
+
+app.get("/api/chats", asyncRoute(async (req, res) => {
+  res.json(await tg.listChats(req.user.id, req.query.account, req.query.query || ""));
+}));
+
+app.get("/api/folders", asyncRoute(async (req, res) => {
+  res.json(await tg.listFolders(req.user.id, req.query.account));
+}));
+
+app.get("/api/messages", asyncRoute(async (req, res) => {
+  res.json(await tg.listMessages(req.user.id, req.query.account, req.query.peer, req.query.limit, req.query.before));
+}));
+
+app.post("/api/messages", asyncRoute(async (req, res) => {
+  const { account, peer, text } = req.body || {};
+  if (!text || !text.trim()) {
+    res.status(400).json({ error: "消息不能为空" });
+    return;
+  }
+  res.json(await tg.sendText(req.user.id, account, peer, text.trim()));
+}));
+
+app.post("/api/messages/callback", asyncRoute(async (req, res) => {
+  const { account, peer, messageId, data } = req.body || {};
+  res.json(await tg.clickMessageButton(req.user.id, account, peer, messageId, data));
+}));
+
+app.post("/api/resolve-link", asyncRoute(async (req, res) => {
+  const { account, url } = req.body || {};
+  res.json(await tg.resolveTelegramLink(req.user.id, account, url));
+}));
+
+app.get("/api/search", asyncRoute(async (req, res) => {
+  res.json(await tg.search(req.user.id, req.query.account, req.query.query || ""));
+}));
+
+app.get("/api/avatar/:account/:peer?", asyncRoute(async (req, res) => {
+  const avatar = await tg.profilePhoto(req.user.id, req.params.account, req.params.peer || "__self");
+  res.setHeader("Content-Type", avatar.contentType);
+  res.setHeader("Cache-Control", "private, max-age=86400");
+  res.sendFile(avatar.filePath);
+}));
+
+app.get("/api/media/:account/:peer/:messageId", asyncRoute(async (req, res) => {
+  const media = await tg.downloadMedia(req.user.id, req.params.account, req.params.peer, req.params.messageId);
+  const range = req.headers.range;
+  if (media.buffer) {
+    res.setHeader("Content-Type", media.contentType);
+    res.setHeader("Content-Length", media.size);
+    res.setHeader("Cache-Control", media.cacheable ? "private, max-age=86400" : "no-store");
+    res.setHeader("Content-Disposition", `${req.query.inline === "1" ? "inline" : "attachment"}; filename="${encodeURIComponent(media.fileName)}"`);
+    res.send(media.buffer);
+    return;
+  }
+  if (req.query.inline === "1") {
+    if (range) {
+      const [startText, endText] = range.replace(/bytes=/, "").split("-");
+      const start = Number(startText);
+      const end = Math.min(endText ? Number(endText) : media.size - 1, media.size - 1);
+      if (Number.isFinite(start) && Number.isFinite(end) && start <= end) {
+        res.writeHead(206, {
+          "Content-Range": `bytes ${start}-${end}/${media.size}`,
+          "Accept-Ranges": "bytes",
+          "Content-Length": end - start + 1,
+          "Content-Type": media.contentType,
+          "Cache-Control": "private, max-age=86400"
+        });
+        fs.createReadStream(media.filePath, { start, end }).pipe(res);
+        return;
+      }
+    }
+    res.setHeader("Content-Type", media.contentType);
+    res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(media.fileName)}"`);
+    res.setHeader("Accept-Ranges", "bytes");
+    res.setHeader("Content-Length", media.size);
+    res.setHeader("Cache-Control", "private, max-age=86400");
+    res.sendFile(media.filePath);
+    return;
+  }
+  res.download(media.filePath, media.fileName);
+}));
+
+app.use(express.static(path.join(__dirname, "..", "public")));
+app.get("*", (_req, res) => {
+  res.sendFile(path.join(__dirname, "..", "public", "index.html"));
+});
+
+io.use(async (socket, next) => {
+  const token = socket.handshake.auth?.token || "";
+  const user = await verifyUserToken(token);
+  if (user) {
+    socket.user = user;
+    next();
+    return;
+  }
+  next(new Error("未授权"));
+});
+
+io.on("connection", (socket) => {
+  socket.on("account:join", (accountId) => {
+    if (accountId) socket.join(`account:${accountId}`);
+  });
+
+  socket.on("login:start", async (payload, reply) => {
+    try {
+      reply({ ok: true, data: await tg.startLogin(socket.user.id, payload || {}) });
+    } catch (error) {
+      reply({ ok: false, error: error.message });
+    }
+  });
+
+  socket.on("login:code", async (payload, reply) => {
+    try {
+      reply({ ok: true, data: await tg.completeCode(payload || {}, io) });
+    } catch (error) {
+      reply({ ok: false, error: error.message });
+    }
+  });
+
+  socket.on("login:password", async (payload, reply) => {
+    try {
+      reply({ ok: true, data: await tg.completePassword(payload || {}, io) });
+    } catch (error) {
+      reply({ ok: false, error: error.message });
+    }
+  });
+});
+
+app.use((error, _req, res, _next) => {
+  console.error(error);
+  res.status(error.status || 500).json({ error: error.message || "服务器错误" });
+});
+
+ensureStore()
+  .then(() => tg.loadSavedClients(io))
+  .then(() => tg.cleanupCache().catch((error) => console.warn("Cache cleanup failed:", error.message)))
+  .then(() => {
+    setInterval(() => {
+      tg.cleanupCache().catch((error) => console.warn("Cache cleanup failed:", error.message));
+    }, 24 * 60 * 60 * 1000).unref?.();
+    server.listen(port, "0.0.0.0", () => {
+      console.log(`Feigram Public is listening on http://0.0.0.0:${port}`);
+    });
+  })
+  .catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });

@@ -1,0 +1,31 @@
+name: Build Feigram Public FPK
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install client dependencies
+        run: npm --prefix client ci
+
+      - name: Build FPK
+        run: scripts/build-native-fpk.sh
+
+      - name: Upload FPK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: feigrampub-fpk
+          path: release/*.fpk

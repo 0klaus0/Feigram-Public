@@ -1,0 +1,15 @@
+{
+  "name": "feigrame-client",
+  "private": true,
+  "version": "0.1.0",
+  "description": "A Docker-friendly Telegram web client for fnOS.",
+  "scripts": {
+    "dev": "concurrently \"npm --prefix server run dev\" \"npm --prefix client run dev\"",
+    "install:all": "npm --prefix server install && npm --prefix client install",
+    "build": "npm --prefix client run build && rm -rf server/public && cp -R client/dist server/public",
+    "start": "npm --prefix server start"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}

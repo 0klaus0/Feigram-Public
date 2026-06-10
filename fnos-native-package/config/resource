@@ -1,0 +1,14 @@
+{
+  "data-share": {
+    "shares": [
+      {
+        "name": "feigrampub",
+        "permission": {
+          "rw": [
+            "feigrampub"
+          ]
+        }
+      }
+    ]
+  }
+}

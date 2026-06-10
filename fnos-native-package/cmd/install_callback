@@ -1,0 +1,3 @@
+#!/bin/bash
+mkdir -p "/${TRIM_APPDEST_VOL}/@appshare/feigrampub"
+exit 0

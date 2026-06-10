@@ -1,0 +1,5 @@
+#!/bin/bash
+if [ "$wizard_data_action" = "delete" ]; then
+    rm -rf "/${TRIM_APPDEST_VOL}/@appshare/feigrampub"
+fi
+exit 0

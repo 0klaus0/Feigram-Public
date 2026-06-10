@@ -1,0 +1,610 @@
+const path = require("path");
+const fs = require("fs-extra");
+const mime = require("mime-types");
+const { Api, TelegramClient } = require("telegram");
+const { StringSession } = require("telegram/sessions");
+const { NewMessage } = require("telegram/events");
+const { readAccounts, removeAccount, safeId, upsertAccount } = require("./store");
+const { readSettings } = require("./settings");
+const { decryptText, encryptText } = require("./cryptoBox");
+
+const clients = new Map();
+const peerCache = new Map();
+const pendingLogins = new Map();
+const VIDEO_CACHE_THRESHOLD = 100 * 1024 * 1024;
+
+async function cacheSettings() {
+  const settings = await readSettings();
+  const base = settings.cacheBaseDir || process.env.DOWNLOAD_DIR || path.join(process.env.DATA_DIR || "/data", "downloads");
+  return {
+    base,
+    image: settings.imageCacheDir || path.join(base, "images"),
+    video: settings.videoCacheDir || path.join(base, "videos"),
+    file: settings.fileCacheDir || path.join(base, "files"),
+    avatars: path.join(base, "avatars"),
+    retentionDays: Math.max(1, Number(settings.cacheRetentionDays || 30))
+  };
+}
+
+function safeName(value) {
+  return String(value || "telegram-file").replace(/[\\/:*?"<>|]/g, "_").slice(0, 180);
+}
+
+function videoDimensions(message) {
+  const attr = message.document?.attributes?.find?.((item) => (
+    item.className === "DocumentAttributeVideo" || item.constructor?.name === "DocumentAttributeVideo"
+  ));
+  return {
+    width: Number(attr?.w || 0),
+    height: Number(attr?.h || 0),
+    duration: Number(attr?.duration || 0)
+  };
+}
+
+function withTimeout(promise, ms, message) {
+  let timer;
+  return Promise.race([
+    promise.finally(() => clearTimeout(timer)),
+    new Promise((_resolve, reject) => {
+      timer = setTimeout(() => reject(Object.assign(new Error(message), { status: 504 })), ms);
+    })
+  ]);
+}
+
+async function telegramConfig() {
+  const settings = await readSettings();
+  const apiId = Number(settings.telegramApiId || 0);
+  const apiHash = settings.telegramApiHash || "";
+  if (!apiId || !apiHash || apiHash.includes("put-your")) {
+    const err = new Error("Telegram API 配置不可用，请在管理员后台覆盖 API 设置");
+    err.status = 500;
+    throw err;
+  }
+  return { apiId, apiHash };
+}
+
+function toText(value) {
+  if (value === undefined || value === null) return "";
+  return typeof value === "bigint" ? value.toString() : String(value);
+}
+
+function peerKey(entity) {
+  const klass = entity.className || entity.constructor?.name || "Peer";
+  return `${klass}:${toText(entity.id)}`;
+}
+
+function peerIdFromPeer(peer) {
+  if (!peer) return "";
+  const klass = peer.className || peer.constructor?.name || "";
+  const id = peer.userId || peer.chatId || peer.channelId || peer.id;
+  if (!id) return "";
+  if (klass.includes("User")) return `User:${toText(id)}`;
+  if (klass.includes("Channel")) return `Channel:${toText(id)}`;
+  if (klass.includes("Chat")) return `Chat:${toText(id)}`;
+  return "";
+}
+
+function serializeEntity(entity) {
+  const title = entity.title || [entity.firstName, entity.lastName].filter(Boolean).join(" ") || entity.username || "Unknown";
+  return {
+    id: peerKey(entity),
+    rawId: toText(entity.id),
+    title,
+    username: entity.username || "",
+    type: entity.broadcast ? "channel" : entity.megagroup || entity.gigagroup ? "group" : entity.className === "User" ? "private" : "chat"
+  };
+}
+
+async function filterPeerToChat(client, peer) {
+  const entity = await client.getEntity(peer).catch(() => null);
+  if (!entity) return null;
+  return serializeEntity(entity);
+}
+
+async function serializeDialogFilter(client, filter) {
+  const id = Number(filter.id || 0);
+  const title = filter.title?.text || filter.title || "";
+  if (!id || !title) return null;
+  const includePeers = await Promise.all((filter.includePeers || []).map((peer) => filterPeerToChat(client, peer)));
+  const pinnedPeers = await Promise.all((filter.pinnedPeers || []).map((peer) => filterPeerToChat(client, peer)));
+  const excludePeers = await Promise.all((filter.excludePeers || []).map((peer) => filterPeerToChat(client, peer)));
+  return {
+    id,
+    title: String(title),
+    emoticon: filter.emoticon || "",
+    includePeerIds: includePeers.filter(Boolean).map((chat) => chat.id),
+    pinnedPeerIds: pinnedPeers.filter(Boolean).map((chat) => chat.id),
+    excludePeerIds: excludePeers.filter(Boolean).map((chat) => chat.id),
+    flags: {
+      contacts: Boolean(filter.contacts),
+      nonContacts: Boolean(filter.nonContacts),
+      groups: Boolean(filter.groups),
+      broadcasts: Boolean(filter.broadcasts),
+      bots: Boolean(filter.bots),
+      excludeMuted: Boolean(filter.excludeMuted),
+      excludeRead: Boolean(filter.excludeRead),
+      excludeArchived: Boolean(filter.excludeArchived)
+    }
+  };
+}
+
+function serializeDialogFilterShallow(filter) {
+  const id = Number(filter.id || 0);
+  const title = filter.title?.text || filter.title || "";
+  if (!id || !title) return null;
+  const includePeerIds = (filter.includePeers || []).map(peerIdFromPeer).filter(Boolean);
+  const pinnedPeerIds = (filter.pinnedPeers || []).map(peerIdFromPeer).filter(Boolean);
+  const excludePeerIds = (filter.excludePeers || []).map(peerIdFromPeer).filter(Boolean);
+  return {
+    id,
+    title: String(title),
+    emoticon: filter.emoticon || "",
+    includePeerIds,
+    pinnedPeerIds,
+    excludePeerIds,
+    flags: {
+      contacts: Boolean(filter.contacts),
+      nonContacts: Boolean(filter.nonContacts),
+      groups: Boolean(filter.groups),
+      broadcasts: Boolean(filter.broadcasts),
+      bots: Boolean(filter.bots),
+      excludeMuted: Boolean(filter.excludeMuted),
+      excludeRead: Boolean(filter.excludeRead),
+      excludeArchived: Boolean(filter.excludeArchived)
+    }
+  };
+}
+
+function messageText(message) {
+  return message.message || "";
+}
+
+function mediaKind(message, mimeType = "") {
+  if (message.photo) return "image";
+  if (mimeType.startsWith("image/")) return "image";
+  if (mimeType.startsWith("video/") || message.video) return "video";
+  return "file";
+}
+
+function serializeMessageEntities(message) {
+  const text = messageText(message);
+  return (message.entities || []).map((entity) => {
+    const type = entity.className || entity.constructor?.name || "";
+    const offset = Number(entity.offset || 0);
+    const length = Number(entity.length || 0);
+    const value = text.slice(offset, offset + length);
+    let url = "";
+    if (entity.url) url = entity.url;
+    else if (type === "MessageEntityUrl") url = value;
+    else if (type === "MessageEntityMention" && value.startsWith("@")) url = `https://t.me/${value.slice(1)}`;
+    else if (type === "MessageEntityMentionName" && entity.userId) url = `tg://user?id=${toText(entity.userId)}`;
+    if (!url) return null;
+    if (url.startsWith("t.me/")) url = `https://${url}`;
+    return { offset, length, url, type };
+  }).filter(Boolean);
+}
+
+function linkDomain(url) {
+  const value = String(url || "").trim();
+  if (!value) return "";
+  if (value.startsWith("@")) return value.slice(1);
+  if (value.startsWith("tg://resolve")) return new URL(value).searchParams.get("domain") || "";
+  const normalized = value.startsWith("t.me/") ? `https://${value}` : value;
+  try {
+    const parsed = new URL(normalized);
+    if (!["t.me", "telegram.me", "www.t.me", "www.telegram.me"].includes(parsed.hostname)) return "";
+    const [domain] = parsed.pathname.split("/").filter(Boolean);
+    if (!domain || domain === "c" || domain === "joinchat" || domain.startsWith("+")) return "";
+    return domain;
+  } catch {
+    return "";
+  }
+}
+
+function serializeMessage(message) {
+  const mimeType = message.document?.mimeType || "";
+  const kind = mediaKind(message, mimeType);
+  const media = message.media ? {
+    className: message.media.className || message.media.constructor?.name || "Media",
+    hasPreview: Boolean(message.photo || message.document),
+    mimeType: kind === "image" && !mimeType ? "image/jpeg" : mimeType,
+    kind,
+    ...videoDimensions(message),
+    fileName: message.file?.name || message.document?.attributes?.find?.((a) => a.fileName)?.fileName || "",
+    size: toText(message.file?.size || message.document?.size || "")
+  } : null;
+
+  const buttons = message.replyMarkup?.rows?.map((row) => (
+    row.buttons.map((button) => ({
+      text: button.text || "",
+      url: button.url || "",
+      data: button.data ? Buffer.from(button.data).toString("base64") : "",
+      type: button.url ? "url" : button.data ? "callback" : "unsupported"
+    }))
+  )).filter((row) => row.length) || [];
+
+  return {
+    id: message.id,
+    date: message.date ? new Date(message.date * 1000).toISOString() : "",
+    text: messageText(message),
+    entities: serializeMessageEntities(message),
+    outgoing: Boolean(message.out),
+    senderId: toText(message.senderId),
+    groupedId: toText(message.groupedId),
+    buttons,
+    media
+  };
+}
+
+async function createClient(sessionString = "") {
+  const { apiId, apiHash } = await telegramConfig();
+  const client = new TelegramClient(new StringSession(sessionString), apiId, apiHash, {
+    connectionRetries: 3
+  });
+  await withTimeout(client.connect(), 20000, "连接 Telegram 超时，请检查网络");
+  return client;
+}
+
+async function loadSavedClients(io) {
+  const accounts = await readAccounts();
+  for (const account of accounts) {
+    try {
+      const client = await createClient(await decryptText(account.session));
+      if (await client.checkAuthorization()) {
+        clients.set(account.id, client);
+        registerUpdates(io, account.id, client);
+      }
+    } catch (error) {
+      console.warn(`Failed to connect account ${account.label}:`, error.message);
+    }
+  }
+}
+
+function registerUpdates(io, accountId, client) {
+  if (client.__feigrameUpdatesRegistered) return;
+  client.__feigrameUpdatesRegistered = true;
+  client.addEventHandler((event) => {
+    const message = event.message;
+    if (!message) return;
+    io.to(`account:${accountId}`).emit("message:new", {
+      accountId,
+      message: serializeMessage(message),
+      peerId: message.chatId ? toText(message.chatId) : ""
+    });
+  }, new NewMessage({}));
+}
+
+async function listAccounts(userId) {
+  const accounts = await readAccounts();
+  return accounts.filter((account) => account.userId === userId).map(({ session, ...safe }) => ({
+    ...safe,
+    connected: clients.has(safe.id)
+  }));
+}
+
+async function getClient(userId, accountId) {
+  const existing = clients.get(accountId);
+  if (existing) return existing;
+  const account = (await readAccounts()).find((item) => item.id === accountId && item.userId === userId);
+  if (!account) throw Object.assign(new Error("账号不存在"), { status: 404 });
+  const client = await createClient(await decryptText(account.session));
+  if (!(await client.checkAuthorization())) throw Object.assign(new Error("账号登录已失效"), { status: 401 });
+  clients.set(accountId, client);
+  return client;
+}
+
+async function startLogin(userId, { label, phoneNumber }) {
+  const { apiId, apiHash } = await telegramConfig();
+  const client = await createClient("");
+  const sent = await withTimeout(
+    client.sendCode({ apiId, apiHash }, phoneNumber),
+    20000,
+    "发送验证码超时，请检查 Telegram API 配置和网络"
+  );
+  const loginId = safeId("login");
+  pendingLogins.set(loginId, {
+    client,
+    userId,
+    label: label || phoneNumber,
+    phoneNumber,
+    phoneCodeHash: sent.phoneCodeHash
+  });
+  return { loginId, isCodeViaApp: sent.isCodeViaApp };
+}
+
+async function completeCode({ loginId, code }, io) {
+  const pending = pendingLogins.get(loginId);
+  if (!pending) throw Object.assign(new Error("登录流程已过期，请重新发送验证码"), { status: 400 });
+  try {
+    await pending.client.invoke(new Api.auth.SignIn({
+      phoneNumber: pending.phoneNumber,
+      phoneCodeHash: pending.phoneCodeHash,
+      phoneCode: code
+    }));
+  } catch (error) {
+    if (error.message && error.message.includes("SESSION_PASSWORD_NEEDED")) {
+      return { passwordRequired: true };
+    }
+    throw error;
+  }
+  return saveLoggedInClient(loginId, io);
+}
+
+async function completePassword({ loginId, password }, io) {
+  const pending = pendingLogins.get(loginId);
+  if (!pending) throw Object.assign(new Error("登录流程已过期，请重新开始"), { status: 400 });
+  const { apiId, apiHash } = await telegramConfig();
+  await pending.client.signInWithPassword({ apiId, apiHash }, {
+    password: async () => password,
+    onError: (error) => {
+      throw error;
+    }
+  });
+  return saveLoggedInClient(loginId, io);
+}
+
+async function saveLoggedInClient(loginId, io) {
+  const pending = pendingLogins.get(loginId);
+  const me = await pending.client.getMe();
+  const id = safeId("account");
+  const account = {
+    id,
+    userId: pending.userId,
+    label: pending.label,
+    phoneNumber: pending.phoneNumber,
+    displayName: [me.firstName, me.lastName].filter(Boolean).join(" ") || me.username || pending.label,
+    username: me.username || "",
+    rawUserId: toText(me.id),
+    session: await encryptText(pending.client.session.save()),
+    createdAt: new Date().toISOString()
+  };
+  await upsertAccount(account);
+  clients.set(id, pending.client);
+  registerUpdates(io, id, pending.client);
+  pendingLogins.delete(loginId);
+  return { account: { ...account, session: undefined, connected: true } };
+}
+
+async function logout(userId, accountId) {
+  const client = clients.get(accountId);
+  if (client) {
+    try {
+      await client.disconnect();
+    } catch {}
+  }
+  clients.delete(accountId);
+  peerCache.delete(accountId);
+  const account = (await readAccounts()).find((item) => item.id === accountId);
+  if (!account || account.userId !== userId) throw Object.assign(new Error("账号不存在"), { status: 404 });
+  await removeAccount(accountId);
+}
+
+async function listChats(userId, accountId, query = "") {
+  const client = await getClient(userId, accountId);
+  const dialogs = await client.getDialogs({ limit: 200 });
+  const accountPeers = new Map();
+  const normalizedQuery = query.trim().toLowerCase();
+  const items = dialogs
+    .map((dialog) => {
+      const entity = dialog.entity;
+      const chat = serializeEntity(entity);
+      accountPeers.set(chat.id, entity);
+      return {
+        ...chat,
+        avatarKey: chat.id,
+        folderId: Number(dialog.folderId || 0),
+        folderIds: Number(dialog.folderId || 0) ? [Number(dialog.folderId)] : [],
+        unreadCount: dialog.unreadCount || 0,
+        pinned: Boolean(dialog.pinned),
+        archived: Boolean(dialog.archived),
+        lastMessage: dialog.message ? serializeMessage(dialog.message) : null
+      };
+    })
+    .filter((chat) => !normalizedQuery || chat.title.toLowerCase().includes(normalizedQuery) || chat.username.toLowerCase().includes(normalizedQuery));
+  peerCache.set(accountId, accountPeers);
+  return items;
+}
+
+async function listFolders(userId, accountId) {
+  const client = await getClient(userId, accountId);
+  const filters = await client.invoke(new Api.messages.GetDialogFilters()).catch(() => []);
+  const shallow = (filters || []).map(serializeDialogFilterShallow).filter(Boolean);
+  if (shallow.length) {
+    Promise.all((filters || []).map((filter) => serializeDialogFilter(client, filter))).catch(() => []);
+    return shallow;
+  }
+  const dialogs = await client.getDialogs({ limit: 200 }).catch(() => []);
+  const folderIds = [...new Set(dialogs.map((dialog) => Number(dialog.folderId || 0)).filter(Boolean))];
+  return folderIds.map((id) => ({
+    id,
+    title: id === 1 ? "归档" : `文件夹 ${id}`,
+    emoticon: "",
+    includePeerIds: [],
+    pinnedPeerIds: [],
+    excludePeerIds: [],
+    flags: {}
+  }));
+}
+
+async function resolvePeer(userId, accountId, peerId) {
+  if (!peerCache.has(accountId)) await listChats(userId, accountId);
+  const entity = peerCache.get(accountId)?.get(peerId);
+  if (!entity) throw Object.assign(new Error("找不到会话，请刷新会话列表"), { status: 404 });
+  return entity;
+}
+
+async function listMessages(userId, accountId, peerId, limit = 50, before = 0) {
+  const client = await getClient(userId, accountId);
+  const entity = await resolvePeer(userId, accountId, peerId);
+  const request = { limit: Number(limit) || 50 };
+  if (Number(before) > 0) request.offsetId = Number(before);
+  const messages = await client.getMessages(entity, request);
+  return messages.map(serializeMessage).reverse();
+}
+
+async function sendText(userId, accountId, peerId, text) {
+  const client = await getClient(userId, accountId);
+  const entity = await resolvePeer(userId, accountId, peerId);
+  const message = await client.sendMessage(entity, { message: text });
+  return serializeMessage(message);
+}
+
+async function clickMessageButton(userId, accountId, peerId, messageId, data) {
+  if (!data) throw Object.assign(new Error("这个按钮暂不支持点击"), { status: 400 });
+  const client = await getClient(userId, accountId);
+  const entity = await resolvePeer(userId, accountId, peerId);
+  let answer;
+  try {
+    answer = await withTimeout(client.invoke(new Api.messages.GetBotCallbackAnswer({
+      peer: entity,
+      msgId: Number(messageId),
+      data: Buffer.from(data, "base64")
+    })), 15000, "机器人响应超时，请稍后再试");
+  } catch (error) {
+    if (String(error.message || "").includes("TIMEOUT")) {
+      throw Object.assign(new Error("机器人响应超时，请稍后再试"), { status: 504 });
+    }
+    throw error;
+  }
+  return {
+    message: answer.message || "",
+    url: answer.url || "",
+    alert: Boolean(answer.alert)
+  };
+}
+
+async function resolveTelegramLink(userId, accountId, url) {
+  const domain = linkDomain(url);
+  if (!domain) throw Object.assign(new Error("这个链接暂不支持在客户端内打开"), { status: 400 });
+  const client = await getClient(userId, accountId);
+  const entity = await client.getEntity(domain);
+  const chat = serializeEntity(entity);
+  if (!peerCache.has(accountId)) peerCache.set(accountId, new Map());
+  peerCache.get(accountId).set(chat.id, entity);
+  return { ...chat, avatarKey: chat.id };
+}
+
+async function search(userId, accountId, query) {
+  const client = await getClient(userId, accountId);
+  const dialogs = await listChats(userId, accountId, query);
+  const global = query
+    ? await client.getMessages(undefined, { search: query, limit: 30 }).catch(() => [])
+    : [];
+  return {
+    chats: dialogs,
+    messages: global.map(serializeMessage)
+  };
+}
+
+async function downloadMedia(userId, accountId, peerId, messageId) {
+  const client = await getClient(userId, accountId);
+  const entity = await resolvePeer(userId, accountId, peerId);
+  const [message] = await client.getMessages(entity, { ids: [Number(messageId)] });
+  if (!message || !message.media) throw Object.assign(new Error("这条消息没有可下载媒体"), { status: 404 });
+  const contentType = message.photo ? "image/jpeg" : message.document?.mimeType || "";
+  const kind = mediaKind(message, contentType);
+  const rawSize = Number(message.file?.size || message.document?.size || 0);
+  const cacheable = kind === "image" || (kind === "video" && rawSize > VIDEO_CACHE_THRESHOLD);
+  const directories = await cacheSettings();
+  const extension = mime.extension(contentType);
+  const guessedName = safeName(message.file?.name || `telegram-${accountId}-${messageId}${extension ? `.${extension}` : ""}`);
+  if (!cacheable) {
+    const buffer = await client.downloadMedia(message, {});
+    return {
+      buffer,
+      fileName: guessedName,
+      contentType: contentType || mime.lookup(guessedName) || "application/octet-stream",
+      size: buffer.length,
+      kind,
+      cacheable: false
+    };
+  }
+  const downloadDir = path.join(kind === "image" ? directories.image : directories.video, userId);
+  await fs.ensureDir(downloadDir);
+  const filePath = path.join(downloadDir, guessedName);
+  if (!(await fs.pathExists(filePath))) {
+    const buffer = await client.downloadMedia(message, {});
+    await fs.writeFile(filePath, buffer);
+  }
+  const stat = await fs.stat(filePath);
+  return {
+    filePath,
+    fileName: guessedName,
+    contentType: contentType || mime.lookup(filePath) || "application/octet-stream",
+    size: stat.size,
+    kind,
+    cacheable: true
+  };
+}
+
+async function profilePhoto(userId, accountId, peerId = "__self") {
+  const client = await getClient(userId, accountId);
+  const entity = peerId === "__self" ? await client.getMe() : await resolvePeer(userId, accountId, peerId);
+  const directories = await cacheSettings();
+  const avatarDir = path.join(directories.avatars, userId);
+  await fs.ensureDir(avatarDir);
+  const fileName = `${safeId("avatar")}.jpg`;
+  const filePath = path.join(avatarDir, fileName);
+  const buffer = await client.downloadProfilePhoto(entity, { isBig: false }).catch(() => null);
+  if (!buffer) throw Object.assign(new Error("暂无头像"), { status: 404 });
+  await fs.writeFile(filePath, buffer);
+  return {
+    filePath,
+    fileName,
+    contentType: "image/jpeg"
+  };
+}
+
+async function cleanupCache() {
+  const settings = await cacheSettings();
+  const cutoff = Date.now() - settings.retentionDays * 24 * 60 * 60 * 1000;
+  for (const dir of [settings.image, settings.video, settings.file, settings.avatars]) {
+    if (!(await fs.pathExists(dir))) continue;
+    const entries = await fs.readdir(dir).catch(() => []);
+    for (const entry of entries) {
+      const entryPath = path.join(dir, entry);
+      const stat = await fs.stat(entryPath).catch(() => null);
+      if (!stat) continue;
+      if (stat.isDirectory()) {
+        const files = await fs.readdir(entryPath).catch(() => []);
+        for (const file of files) {
+          const filePath = path.join(entryPath, file);
+          const fileStat = await fs.stat(filePath).catch(() => null);
+          if (fileStat && fileStat.mtimeMs < cutoff) await fs.remove(filePath).catch(() => {});
+        }
+      } else if (stat.mtimeMs < cutoff) {
+        await fs.remove(entryPath).catch(() => {});
+      }
+    }
+  }
+}
+
+module.exports = {
+  clickMessageButton,
+  completeCode,
+  completePassword,
+  downloadMedia,
+  listAccounts,
+  listChats,
+  listFolders,
+  listMessages,
+  loadSavedClients,
+  logout,
+  cleanupCache,
+  profilePhoto,
+  resolveTelegramLink,
+  search,
+  sendText,
+  startLogin,
+  async reconnectAll(io) {
+    for (const client of clients.values()) {
+      try {
+        await client.disconnect();
+      } catch {}
+    }
+    clients.clear();
+    peerCache.clear();
+    pendingLogins.clear();
+    await loadSavedClients(io);
+  }
+};
