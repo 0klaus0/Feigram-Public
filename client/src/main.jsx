@@ -9,6 +9,7 @@ import {
   LogOut,
   MessageSquare,
   Moon,
+  Play,
   Plus,
   RefreshCw,
   Search,
@@ -18,6 +19,7 @@ import {
   SlidersHorizontal,
   Sun,
   ArrowLeft,
+  Trash2,
   UserRound,
   Users,
   X
@@ -32,6 +34,14 @@ function cx(...items) {
 function formatTime(value) {
   if (!value) return "";
   return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(value));
+}
+
+function formatBytes(value) {
+  const size = Number(value || 0);
+  if (!size) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  const index = Math.min(units.length - 1, Math.floor(Math.log(size) / Math.log(1024)));
+  return `${(size / (1024 ** index)).toFixed(index ? 1 : 0)} ${units[index]}`;
 }
 
 function normalizeLink(value) {
@@ -123,16 +133,17 @@ function mediaUrl(accountId, chatId, messageId, inline = false) {
   return `/api/media/${accountId}/${encodeURIComponent(chatId)}/${messageId}?${params.toString()}`;
 }
 
-function MessageMedia({ accountId, chatId, message, compact = false, onCache }) {
+function MessageMedia({ accountId, chatId, message, compact = false, onCache, task }) {
   const [failed, setFailed] = useState(false);
   const [active, setActive] = useState(false);
-  const [cached, setCached] = useState(false);
-  const [caching, setCaching] = useState(false);
+  const [localStatus, setLocalStatus] = useState("");
   const media = message.media;
   if (!media) return null;
   const previewUrl = mediaUrl(accountId, chatId, message.id, true);
   const downloadUrl = mediaUrl(accountId, chatId, message.id);
   const label = media.fileName || media.mimeType || "下载媒体";
+  const cacheStatus = task?.status || localStatus;
+  const cacheLabel = cacheStatus === "completed" ? "已缓存" : cacheStatus === "downloading" ? "下载中" : cacheStatus === "queued" ? "排队中" : cacheStatus === "cancelled" ? "继续缓存" : "缓存";
   if (media.kind === "image") {
     return (
       <a className={cx("media-preview image-preview", compact && "compact-media")} href={previewUrl} target="_blank" rel="noreferrer" title="打开原图">
@@ -146,28 +157,29 @@ function MessageMedia({ accountId, chatId, message, compact = false, onCache }) 
     return (
       <div className={cx("media-preview", "video-preview", orientation, compact && "compact-media")} style={{ "--video-ratio": ratio }}>
         <div className="video-stage">
+          <button
+            className={cx("video-cache-button", cacheStatus === "completed" && "done", cacheStatus === "downloading" && "busy")}
+            type="button"
+            disabled={cacheStatus === "downloading" || cacheStatus === "queued"}
+            onClick={async (event) => {
+              event.stopPropagation();
+              setLocalStatus("queued");
+              try {
+                const result = await onCache?.(message);
+                setLocalStatus(result?.status || "queued");
+                setFailed(false);
+              } catch {
+                setLocalStatus("");
+              }
+            }}
+            title={cacheStatus === "completed" ? "已缓存到下载目录" : "缓存视频到下载列表"}
+          >
+            <Download size={14} />{cacheLabel}
+          </button>
           {!active && !failed ? <button className="video-load-button" type="button" onClick={() => setActive(true)}>点击播放视频</button> : null}
           {active && !failed ? <video src={previewUrl} controls autoPlay preload="metadata" playsInline onError={() => setFailed(true)} /> : null}
-          {failed ? <div className="video-fallback">当前浏览器无法直接播放这个编码，缓存到本地后可重试播放。</div> : null}
+          {failed ? <div className="video-fallback">这个视频编码当前内置播放器无法直接解码，可先缓存后用本地播放器打开。</div> : null}
         </div>
-        <button
-          className="media-chip"
-          type="button"
-          disabled={caching}
-          onClick={async () => {
-            setCaching(true);
-            try {
-              await onCache?.(message);
-              setCached(true);
-              setFailed(false);
-              setActive(true);
-            } finally {
-              setCaching(false);
-            }
-          }}
-        >
-          <Download size={15} />{caching ? "缓存中" : cached ? "已缓存" : "缓存视频"}
-        </button>
       </div>
     );
   }
@@ -192,10 +204,13 @@ function buildMessageItems(messages) {
   return items;
 }
 
-function MessageBubble({ item, accountId, chatId, showSender, showMedia, onOpenLink, onInlineButton, onCacheMedia }) {
+function MessageBubble({ item, accountId, chatId, showSender, showMedia, onOpenLink, onInlineButton, onCacheMedia, downloadTasks }) {
   const messages = item.type === "group" ? item.messages : [item.message];
   const first = messages[0];
   const caption = messages.find((message) => message.text) || first;
+  const taskFor = (message) => downloadTasks.find((task) => (
+    task.accountId === accountId && task.peerId === chatId && Number(task.messageId) === Number(message.id)
+  ));
   return (
     <article className={cx("message-row", first.outgoing && "mine")}>
       {showSender && !first.outgoing && <Avatar accountId={accountId} peerId={first.sender?.id} label={first.sender?.title || first.senderId} size={34} />}
@@ -203,8 +218,8 @@ function MessageBubble({ item, accountId, chatId, showSender, showMedia, onOpenL
         {showSender && !first.outgoing && <div className="sender-line">{first.sender?.title || first.senderId}<span>{first.sender?.username ? `@${first.sender.username}` : first.senderId}</span></div>}
         {caption.text && <MessageText text={caption.text} entities={caption.entities} onOpenLink={onOpenLink} />}
         {showMedia && item.type === "group" ? <div className={cx("media-grid", messages.length > 1 && "multi")}>
-          {messages.map((message) => <MessageMedia key={message.id} accountId={accountId} chatId={chatId} message={message} compact onCache={onCacheMedia} />)}
-        </div> : showMedia && <MessageMedia accountId={accountId} chatId={chatId} message={first} onCache={onCacheMedia} />}
+          {messages.map((message) => <MessageMedia key={message.id} accountId={accountId} chatId={chatId} message={message} compact onCache={onCacheMedia} task={taskFor(message)} />)}
+        </div> : showMedia && <MessageMedia accountId={accountId} chatId={chatId} message={first} onCache={onCacheMedia} task={taskFor(first)} />}
         {!!caption.buttons?.length && <div className="inline-buttons">
           {caption.buttons.map((row, rowIndex) => <div className="inline-button-row" key={`${caption.id}-row-${rowIndex}`}>
             {row.map((button, buttonIndex) => <button type="button" key={`${button.text}-${buttonIndex}`} onClick={() => onInlineButton(caption, button)} disabled={button.type === "unsupported"}>
@@ -599,6 +614,73 @@ function InfoModal({ announcements, about, open, onClose }) {
   );
 }
 
+function DownloadCenter({ open, downloads, onStart, onCancel, onDelete, onClose }) {
+  const [menu, setMenu] = useState(null);
+  useEffect(() => {
+    if (!open) setMenu(null);
+  }, [open]);
+  if (!open) return null;
+  const active = downloads.filter((item) => ["queued", "downloading"].includes(item.status)).length;
+  const statusText = {
+    queued: "排队中",
+    downloading: "下载中",
+    completed: "已完成",
+    cancelled: "已暂停",
+    error: "失败"
+  };
+  const progressFor = (item) => item.size ? Math.min(100, Math.round((Number(item.downloaded || 0) / Number(item.size)) * 100)) : 0;
+  return (
+    <div className="download-layer" onClick={() => setMenu(null)}>
+      <section className="download-panel" onClick={(event) => event.stopPropagation()}>
+        <header>
+          <div>
+            <h2>下载</h2>
+            <p>{active ? `${active} 个任务进行中` : "暂无活动下载"}</p>
+          </div>
+          <button className="icon-button" onClick={onClose} title="关闭"><X size={18} /></button>
+        </header>
+        <div className="download-list">
+          {downloads.map((item) => {
+            const progress = progressFor(item);
+            return (
+              <article
+                className={cx("download-item", item.status)}
+                key={item.id}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  setMenu({ task: item, x: event.clientX, y: event.clientY });
+                }}
+              >
+                <div className="download-item-head">
+                  <strong>{item.fileName || "Telegram 媒体"}</strong>
+                  <span>{statusText[item.status] || item.status}</span>
+                </div>
+                <div className="download-meta">
+                  <span>{formatBytes(item.downloaded)} / {formatBytes(item.size)}</span>
+                  <span>{item.status === "downloading" ? `${formatBytes(item.speedBps)}/s` : formatTime(item.updatedAt)}</span>
+                </div>
+                <div className="download-progress"><i style={{ width: `${progress}%` }} /></div>
+                {item.error && <p className="download-error">{item.error}</p>}
+                <div className="download-actions">
+                  {item.status !== "downloading" && item.status !== "completed" && <button onClick={() => onStart(item)}><Play size={14} />开始</button>}
+                  {item.status === "downloading" && <button onClick={() => onCancel(item)}><X size={14} />取消</button>}
+                  <button onClick={() => onDelete(item)}><Trash2 size={14} />删除</button>
+                </div>
+              </article>
+            );
+          })}
+          {!downloads.length && <div className="empty">点击视频右上角缓存后，任务会出现在这里。</div>}
+        </div>
+        {menu && <div className="download-menu" style={{ left: menu.x, top: menu.y }} onClick={(event) => event.stopPropagation()}>
+          {menu.task.status !== "downloading" && menu.task.status !== "completed" && <button onClick={() => { onStart(menu.task); setMenu(null); }}>开始/继续</button>}
+          {menu.task.status === "downloading" && <button onClick={() => { onCancel(menu.task); setMenu(null); }}>取消</button>}
+          <button onClick={() => { onDelete(menu.task); setMenu(null); }}>删除任务和缓存</button>
+        </div>}
+      </section>
+    </div>
+  );
+}
+
 function App() {
   const [token, setTokenState] = useState(getToken());
   const [me, setMe] = useState(null);
@@ -634,6 +716,8 @@ function App() {
   const [announcements, setAnnouncements] = useState([]);
   const [about, setAbout] = useState({});
   const [announcementOpen, setAnnouncementOpen] = useState(false);
+  const [downloads, setDownloads] = useState([]);
+  const [downloadOpen, setDownloadOpen] = useState(false);
   const socket = useSocket(token);
   const messagesRef = useRef(null);
   const shouldScrollBottomRef = useRef(false);
@@ -641,6 +725,7 @@ function App() {
   const newestAnnouncementId = announcements[0]?.id || "";
   const unreadAnnouncement = newestAnnouncementId && localStorage.getItem("feigrame.lastAnnouncement") !== newestAnnouncementId;
   const messageItems = useMemo(() => buildMessageItems(messages), [messages]);
+  const activeDownloadCount = downloads.filter((item) => ["queued", "downloading"].includes(item.status)).length;
   const visibleChats = useMemo(() => {
     const folder = folders.find((item) => String(item.id) === String(activeFolder));
     if (!folder) return chats;
@@ -673,6 +758,7 @@ function App() {
     loadSettings();
     loadAnnouncements();
     loadAbout();
+    loadDownloads();
     refreshAccounts();
   }, [token]);
 
@@ -701,6 +787,26 @@ function App() {
     socket.on("message:new", handler);
     return () => socket.off("message:new", handler);
   }, [socket, accountId, notifications, appSettings.notificationEnabled, appSettings.notificationPreview]);
+
+  useEffect(() => {
+    if (!socket) return;
+    const update = (task) => {
+      setDownloads((current) => {
+        const index = current.findIndex((item) => item.id === task.id);
+        if (index === -1) return [task, ...current];
+        const next = [...current];
+        next[index] = task;
+        return next.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+      });
+    };
+    const remove = ({ id }) => setDownloads((current) => current.filter((item) => item.id !== id));
+    socket.on("download:update", update);
+    socket.on("download:delete", remove);
+    return () => {
+      socket.off("download:update", update);
+      socket.off("download:delete", remove);
+    };
+  }, [socket]);
 
   useEffect(() => {
     const element = messagesRef.current;
@@ -883,7 +989,8 @@ function App() {
     setError("");
     try {
       const result = await api(`/api/media/${accountId}/${encodeURIComponent(activeChat.id)}/${message.id}/cache`, { method: "POST" });
-      notify(`${result.fileName || "媒体"} 已缓存`);
+      setDownloads((current) => [result, ...current.filter((item) => item.id !== result.id)]);
+      notify(`${result.fileName || "视频"} 已加入下载列表`);
       return result;
     } catch (err) {
       notify(err.message);
@@ -922,6 +1029,41 @@ function App() {
   async function loadAbout() {
     const info = await api("/api/about").catch(() => ({}));
     setAbout(info);
+  }
+
+  async function loadDownloads() {
+    const list = await api("/api/downloads").catch(() => []);
+    setDownloads(list);
+  }
+
+  async function updateDownload(task, action, method = "POST") {
+    try {
+      const result = await api(`/api/downloads/${encodeURIComponent(task.id)}/${action}`, { method });
+      if (result?.id) {
+        setDownloads((current) => [result, ...current.filter((item) => item.id !== result.id)]);
+      }
+      return result;
+    } catch (err) {
+      notify(err.message);
+      throw err;
+    }
+  }
+
+  async function startDownload(task) {
+    return updateDownload(task, "start");
+  }
+
+  async function cancelDownload(task) {
+    return updateDownload(task, "cancel");
+  }
+
+  async function deleteDownload(task) {
+    try {
+      await api(`/api/downloads/${encodeURIComponent(task.id)}`, { method: "DELETE" });
+      setDownloads((current) => current.filter((item) => item.id !== task.id));
+    } catch (err) {
+      notify(err.message);
+    }
   }
 
   async function loadSettings() {
@@ -981,6 +1123,10 @@ function App() {
             <button onClick={() => { setAdminInitialTab("folders"); setAdminOpen(true); }}>
               <SlidersHorizontal size={24} /><span>编辑</span>
             </button>
+            <button className={cx(downloadOpen && "active")} onClick={() => setDownloadOpen(true)}>
+              <Download size={24} /><span>下载</span>
+              {!!activeDownloadCount && <b>{activeDownloadCount}</b>}
+            </button>
           </nav>}
           <div className="chat-pane">
             <form className="search" onSubmit={(event) => { event.preventDefault(); loadChats(query); }}>
@@ -1019,6 +1165,7 @@ function App() {
               onOpenLink={openTelegramLink}
               onInlineButton={clickInlineButton}
               onCacheMedia={cacheMedia}
+              downloadTasks={downloads}
             />)}
             {busy && <div className="empty">加载中</div>}
           </div>
@@ -1050,6 +1197,14 @@ function App() {
         socket={socket}
       />
       <InfoModal announcements={announcements} about={about} open={announcementOpen} onClose={() => setAnnouncementOpen(false)} />
+      <DownloadCenter
+        open={downloadOpen}
+        downloads={downloads}
+        onStart={startDownload}
+        onCancel={cancelDownload}
+        onDelete={deleteDownload}
+        onClose={() => setDownloadOpen(false)}
+      />
     </main>
   );
 }

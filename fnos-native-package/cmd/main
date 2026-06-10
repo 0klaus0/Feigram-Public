@@ -15,8 +15,8 @@ export TELEGRAM_API_ID="${wizard_telegram_api_id}"
 export TELEGRAM_API_HASH="${wizard_telegram_api_hash}"
 export DATA_DIR="${DATA_HOME}/data"
 export DOWNLOAD_DIR="${DATA_HOME}/data/downloads"
-export APP_VERSION="1.5.4"
-export APP_CHANGELOG="优化文件夹竖栏、搜索清除、发言人展示、媒体组布局和站内视频缓存下载体验。"
+export APP_VERSION="1.5.5"
+export APP_CHANGELOG="新增下载功能区、视频缓存任务队列、断点续传式继续下载、进度速度展示和播放器右上角缓存状态。"
 export NODE_ENV="production"
 
 is_running() {

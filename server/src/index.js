@@ -206,14 +206,23 @@ app.get("/api/media/:account/:peer/:messageId", asyncRoute(async (req, res) => {
 }));
 
 app.post("/api/media/:account/:peer/:messageId/cache", asyncRoute(async (req, res) => {
-  const media = await tg.cacheMedia(req.user.id, req.params.account, req.params.peer, req.params.messageId);
-  res.json({
-    ok: true,
-    fileName: media.fileName,
-    kind: media.kind,
-    size: media.size,
-    inlineUrl: `/api/media/${req.params.account}/${encodeURIComponent(req.params.peer)}/${req.params.messageId}?inline=1`
-  });
+  res.json(await tg.startDownloadTask(req.user.id, req.params.account, req.params.peer, req.params.messageId, io));
+}));
+
+app.get("/api/downloads", asyncRoute(async (req, res) => {
+  res.json(tg.listDownloadTasks(req.user.id));
+}));
+
+app.post("/api/downloads/:id/start", asyncRoute(async (req, res) => {
+  res.json(await tg.resumeDownloadTask(req.user.id, req.params.id, io));
+}));
+
+app.post("/api/downloads/:id/cancel", asyncRoute(async (req, res) => {
+  res.json(tg.cancelDownloadTask(req.user.id, req.params.id, io));
+}));
+
+app.delete("/api/downloads/:id", asyncRoute(async (req, res) => {
+  res.json(await tg.deleteDownloadTask(req.user.id, req.params.id, io));
 }));
 
 app.use(express.static(path.join(__dirname, "..", "public")));
@@ -233,6 +242,8 @@ io.use(async (socket, next) => {
 });
 
 io.on("connection", (socket) => {
+  socket.join(`user:${socket.user.id}`);
+
   socket.on("account:join", (accountId) => {
     if (accountId) socket.join(`account:${accountId}`);
   });

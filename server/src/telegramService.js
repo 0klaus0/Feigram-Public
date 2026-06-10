@@ -12,7 +12,9 @@ const { decryptText, encryptText } = require("./cryptoBox");
 const clients = new Map();
 const peerCache = new Map();
 const pendingLogins = new Map();
+const downloadTasks = new Map();
 const VIDEO_CACHE_THRESHOLD = 100 * 1024 * 1024;
+const DOWNLOAD_CHUNK_SIZE = 512 * 1024;
 
 async function cacheSettings() {
   const settings = await readSettings();
@@ -600,6 +602,214 @@ async function mediaFileInfo(userId, accountId, message, contentType, kind) {
   };
 }
 
+function downloadTaskId(userId, accountId, peerId, messageId) {
+  return safeId(`${userId}-${accountId}-${peerId}-${messageId}`);
+}
+
+function serializeDownloadTask(task) {
+  return {
+    id: task.id,
+    accountId: task.accountId,
+    peerId: task.peerId,
+    messageId: task.messageId,
+    fileName: task.fileName,
+    kind: task.kind,
+    contentType: task.contentType,
+    status: task.status,
+    size: task.size,
+    downloaded: task.downloaded,
+    speedBps: task.speedBps,
+    error: task.error || "",
+    updatedAt: task.updatedAt,
+    inlineUrl: task.status === "completed"
+      ? `/api/media/${task.accountId}/${encodeURIComponent(task.peerId)}/${task.messageId}?inline=1`
+      : ""
+  };
+}
+
+function emitDownloadTask(io, task) {
+  if (io) io.to(`user:${task.userId}`).emit("download:update", serializeDownloadTask(task));
+}
+
+async function mediaMessage(userId, accountId, peerId, messageId) {
+  const client = await getClient(userId, accountId);
+  const entity = await resolvePeer(userId, accountId, peerId);
+  const [message] = await client.getMessages(entity, { ids: [Number(messageId)] });
+  if (!message || !message.media) throw Object.assign(new Error("这条消息没有可下载媒体"), { status: 404 });
+  return { client, message };
+}
+
+async function ensureDownloadTask(userId, accountId, peerId, messageId) {
+  const id = downloadTaskId(userId, accountId, peerId, messageId);
+  const existing = downloadTasks.get(id);
+  if (existing) return existing;
+  const { message } = await mediaMessage(userId, accountId, peerId, messageId);
+  const contentType = message.photo ? "image/jpeg" : message.document?.mimeType || "";
+  const kind = mediaKind(message, contentType);
+  const size = Number(message.file?.size || message.document?.size || 0);
+  const { fileName, filePath, downloadDir } = await mediaFileInfo(userId, accountId, message, contentType, kind);
+  const task = {
+    id,
+    userId,
+    accountId,
+    peerId,
+    messageId: Number(messageId),
+    fileName,
+    filePath,
+    partPath: `${filePath}.part`,
+    downloadDir,
+    kind,
+    contentType: contentType || mime.lookup(fileName) || "application/octet-stream",
+    size,
+    downloaded: 0,
+    speedBps: 0,
+    status: "queued",
+    error: "",
+    cancelToken: null,
+    updatedAt: new Date().toISOString()
+  };
+  downloadTasks.set(id, task);
+  return task;
+}
+
+async function startDownloadTask(userId, accountId, peerId, messageId, io) {
+  const task = await ensureDownloadTask(userId, accountId, peerId, messageId);
+  if (task.userId !== userId) throw Object.assign(new Error("无权访问这个下载任务"), { status: 403 });
+  if (task.status === "downloading") return serializeDownloadTask(task);
+  if (await fs.pathExists(task.filePath)) {
+    const stat = await fs.stat(task.filePath);
+    task.downloaded = stat.size;
+    task.size = task.size || stat.size;
+    task.status = "completed";
+    task.speedBps = 0;
+    task.updatedAt = new Date().toISOString();
+    emitDownloadTask(io, task);
+    return serializeDownloadTask(task);
+  }
+  task.status = "queued";
+  task.error = "";
+  task.updatedAt = new Date().toISOString();
+  emitDownloadTask(io, task);
+  runDownloadTask(task, io).catch(() => {});
+  return serializeDownloadTask(task);
+}
+
+async function runDownloadTask(task, io) {
+  if (task.status === "downloading") return;
+  const cancelToken = { cancelled: false };
+  task.cancelToken = cancelToken;
+  task.status = "downloading";
+  task.error = "";
+  task.updatedAt = new Date().toISOString();
+  emitDownloadTask(io, task);
+  try {
+    const { client, message } = await mediaMessage(task.userId, task.accountId, task.peerId, task.messageId);
+    await fs.ensureDir(task.downloadDir);
+    if (await fs.pathExists(task.filePath)) {
+      const stat = await fs.stat(task.filePath);
+      task.downloaded = stat.size;
+      task.size = task.size || stat.size;
+      task.status = "completed";
+      task.updatedAt = new Date().toISOString();
+      emitDownloadTask(io, task);
+      return;
+    }
+    const partStat = await fs.stat(task.partPath).catch(() => null);
+    let downloaded = partStat?.size || 0;
+    task.downloaded = downloaded;
+    const total = task.size || Number(message.file?.size || message.document?.size || 0);
+    task.size = total;
+    let lastBytes = downloaded;
+    let lastTick = Date.now();
+    const stream = fs.createWriteStream(task.partPath, { flags: "a" });
+    try {
+      for await (const chunk of client.iterDownload({
+        file: message,
+        offset: bigInt(downloaded),
+        chunkSize: DOWNLOAD_CHUNK_SIZE,
+        requestSize: DOWNLOAD_CHUNK_SIZE,
+        limit: total ? Math.ceil((total - downloaded) / DOWNLOAD_CHUNK_SIZE) : undefined,
+        fileSize: total ? bigInt(total) : undefined
+      })) {
+        if (cancelToken.cancelled) {
+          task.status = "cancelled";
+          task.speedBps = 0;
+          task.updatedAt = new Date().toISOString();
+          emitDownloadTask(io, task);
+          return;
+        }
+        await new Promise((resolve, reject) => {
+          stream.write(chunk, (error) => error ? reject(error) : resolve());
+        });
+        downloaded += chunk.length;
+        task.downloaded = downloaded;
+        const now = Date.now();
+        if (now - lastTick >= 800) {
+          task.speedBps = Math.round((downloaded - lastBytes) / ((now - lastTick) / 1000));
+          task.updatedAt = new Date().toISOString();
+          lastTick = now;
+          lastBytes = downloaded;
+          emitDownloadTask(io, task);
+        }
+      }
+    } finally {
+      await new Promise((resolve) => stream.end(resolve));
+    }
+    if (cancelToken.cancelled) return;
+    await fs.move(task.partPath, task.filePath, { overwrite: true });
+    const stat = await fs.stat(task.filePath);
+    task.downloaded = stat.size;
+    task.size = task.size || stat.size;
+    task.speedBps = 0;
+    task.status = "completed";
+    task.updatedAt = new Date().toISOString();
+    emitDownloadTask(io, task);
+  } catch (error) {
+    task.status = "error";
+    task.error = error.message || "下载失败";
+    task.speedBps = 0;
+    task.updatedAt = new Date().toISOString();
+    emitDownloadTask(io, task);
+  } finally {
+    task.cancelToken = null;
+  }
+}
+
+function listDownloadTasks(userId) {
+  return [...downloadTasks.values()]
+    .filter((task) => task.userId === userId)
+    .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)))
+    .map(serializeDownloadTask);
+}
+
+async function resumeDownloadTask(userId, taskId, io) {
+  const task = downloadTasks.get(taskId);
+  if (!task || task.userId !== userId) throw Object.assign(new Error("找不到下载任务"), { status: 404 });
+  return startDownloadTask(userId, task.accountId, task.peerId, task.messageId, io);
+}
+
+function cancelDownloadTask(userId, taskId, io) {
+  const task = downloadTasks.get(taskId);
+  if (!task || task.userId !== userId) throw Object.assign(new Error("找不到下载任务"), { status: 404 });
+  if (task.cancelToken) task.cancelToken.cancelled = true;
+  if (task.status !== "completed") task.status = "cancelled";
+  task.speedBps = 0;
+  task.updatedAt = new Date().toISOString();
+  emitDownloadTask(io, task);
+  return serializeDownloadTask(task);
+}
+
+async function deleteDownloadTask(userId, taskId, io) {
+  const task = downloadTasks.get(taskId);
+  if (!task || task.userId !== userId) throw Object.assign(new Error("找不到下载任务"), { status: 404 });
+  if (task.cancelToken) task.cancelToken.cancelled = true;
+  await fs.remove(task.partPath).catch(() => {});
+  await fs.remove(task.filePath).catch(() => {});
+  downloadTasks.delete(taskId);
+  if (io) io.to(`user:${userId}`).emit("download:delete", { id: taskId });
+  return { ok: true };
+}
+
 async function downloadMedia(userId, accountId, peerId, messageId, options = {}) {
   const client = await getClient(userId, accountId);
   const entity = await resolvePeer(userId, accountId, peerId);
@@ -785,7 +995,12 @@ module.exports = {
   completeCode,
   completePassword,
   cacheMedia,
+  cancelDownloadTask,
+  deleteDownloadTask,
   downloadMedia,
+  listDownloadTasks,
+  resumeDownloadTask,
+  startDownloadTask,
   streamVideoMedia,
   listAccounts,
   listChats,
