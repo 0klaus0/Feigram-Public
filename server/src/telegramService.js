@@ -25,6 +25,7 @@ let silentPersistTimer = null;
 let realtimeIo = null;
 let silentCacheEnabled = true;
 let silentCacheRateLimitBps = 0;
+let silentCacheConcurrency = 1;
 let silentRateWindowStart = Date.now();
 let silentRateWindowBytes = 0;
 let silentRateChain = Promise.resolve();
@@ -60,7 +61,7 @@ function enqueueSilentTask(task) {
 }
 
 function silentConcurrencyLimit() {
-  return silentCacheRateLimitBps > 0 ? 1 : MAX_SILENT_CACHE_CONCURRENCY;
+  return Math.max(1, Math.min(MAX_SILENT_CACHE_CONCURRENCY, Number(silentCacheConcurrency || 1)));
 }
 
 function rebalanceSilentConcurrency(io = realtimeIo) {
@@ -131,6 +132,7 @@ async function persistSilentCacheTasks() {
   await fs.writeJson(silentCachePath, {
     enabled: silentCacheEnabled,
     rateLimitBps: silentCacheRateLimitBps,
+    concurrency: silentConcurrencyLimit(),
     tasks
   }, { spaces: 2 });
 }
@@ -154,6 +156,7 @@ async function loadPersistentTasks() {
   const savedSilent = await fs.readJson(silentCachePath).catch(() => ({ tasks: [] }));
   silentCacheEnabled = savedSilent.enabled !== false;
   silentCacheRateLimitBps = Math.max(0, Number(savedSilent.rateLimitBps || 0));
+  silentCacheConcurrency = Math.max(1, Math.min(MAX_SILENT_CACHE_CONCURRENCY, Number(savedSilent.concurrency || 1)));
   for (const task of savedSilent.tasks || []) {
     if (!task?.id || !task.userId || !task.accountId || !task.peerId || !task.messageId) continue;
     if (task.status === "cancelled") continue;
@@ -951,6 +954,7 @@ function serializeSilentCacheState(userId) {
   return {
     enabled: silentCacheEnabled,
     rateLimitBps: silentCacheRateLimitBps,
+    concurrency: silentConcurrencyLimit(),
     running: silentCacheActive,
     tasks: listSilentCacheTasks(userId)
   };
@@ -1357,6 +1361,10 @@ function setSilentCacheControl(userId, payload = {}, io = realtimeIo) {
     silentCacheRateLimitBps = Math.max(0, Math.min(1024 * 1024 * 1024, Number(payload.rateLimitBps || 0)));
     silentRateWindowStart = Date.now();
     silentRateWindowBytes = 0;
+    rebalanceSilentConcurrency(io);
+  }
+  if (payload.concurrency !== undefined) {
+    silentCacheConcurrency = Math.max(1, Math.min(MAX_SILENT_CACHE_CONCURRENCY, Number(payload.concurrency || 1)));
     rebalanceSilentConcurrency(io);
   }
   if (!silentCacheEnabled) {

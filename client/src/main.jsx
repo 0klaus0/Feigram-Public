@@ -706,6 +706,9 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
               <option value={String(5 * 1024 * 1024)}>5 MB/s</option>
               <option value={String(10 * 1024 * 1024)}>10 MB/s</option>
             </select></label>
+            <label><span>并发数量</span><select value={String(silentCacheState.concurrency || 1)} onChange={(e) => onSilentCacheControl?.({ concurrency: Number(e.target.value) })}>
+              {[1, 2, 3, 4, 5].map((value) => <option value={String(value)} key={value}>{value}</option>)}
+            </select></label>
           </div>
           <p className="hint">这里展示群组信息页勾选后自动缓存的大于 100MB 视频，和用户主动下载列表分开；升级或重启后未完成任务会继续。</p>
           <div className="silent-cache-list">
@@ -1016,7 +1019,7 @@ function App() {
   const [announcementOpen, setAnnouncementOpen] = useState(false);
   const [downloads, setDownloads] = useState([]);
   const [silentCaches, setSilentCaches] = useState([]);
-  const [silentCacheState, setSilentCacheState] = useState({ enabled: true, rateLimitBps: 0 });
+  const [silentCacheState, setSilentCacheState] = useState({ enabled: true, rateLimitBps: 0, concurrency: 1 });
   const [downloadOpen, setDownloadOpen] = useState(false);
   const [chatInfoOpen, setChatInfoOpen] = useState(false);
   const [chatDetails, setChatDetails] = useState(null);
@@ -1497,11 +1500,12 @@ function App() {
   }
 
   async function loadSilentCaches() {
-    const result = await api("/api/silent-cache").catch(() => ({ enabled: true, rateLimitBps: 0, tasks: [] }));
+    const result = await api("/api/silent-cache").catch(() => ({ enabled: true, rateLimitBps: 0, concurrency: 1, tasks: [] }));
     const tasks = Array.isArray(result) ? result : result.tasks || [];
     setSilentCacheState({
       enabled: Array.isArray(result) ? true : result.enabled !== false,
-      rateLimitBps: Array.isArray(result) ? 0 : Number(result.rateLimitBps || 0)
+      rateLimitBps: Array.isArray(result) ? 0 : Number(result.rateLimitBps || 0),
+      concurrency: Array.isArray(result) ? 1 : Number(result.concurrency || 1)
     });
     setSilentCaches(sortSilentCaches(tasks));
   }
@@ -1521,12 +1525,12 @@ function App() {
           method: "POST",
           body: JSON.stringify({ orderedIds: current.map((item) => item.id) })
         });
-        setSilentCacheState({ enabled: result.enabled !== false, rateLimitBps: Number(result.rateLimitBps || 0) });
+        setSilentCacheState({ enabled: result.enabled !== false, rateLimitBps: Number(result.rateLimitBps || 0), concurrency: Number(result.concurrency || 1) });
         setSilentCaches(sortSilentCaches(result.tasks || []));
         return;
       }
       const result = await api("/api/silent-cache/control", { method: "PUT", body: JSON.stringify(patch) });
-      setSilentCacheState({ enabled: result.enabled !== false, rateLimitBps: Number(result.rateLimitBps || 0) });
+      setSilentCacheState({ enabled: result.enabled !== false, rateLimitBps: Number(result.rateLimitBps || 0), concurrency: Number(result.concurrency || 1) });
       setSilentCaches(sortSilentCaches(result.tasks || []));
     } catch (err) {
       notify(err.message);

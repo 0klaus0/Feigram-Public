@@ -18,8 +18,8 @@ export DOWNLOAD_DIR="${DATA_HOME}/data/downloads"
 export FFMPEG_BIN="${APP_HOME}/bin/ffmpeg"
 export LOG_FILE="$LOG_FILE"
 export APP_EDITION="Feigram 2.0 fnOS Client Edition"
-export APP_VERSION="2.0.6"
-export APP_CHANGELOG="增强群缓存强限速：限速开启时后台缓存单并发运行，并使用 32KB 小分片下载，降低瞬时冲破限速。"
+export APP_VERSION="2.0.7"
+export APP_CHANGELOG="缓存信息新增后台缓存并发数量设置，可在 1-5 个任务之间选择，并继续共享总速率限制。"
 export NODE_ENV="production"
 
 is_running() {

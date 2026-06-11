@@ -14,6 +14,19 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.7",
+    title: "Feigram 2.0.7 更新",
+    version: "2.0.7",
+    level: "success",
+    createdAt: "2026-06-12T01:00:00.000Z",
+    body: [
+      "缓存信息新增后台缓存并发数量设置。",
+      "管理员可在 1-5 个并发任务之间选择，最少 1 个，最多 5 个。",
+      "并发任务继续共享最大缓存速率限制，避免把限速按任务数放大。",
+      "调整并发数量后会立即重排当前后台缓存任务。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.6",
     title: "Feigram 2.0.6 更新",
     version: "2.0.6",
