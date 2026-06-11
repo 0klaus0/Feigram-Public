@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="${VERSION:-2.0.7}"
+VERSION="${VERSION:-2.0.8}"
 PKG_NAME="feigrampub-${VERSION}"
 RELEASE_DIR="${ROOT_DIR}/release"
 WORK_DIR="${RELEASE_DIR}/${PKG_NAME}"

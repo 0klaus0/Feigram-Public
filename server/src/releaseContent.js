@@ -14,6 +14,19 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.8",
+    title: "Feigram 2.0.8 更新",
+    version: "2.0.8",
+    level: "success",
+    createdAt: "2026-06-12T02:00:00.000Z",
+    body: [
+      "修复后台缓存恢复时偶发提示找不到会话的问题。",
+      "后台缓存任务现在会直接通过 Telegram peer id 解析群组/频道，不再只依赖当前会话列表缓存。",
+      "会话列表和 Telegram 文件夹同步拉取上限提高到 500，减少大号会话展示不全的情况。",
+      "会话确实不可访问时，会提示可能已退出群组、会话已删除或 Telegram 暂时无法解析。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.7",
     title: "Feigram 2.0.7 更新",
     version: "2.0.7",

@@ -34,6 +34,7 @@ const MAX_SILENT_CACHE_CONCURRENCY = 5;
 const DOWNLOAD_RETRY_LIMIT = 3;
 const SILENT_RETRY_DELAY_MS = 60 * 1000;
 const STALE_TASK_MS = 10 * 60 * 1000;
+const DIALOG_FETCH_LIMIT = 500;
 const FFMPEG_BIN = process.env.FFMPEG_BIN || path.join(__dirname, "..", "..", "bin", "ffmpeg");
 
 function stableId(prefix, ...parts) {
@@ -265,6 +266,16 @@ function peerIdFromPeer(peer) {
   if (klass.includes("Channel")) return `Channel:${toText(id)}`;
   if (klass.includes("Chat")) return `Chat:${toText(id)}`;
   return "";
+}
+
+function peerFromId(peerId) {
+  const [type, rawId] = String(peerId || "").split(":");
+  if (!type || !rawId || !/^-?\d+$/.test(rawId)) return null;
+  const id = bigInt(rawId);
+  if (type === "User") return new Api.PeerUser({ userId: id });
+  if (type === "Chat") return new Api.PeerChat({ chatId: id });
+  if (type === "Channel") return new Api.PeerChannel({ channelId: id });
+  return null;
 }
 
 function serializeEntity(entity) {
@@ -669,7 +680,7 @@ async function logout(userId, accountId) {
 
 async function listChats(userId, accountId, query = "") {
   const client = await getClient(userId, accountId);
-  const dialogs = await client.getDialogs({ limit: 200 });
+  const dialogs = await client.getDialogs({ limit: DIALOG_FETCH_LIMIT });
   const accountPeers = new Map();
   const normalizedQuery = query.trim().toLowerCase();
   const items = dialogs
@@ -697,7 +708,7 @@ async function listFolders(userId, accountId) {
   const client = await getClient(userId, accountId);
   const [filterResult, dialogs] = await Promise.all([
     client.invoke(new Api.messages.GetDialogFilters()).catch(() => []),
-    client.getDialogs({ limit: 200 }).catch(() => [])
+    client.getDialogs({ limit: DIALOG_FETCH_LIMIT }).catch(() => [])
   ]);
   const accountPeers = new Map();
   const chatsById = new Map();
@@ -745,10 +756,23 @@ async function listFolders(userId, accountId) {
 }
 
 async function resolvePeer(userId, accountId, peerId) {
-  if (!peerCache.has(accountId)) await listChats(userId, accountId);
-  const entity = peerCache.get(accountId)?.get(peerId);
-  if (!entity) throw Object.assign(new Error("找不到会话，请刷新会话列表"), { status: 404 });
-  return entity;
+  const cached = peerCache.get(accountId)?.get(peerId);
+  if (cached) return cached;
+
+  const client = await getClient(userId, accountId);
+  const directPeer = peerFromId(peerId);
+  const directEntity = directPeer ? await client.getEntity(directPeer).catch(() => null) : null;
+  if (directEntity) {
+    if (!peerCache.has(accountId)) peerCache.set(accountId, new Map());
+    peerCache.get(accountId).set(peerId, directEntity);
+    return directEntity;
+  }
+
+  await listChats(userId, accountId);
+  const listed = peerCache.get(accountId)?.get(peerId);
+  if (listed) return listed;
+
+  throw Object.assign(new Error("找不到会话，可能已退出该群组、会话已被删除，或 Telegram 暂时无法解析该会话"), { status: 404 });
 }
 
 async function listMessages(userId, accountId, peerId, limit = 50, before = 0, around = 0) {
