@@ -14,6 +14,19 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.5",
+    title: "Feigram 2.0.5 更新",
+    version: "2.0.5",
+    level: "success",
+    createdAt: "2026-06-11T23:30:00.000Z",
+    body: [
+      "修复群缓存最大速率限制不准确的问题。",
+      "限速策略改为全局总速率限制，所有后台缓存任务共享同一个速率上限。",
+      "移除单次节流最多 5 秒的限制，避免大分片下载时突破设置的限速。",
+      "切换限速值时会重置限速窗口，新设置会立即作用于正在运行的后台缓存任务。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.4",
     title: "Feigram 2.0.4 更新",
     version: "2.0.4",

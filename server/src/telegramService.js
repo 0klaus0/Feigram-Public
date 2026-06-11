@@ -25,6 +25,9 @@ let silentPersistTimer = null;
 let realtimeIo = null;
 let silentCacheEnabled = true;
 let silentCacheRateLimitBps = 0;
+let silentRateWindowStart = Date.now();
+let silentRateWindowBytes = 0;
+let silentRateChain = Promise.resolve();
 const VIDEO_CACHE_THRESHOLD = 100 * 1024 * 1024;
 const MAX_SILENT_CACHE_CONCURRENCY = 5;
 const DOWNLOAD_RETRY_LIMIT = 3;
@@ -54,6 +57,28 @@ function enqueueSilentTask(task) {
   if (silentCacheQueue.some((item) => item.id === task.id)) return;
   silentCacheQueue.push(task);
   silentCacheQueue.sort((a, b) => Number(a.order || 0) - Number(b.order || 0));
+}
+
+async function throttleSilentCache(deltaBytes) {
+  const delta = Math.max(0, Number(deltaBytes || 0));
+  const rate = Number(silentCacheRateLimitBps || 0);
+  if (!delta || !rate) return;
+  silentRateChain = silentRateChain.catch(() => {}).then(async () => {
+    const currentRate = Number(silentCacheRateLimitBps || 0);
+    if (!currentRate) return;
+    const now = Date.now();
+    if (now - silentRateWindowStart > 60 * 1000) {
+      silentRateWindowStart = now;
+      silentRateWindowBytes = 0;
+    }
+    silentRateWindowBytes += delta;
+    const expectedElapsed = (silentRateWindowBytes / currentRate) * 1000;
+    const actualElapsed = Date.now() - silentRateWindowStart;
+    if (expectedElapsed > actualElapsed) {
+      await sleep(expectedElapsed - actualElapsed);
+    }
+  });
+  return silentRateChain;
 }
 
 function schedulePersistDownloads() {
@@ -1183,7 +1208,7 @@ async function runSilentCacheTask(record, io = realtimeIo) {
   record.size = total;
   let lastBytes = 0;
   let lastTick = Date.now();
-  const startedAt = Date.now();
+  let lastThrottleBytes = 0;
   const cancelToken = { cancelled: false, paused: false };
   record.cancelToken = cancelToken;
   const progressCallback = async (downloadedValue, totalValue) => {
@@ -1197,10 +1222,13 @@ async function runSilentCacheTask(record, io = realtimeIo) {
     const fullSize = Number(totalValue?.toString?.() || totalValue || total || 0);
     record.downloaded = downloaded;
     record.size = fullSize || record.size;
-    if (silentCacheRateLimitBps > 0 && downloaded > 0) {
-      const expectedMs = (downloaded / silentCacheRateLimitBps) * 1000;
-      const elapsedMs = Date.now() - startedAt;
-      if (expectedMs > elapsedMs) await sleep(Math.min(5000, expectedMs - elapsedMs));
+    await throttleSilentCache(downloaded - lastThrottleBytes);
+    lastThrottleBytes = downloaded;
+    if (cancelToken.cancelled || cancelToken.paused || !silentCacheEnabled) {
+      throw Object.assign(new Error(cancelToken.cancelled ? "后台缓存已取消" : "后台缓存已暂停"), {
+        status: 499,
+        paused: cancelToken.paused || !silentCacheEnabled
+      });
     }
     const now = Date.now();
     if (now - lastTick >= 1000 || downloaded >= fullSize) {
@@ -1280,6 +1308,8 @@ function setSilentCacheControl(userId, payload = {}, io = realtimeIo) {
   }
   if (payload.rateLimitBps !== undefined) {
     silentCacheRateLimitBps = Math.max(0, Math.min(1024 * 1024 * 1024, Number(payload.rateLimitBps || 0)));
+    silentRateWindowStart = Date.now();
+    silentRateWindowBytes = 0;
   }
   if (!silentCacheEnabled) {
     for (const task of silentCacheRecords.values()) {
