@@ -14,6 +14,19 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.9",
+    title: "Feigram 2.0.9 更新",
+    version: "2.0.9",
+    level: "success",
+    createdAt: "2026-06-12T03:00:00.000Z",
+    body: [
+      "修复后台缓存高并发高限速时实际速度只有几十 KB/s 的问题。",
+      "限速模式下 Telegram 下载分片不再固定为 32KB，会根据最大缓存速率和并发数量动态调整。",
+      "低速限速仍使用较小分片控制瞬时峰值；5MB/s、5 并发这类场景会使用更大的分片提高吞吐。",
+      "总速率限制仍然全局共享，不会因为并发数量提高而放大上限。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.8",
     title: "Feigram 2.0.8 更新",
     version: "2.0.8",

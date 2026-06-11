@@ -18,8 +18,8 @@ export DOWNLOAD_DIR="${DATA_HOME}/data/downloads"
 export FFMPEG_BIN="${APP_HOME}/bin/ffmpeg"
 export LOG_FILE="$LOG_FILE"
 export APP_EDITION="Feigram 2.0 fnOS Client Edition"
-export APP_VERSION="2.0.8"
-export APP_CHANGELOG="修复后台缓存恢复时偶发找不到会话的问题，并提高会话与文件夹同步拉取上限。"
+export APP_VERSION="2.0.9"
+export APP_CHANGELOG="修复后台缓存高并发高限速时吞吐过低的问题，下载分片会根据限速和并发动态调整。"
 export NODE_ENV="production"
 
 is_running() {

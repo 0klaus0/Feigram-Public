@@ -1004,6 +1004,16 @@ async function mediaMessage(userId, accountId, peerId, messageId) {
   return { client, entity, message };
 }
 
+function silentPartSizeKb() {
+  const rate = Number(silentCacheRateLimitBps || 0);
+  if (!rate) return 512;
+  const perTaskRate = rate / silentConcurrencyLimit();
+  if (perTaskRate >= 1024 * 1024) return 512;
+  if (perTaskRate >= 512 * 1024) return 256;
+  if (perTaskRate >= 256 * 1024) return 128;
+  return 64;
+}
+
 async function downloadSilentMedia(client, entity, message, outputFile, progressCallback) {
   if (silentCacheRateLimitBps > 0 && message.document) {
     const doc = message.document;
@@ -1016,7 +1026,7 @@ async function downloadSilentMedia(client, entity, message, outputFile, progress
       outputFile,
       dcId: doc.dcId,
       fileSize: doc.size,
-      partSizeKb: 32,
+      partSizeKb: silentPartSizeKb(),
       progressCallback,
       msgData: [entity, Number(message.id)]
     });
