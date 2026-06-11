@@ -518,7 +518,16 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
 
   useEffect(() => {
     if (!open) return;
-    setTab(initialTab);
+    const aliases = {
+      users: "accounts",
+      settings: "server",
+      cache: "server",
+      player: "server",
+      folders: "privacy",
+      notifications: "privacy",
+      "silent-cache": "cache-info"
+    };
+    setTab(aliases[initialTab] || initialTab);
     refresh();
   }, [open, initialTab]);
 
@@ -614,19 +623,37 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
         <button className="close" onClick={onClose} title="关闭"><X size={18} /></button>
         <h2>{canAdmin ? "管理员后台" : "账号后台"}</h2>
         <div className="tabs">
-          <button className={cx(tab === "accounts" && "active")} onClick={() => setTab("accounts")}>Telegram 账号</button>
-          {canAdmin && <button className={cx(tab === "users" && "active")} onClick={() => setTab("users")}>飞牛账户</button>}
-          {canAdmin && <button className={cx(tab === "settings" && "active")} onClick={() => setTab("settings")}>覆盖 API 设置</button>}
-          {canAdmin && <button className={cx(tab === "cache" && "active")} onClick={() => setTab("cache")}>缓存下载</button>}
-          {canAdmin && <button className={cx(tab === "silent-cache" && "active")} onClick={() => { setTab("silent-cache"); onRefreshSilentCaches?.(); }}>群缓存</button>}
-          {canAdmin && <button className={cx(tab === "notifications" && "active")} onClick={() => setTab("notifications")}>通知</button>}
-          {canAdmin && <button className={cx(tab === "privacy" && "active")} onClick={() => setTab("privacy")}>隐私</button>}
-          {canAdmin && <button className={cx(tab === "player" && "active")} onClick={() => setTab("player")}>播放器</button>}
-          {canAdmin && <button className={cx(tab === "folders" && "active")} onClick={() => setTab("folders")}>分组</button>}
+          <button className={cx(tab === "accounts" && "active")} onClick={() => setTab("accounts")}>账号管理</button>
+          {canAdmin && <button className={cx(tab === "server" && "active")} onClick={() => setTab("server")}>服务端设置</button>}
+          {canAdmin && <button className={cx(tab === "cache-info" && "active")} onClick={() => { setTab("cache-info"); onRefreshSilentCaches?.(); }}>缓存信息</button>}
+          {canAdmin && <button className={cx(tab === "privacy" && "active")} onClick={() => setTab("privacy")}>隐私设置</button>}
           {canAdmin && <button className={cx(tab === "diagnostics" && "active")} onClick={() => { setTab("diagnostics"); loadDiagnostics(); }}>诊断</button>}
         </div>
         {error && <p className="error">{error}</p>}
         {tab === "accounts" && <div className="account-admin">
+          {canAdmin && <>
+            <h3>飞牛账号管理</h3>
+            <form className="admin-grid" onSubmit={createUser}>
+              <input placeholder="飞牛账户" value={newUser.username} onChange={(e) => setNewUser({ ...newUser, username: e.target.value })} required />
+              <input placeholder="显示名" value={newUser.displayName} onChange={(e) => setNewUser({ ...newUser, displayName: e.target.value })} />
+              <input placeholder="初始密码" type="password" value={newUser.password} onChange={(e) => setNewUser({ ...newUser, password: e.target.value })} minLength={8} required />
+              <select value={newUser.role} onChange={(e) => setNewUser({ ...newUser, role: e.target.value })}><option value="user">user</option><option value="admin">admin</option></select>
+              <button className="primary"><Plus size={16} />创建</button>
+            </form>
+            <div className="user-list compact-section">
+              {users.map((user) => <div className="user-row" key={user.id}>
+                <strong>{user.displayName}</strong>
+                <span>{user.username}</span>
+                <span>{user.role}</span>
+                <button className="icon-button" onClick={() => updateUser(user, { disabled: !user.disabled })}>{user.disabled ? "启用" : "禁用"}</button>
+                <button className="icon-button" onClick={() => {
+                  const password = prompt("输入新密码，至少 8 位");
+                  if (password) updateUser(user, { password });
+                }}>重置密码</button>
+              </div>)}
+            </div>
+          </>}
+          <h3>Telegram 账号管理</h3>
           <div className="account-admin-head">
             {socket && <AccountLogin socket={socket} onDone={() => onAccountsChanged?.()} />}
           </div>
@@ -643,46 +670,30 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
             {!accounts.length && <div className="empty">暂无 Telegram 账号</div>}
           </div>
         </div>}
-        {canAdmin && tab === "users" && <>
-          <form className="admin-grid" onSubmit={createUser}>
-            <input placeholder="飞牛账户" value={newUser.username} onChange={(e) => setNewUser({ ...newUser, username: e.target.value })} required />
-            <input placeholder="显示名" value={newUser.displayName} onChange={(e) => setNewUser({ ...newUser, displayName: e.target.value })} />
-            <input placeholder="初始密码" type="password" value={newUser.password} onChange={(e) => setNewUser({ ...newUser, password: e.target.value })} minLength={8} required />
-            <select value={newUser.role} onChange={(e) => setNewUser({ ...newUser, role: e.target.value })}><option value="user">user</option><option value="admin">admin</option></select>
-            <button className="primary"><Plus size={16} />创建</button>
-          </form>
-          <div className="user-list">
-            {users.map((user) => <div className="user-row" key={user.id}>
-              <strong>{user.displayName}</strong>
-              <span>{user.username}</span>
-              <span>{user.role}</span>
-              <button className="icon-button" onClick={() => updateUser(user, { disabled: !user.disabled })}>{user.disabled ? "启用" : "禁用"}</button>
-              <button className="icon-button" onClick={() => {
-                const password = prompt("输入新密码，至少 8 位");
-                if (password) updateUser(user, { password });
-              }}>重置密码</button>
-            </div>)}
-          </div>
-        </>}
-        {canAdmin && tab === "settings" && <form className="stack" onSubmit={saveSettings}>
+        {canAdmin && tab === "server" && <form className="stack" onSubmit={saveSettings}>
+          <h3>服务端设置</h3>
           <label><span>公开访问地址</span><input value={settings.publicBaseUrl} onChange={(e) => setSettings({ ...settings, publicBaseUrl: e.target.value })} placeholder="https://feigram.example.com" required /></label>
           <label><span>Telegram API ID</span><input type="password" inputMode="numeric" autoComplete="off" value={settings.telegramApiId} onChange={(e) => setSettings({ ...settings, telegramApiId: e.target.value })} placeholder={apiIdPlaceholder} /></label>
           <label><span>Telegram API Hash</span><input type="password" value={settings.telegramApiHash} onChange={(e) => setSettings({ ...settings, telegramApiHash: e.target.value })} placeholder={hashPlaceholder} /></label>
-          {saved && <p className="success">{saved}</p>}
-          <button className="primary"><Settings size={18} />保存</button>
-        </form>}
-        {canAdmin && tab === "cache" && <form className="stack" onSubmit={saveSettings}>
+          <h3>缓存下载设置</h3>
           <label><span>基础缓存下载位置</span><input value={settings.cacheBaseDir} onChange={(e) => setSettings({ ...settings, cacheBaseDir: e.target.value })} placeholder="/data/downloads" required /></label>
           <label><span>图片缓存位置</span><input value={settings.imageCacheDir} onChange={(e) => setSettings({ ...settings, imageCacheDir: e.target.value })} placeholder="留空则使用 基础缓存/images" /></label>
           <label><span>视频缓存位置</span><input value={settings.videoCacheDir} onChange={(e) => setSettings({ ...settings, videoCacheDir: e.target.value })} placeholder="留空则使用 基础缓存/videos" /></label>
           <label><span>文件缓存位置</span><input value={settings.fileCacheDir} onChange={(e) => setSettings({ ...settings, fileCacheDir: e.target.value })} placeholder="留空则使用 基础缓存/files" /></label>
           <label><span>聊天缓存自动清除天数</span><input type="number" min="1" max="3650" value={settings.cacheRetentionDays} onChange={(e) => setSettings({ ...settings, cacheRetentionDays: e.target.value })} required /></label>
+          <h3>播放器设置</h3>
+          <label><span>视频在线播放模式</span><select value={settings.playerMode} onChange={(e) => setSettings({ ...settings, playerMode: e.target.value })}>
+            <option value="browser">原始视频在线播放（推荐）</option>
+            <option value="hls">内置转码播放器（ffmpeg HLS，实验）</option>
+            <option value="local">本地播放器（下载后打开）</option>
+          </select></label>
+          <p className="hint">推荐优先使用原始视频在线播放；遇到浏览器不支持的编码时，再切换内置转码或本地播放器。</p>
           {saved && <p className="success">{saved}</p>}
-          <button className="primary"><Settings size={18} />保存缓存设置</button>
+          <button className="primary"><Settings size={18} />保存服务端设置</button>
         </form>}
-        {canAdmin && tab === "silent-cache" && <div className="silent-cache-panel">
+        {canAdmin && tab === "cache-info" && <div className="silent-cache-panel">
           <div className="silent-cache-head">
-            <strong>群视频后台缓存</strong>
+            <strong>缓存信息</strong>
             <button className="icon-button" type="button" onClick={onRefreshSilentCaches}><RefreshCw size={14} />刷新</button>
           </div>
           <div className="silent-cache-controls">
@@ -733,35 +744,20 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
             {!silentCaches.length && <div className="empty">暂无群视频后台缓存任务</div>}
           </div>
         </div>}
-        {canAdmin && tab === "notifications" && <form className="stack" onSubmit={saveSettings}>
+        {canAdmin && tab === "privacy" && <form className="stack" onSubmit={saveSettings}>
+          <h3>通知设置</h3>
           <label className="check-row"><input type="checkbox" checked={settings.notificationEnabled} onChange={(e) => setSettings({ ...settings, notificationEnabled: e.target.checked })} /><span>启用桌面通知</span></label>
           <label className="check-row"><input type="checkbox" checked={settings.notificationPreview} onChange={(e) => setSettings({ ...settings, notificationPreview: e.target.checked })} /><span>通知显示消息预览</span></label>
-          {saved && <p className="success">{saved}</p>}
-          <button className="primary"><Settings size={18} />保存通知设置</button>
-        </form>}
-        {canAdmin && tab === "privacy" && <form className="stack" onSubmit={saveSettings}>
+          <h3>隐私设置</h3>
           <label className="check-row"><input type="checkbox" checked={settings.privacyOpenTelegramLinksInApp} onChange={(e) => setSettings({ ...settings, privacyOpenTelegramLinksInApp: e.target.checked })} /><span>Telegram 链接优先在客户端内打开</span></label>
           <label className="check-row"><input type="checkbox" checked={settings.privacyMediaPreview} onChange={(e) => setSettings({ ...settings, privacyMediaPreview: e.target.checked })} /><span>聊天中显示图片和视频预览</span></label>
           <label className="check-row"><input type="checkbox" checked={settings.messageShowSender} onChange={(e) => setSettings({ ...settings, messageShowSender: e.target.checked })} /><span>群聊消息显示发言人头像和 ID</span></label>
-          {saved && <p className="success">{saved}</p>}
-          <button className="primary"><Settings size={18} />保存隐私设置</button>
-        </form>}
-        {canAdmin && tab === "player" && <form className="stack" onSubmit={saveSettings}>
-          <label><span>视频在线播放模式</span><select value={settings.playerMode} onChange={(e) => setSettings({ ...settings, playerMode: e.target.value })}>
-            <option value="browser">原始视频在线播放（推荐）</option>
-            <option value="hls">内置转码播放器（ffmpeg HLS，实验）</option>
-            <option value="local">本地播放器（下载后打开）</option>
-          </select></label>
-          <p className="hint">推荐优先使用原始视频在线播放，和官方客户端的即点即播体验更接近；遇到浏览器不支持的编码时，再切换内置转码或本地播放器。</p>
-          {saved && <p className="success">{saved}</p>}
-          <button className="primary"><Settings size={18} />保存播放器设置</button>
-        </form>}
-        {canAdmin && tab === "folders" && <form className="stack" onSubmit={saveSettings}>
+          <h3>分组设置</h3>
           <label className="check-row"><input type="checkbox" checked={settings.foldersEnabled} onChange={(e) => setSettings({ ...settings, foldersEnabled: e.target.checked })} /><span>同步 Telegram 聊天文件夹</span></label>
           <label className="check-row"><input type="checkbox" checked={settings.foldersShowArchived} onChange={(e) => setSettings({ ...settings, foldersShowArchived: e.target.checked })} /><span>会话列表显示归档会话</span></label>
           <label className="check-row"><input type="checkbox" checked={settings.foldersAutoSelectFirst} onChange={(e) => setSettings({ ...settings, foldersAutoSelectFirst: e.target.checked })} /><span>打开账号后自动选择第一个会话</span></label>
           {saved && <p className="success">{saved}</p>}
-          <button className="primary"><Settings size={18} />保存分组设置</button>
+          <button className="primary"><Settings size={18} />保存隐私设置</button>
         </form>}
         {canAdmin && tab === "diagnostics" && <div className="diagnostics-panel">
           <div className="diagnostics-actions">
@@ -1070,22 +1066,26 @@ function App() {
     if (!token) return;
     api("/api/me").then(setMe).catch(() => setTokenState(""));
     loadSettings();
-    loadAnnouncements();
-    loadAbout();
-    loadDownloads();
-    loadSilentCaches();
     refreshAccounts();
+    window.setTimeout(() => {
+      loadAnnouncements();
+      loadAbout();
+      loadDownloads();
+      loadSilentCaches();
+    }, 400);
   }, [token]);
 
   useEffect(() => {
     if (!accountId) return;
     socket?.emit("account:join", accountId);
-    if (appSettings.foldersEnabled) loadFolders();
-    else {
-      setFolders([]);
-      setActiveFolder("all");
-    }
     loadChats();
+    window.setTimeout(() => {
+      if (appSettings.foldersEnabled) loadFolders();
+      else {
+        setFolders([]);
+        setActiveFolder("all");
+      }
+    }, 250);
   }, [accountId, socket, appSettings.foldersEnabled]);
 
   useEffect(() => {

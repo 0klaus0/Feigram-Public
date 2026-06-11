@@ -111,13 +111,14 @@ async function loadPersistentTasks() {
   silentCacheRateLimitBps = Math.max(0, Number(savedSilent.rateLimitBps || 0));
   for (const task of savedSilent.tasks || []) {
     if (!task?.id || !task.userId || !task.accountId || !task.peerId || !task.messageId) continue;
+    if (task.status === "cancelled") continue;
     const completedFileExists = task.status === "completed" && task.filePath && await fs.pathExists(task.filePath);
     const shouldResume = !["completed", "cancelled"].includes(task.status);
     const next = {
       ...task,
       cancelToken: null,
       order: Number(task.order || (task.createdAt ? Date.parse(task.createdAt) : 0) || nextSilentOrder()),
-    retryCount: Number(task.retryCount || 0),
+      retryCount: Number(task.retryCount || 0),
       lastProgressAt: task.lastProgressAt || task.updatedAt || new Date().toISOString(),
       speedBps: 0,
       status: completedFileExists ? "completed" : shouldResume ? "queued" : task.status,
@@ -1264,7 +1265,7 @@ function listDownloadTasks(userId) {
 
 function listSilentCacheTasks(userId) {
   return [...silentCacheRecords.values()]
-    .filter((task) => task.userId === userId)
+    .filter((task) => task.userId === userId && task.status !== "cancelled")
     .sort((a, b) => {
       const orderDiff = Number(a.order || 0) - Number(b.order || 0);
       if (orderDiff) return orderDiff;
