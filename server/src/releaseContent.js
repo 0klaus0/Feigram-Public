@@ -14,6 +14,19 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.6",
+    title: "Feigram 2.0.6 更新",
+    version: "2.0.6",
+    level: "success",
+    createdAt: "2026-06-12T00:00:00.000Z",
+    body: [
+      "进一步增强群缓存限速策略。",
+      "限速开启时，后台缓存强制单任务运行，避免多个任务并发叠加突破上限。",
+      "限速开启时改用 Telegram 底层下载接口，并指定 32KB 小分片，降低单个大分片造成的瞬时冲高。",
+      "切换为限速模式时，会主动暂停多余运行任务并重新排队。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.5",
     title: "Feigram 2.0.5 更新",
     version: "2.0.5",

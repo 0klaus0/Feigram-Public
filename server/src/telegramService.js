@@ -59,6 +59,26 @@ function enqueueSilentTask(task) {
   silentCacheQueue.sort((a, b) => Number(a.order || 0) - Number(b.order || 0));
 }
 
+function silentConcurrencyLimit() {
+  return silentCacheRateLimitBps > 0 ? 1 : MAX_SILENT_CACHE_CONCURRENCY;
+}
+
+function rebalanceSilentConcurrency(io = realtimeIo) {
+  const limit = silentConcurrencyLimit();
+  const running = [...silentCacheRecords.values()]
+    .filter((task) => task.status === "running" && task.cancelToken)
+    .sort((a, b) => Number(a.order || 0) - Number(b.order || 0));
+  running.slice(limit).forEach((task) => {
+    task.cancelToken.paused = true;
+    task.cancelToken.requeue = true;
+    task.status = "queued";
+    task.speedBps = 0;
+    task.updatedAt = new Date().toISOString();
+    enqueueSilentTask(task);
+    emitSilentCacheTask(io, task);
+  });
+}
+
 async function throttleSilentCache(deltaBytes) {
   const delta = Math.max(0, Number(deltaBytes || 0));
   const rate = Number(silentCacheRateLimitBps || 0);
@@ -953,7 +973,28 @@ async function mediaMessage(userId, accountId, peerId, messageId) {
   const entity = await resolvePeer(userId, accountId, peerId);
   const [message] = await client.getMessages(entity, { ids: [Number(messageId)] });
   if (!message || !message.media) throw Object.assign(new Error("这条消息没有可下载媒体"), { status: 404 });
-  return { client, message };
+  return { client, entity, message };
+}
+
+async function downloadSilentMedia(client, entity, message, outputFile, progressCallback) {
+  if (silentCacheRateLimitBps > 0 && message.document) {
+    const doc = message.document;
+    await client.downloadFile(new Api.InputDocumentFileLocation({
+      id: doc.id,
+      accessHash: doc.accessHash,
+      fileReference: doc.fileReference,
+      thumbSize: ""
+    }), {
+      outputFile,
+      dcId: doc.dcId,
+      fileSize: doc.size,
+      partSizeKb: 32,
+      progressCallback,
+      msgData: [entity, Number(message.id)]
+    });
+    return;
+  }
+  await client.downloadMedia(message, { outputFile, progressCallback });
 }
 
 async function ensureDownloadTask(userId, accountId, peerId, messageId) {
@@ -1145,7 +1186,7 @@ async function cacheVideoSilently(userId, accountId, peerId, message) {
 
 function pumpSilentCacheQueue(io = realtimeIo) {
   if (!silentCacheEnabled) return;
-  while (silentCacheActive < MAX_SILENT_CACHE_CONCURRENCY && silentCacheQueue.length) {
+  while (silentCacheActive < silentConcurrencyLimit() && silentCacheQueue.length) {
     const record = silentCacheQueue.shift();
     if (!record || silentCacheTasks.has(record.id) || ["completed", "cancelled"].includes(record.status)) continue;
     silentCacheActive += 1;
@@ -1201,7 +1242,7 @@ async function runSilentCacheTask(record, io = realtimeIo) {
     emitSilentCacheTask(io, record);
     return;
   }
-  const { client, message } = await mediaMessage(record.userId, record.accountId, record.peerId, record.messageId);
+  const { client, entity, message } = await mediaMessage(record.userId, record.accountId, record.peerId, record.messageId);
   await fs.ensureDir(record.downloadDir);
   await fs.remove(record.partPath).catch(() => {});
   const total = record.size || Number(message.file?.size || message.document?.size || 0);
@@ -1215,7 +1256,8 @@ async function runSilentCacheTask(record, io = realtimeIo) {
     if (cancelToken.cancelled || cancelToken.paused || !silentCacheEnabled) {
       throw Object.assign(new Error(cancelToken.cancelled ? "后台缓存已取消" : "后台缓存已暂停"), {
         status: 499,
-        paused: cancelToken.paused || !silentCacheEnabled
+        paused: cancelToken.paused || !silentCacheEnabled,
+        requeue: cancelToken.requeue
       });
     }
     const downloaded = Number(downloadedValue?.toString?.() || downloadedValue || 0);
@@ -1227,7 +1269,8 @@ async function runSilentCacheTask(record, io = realtimeIo) {
     if (cancelToken.cancelled || cancelToken.paused || !silentCacheEnabled) {
       throw Object.assign(new Error(cancelToken.cancelled ? "后台缓存已取消" : "后台缓存已暂停"), {
         status: 499,
-        paused: cancelToken.paused || !silentCacheEnabled
+        paused: cancelToken.paused || !silentCacheEnabled,
+        requeue: cancelToken.requeue
       });
     }
     const now = Date.now();
@@ -1241,7 +1284,7 @@ async function runSilentCacheTask(record, io = realtimeIo) {
     }
   };
   try {
-    await client.downloadMedia(message, { outputFile: record.partPath, progressCallback });
+    await downloadSilentMedia(client, entity, message, record.partPath, progressCallback);
     await fs.move(record.partPath, record.filePath, { overwrite: true });
     const stat = await fs.stat(record.filePath).catch(() => null);
     if (stat) record.downloaded = stat.size;
@@ -1252,7 +1295,11 @@ async function runSilentCacheTask(record, io = realtimeIo) {
     record.updatedAt = new Date().toISOString();
     emitSilentCacheTask(io, record);
   } catch (error) {
-    if (error.status === 499 && error.paused) {
+    if (error.status === 499 && error.requeue) {
+      record.status = "queued";
+      record.error = "";
+      enqueueSilentTask(record);
+    } else if (error.status === 499 && error.paused) {
       record.status = "paused";
       record.error = "";
     } else if (error.status === 499) {
@@ -1310,6 +1357,7 @@ function setSilentCacheControl(userId, payload = {}, io = realtimeIo) {
     silentCacheRateLimitBps = Math.max(0, Math.min(1024 * 1024 * 1024, Number(payload.rateLimitBps || 0)));
     silentRateWindowStart = Date.now();
     silentRateWindowBytes = 0;
+    rebalanceSilentConcurrency(io);
   }
   if (!silentCacheEnabled) {
     for (const task of silentCacheRecords.values()) {
