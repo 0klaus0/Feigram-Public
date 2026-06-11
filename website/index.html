@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Feigram Public 是第三方开发的非官方 Telegram 客户端，面向飞牛 OS / fnOS 自托管使用。" />
+    <title>Feigram - fnOS 上的 Telegram 客户端</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="/">
+        <img src="https://raw.githubusercontent.com/g-star1024/Feigram-Public/main/fnos-native-package/ICON_256.PNG" alt="Feigram" />
+        <span>Feigram</span>
+      </a>
+      <nav>
+        <a href="#features">功能</a>
+        <a href="#deploy">部署</a>
+        <a href="#privacy">说明</a>
+        <a href="https://github.com/g-star1024/Feigram-Public">GitHub</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">Feigram Public</p>
+          <h1>为飞牛 OS 打造的第三方 Telegram 客户端</h1>
+          <p>Feigram 将 Telegram 会话、分组、图片视频预览、下载缓存和多账户管理带到 fnOS 设备上，适合在 NAS 或飞牛设备中自托管使用。</p>
+          <div class="hero-actions">
+            <a class="primary" href="https://github.com/g-star1024/Feigram-Public">查看官方仓库</a>
+            <a class="secondary" href="https://t.me/feigram">加入 Feigram 群</a>
+          </div>
+        </div>
+        <div class="product-card">
+          <img src="https://raw.githubusercontent.com/g-star1024/Feigram-Public/main/fnos-native-package/ICON_256.PNG" alt="Feigram app icon" />
+          <strong>Feigram for fnOS</strong>
+          <span>Web + Node.js + MTProto</span>
+        </div>
+      </section>
+
+      <section id="features" class="section">
+        <div class="section-title">
+          <p class="eyebrow">Features</p>
+          <h2>核心功能</h2>
+        </div>
+        <div class="feature-grid">
+          <article><h3>Telegram 多账号</h3><p>支持多个 Telegram 账号登录、切换、退出，并为不同飞牛账户隔离 session。</p></article>
+          <article><h3>聊天与分组</h3><p>同步 Telegram 会话列表和聊天文件夹，支持搜索、群组、频道、私聊和站内跳转。</p></article>
+          <article><h3>媒体预览</h3><p>支持图片预览、视频在线播放、媒体组展示、群组信息侧栏和最近文件快捷访问。</p></article>
+          <article><h3>下载缓存</h3><p>视频缓存进入统一下载中心，可查看进度、速度、状态，并支持清除列表或删除缓存。</p></article>
+          <article><h3>管理员后台</h3><p>可管理飞牛账户、覆盖 API 设置、缓存目录、通知、隐私、播放器和分组行为。</p></article>
+          <article><h3>公开发布准备</h3><p>内置发布说明、隐私政策、服务条款入口，并明确第三方非官方客户端身份。</p></article>
+        </div>
+      </section>
+
+      <section id="deploy" class="section split">
+        <div>
+          <p class="eyebrow">Deploy</p>
+          <h2>面向 fnOS 的自托管发布</h2>
+          <p>Feigram Public 以 FPK 形式安装到飞牛 OS。安装后通过管理员后台完成飞牛账户、Telegram 账号、缓存目录和播放器策略配置。</p>
+          <p>官网页面可直接部署到 Cloudflare Pages，输出目录使用仓库中的 <code>website</code>。</p>
+        </div>
+        <ol class="steps">
+          <li>从 GitHub Releases 下载 Feigram Public FPK。</li>
+          <li>在飞牛 OS 中安装并打开应用。</li>
+          <li>创建第一个管理员飞牛账户。</li>
+          <li>添加 Telegram 账号并开始使用。</li>
+        </ol>
+      </section>
+
+      <section id="privacy" class="section notice">
+        <p class="eyebrow">Notice</p>
+        <h2>重要说明</h2>
+        <p>Feigram 是第三方开发的非官方 Telegram 客户端，仅适用于飞牛 OS / fnOS。Feigram 不隶属于 Telegram、Telegram Messenger Inc. 或飞牛官方。公开部署请启用 HTTPS，并遵守 Telegram 服务条款、发布平台规则和所在地法律法规。</p>
+      </section>
+    </main>
+
+    <footer>
+      <span>Feigram 官网：feigram.dpdns.org</span>
+      <a href="https://t.me/feigram">Feigram 群</a>
+      <a href="https://github.com/g-star1024/Feigram-Public">GitHub 仓库</a>
+    </footer>
+  </body>
+</html>

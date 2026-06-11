@@ -549,12 +549,12 @@ textarea {
   background: var(--bubble);
   border: 1px solid var(--line);
   border-radius: 8px;
-  max-width: calc(100% - 48px);
+  max-width: min(680px, calc(100% - 48px));
   padding: 10px 12px;
 }
 
 .message-row .bubble {
-  max-width: 100%;
+  max-width: min(680px, 100%);
 }
 
 .bubble.mine {
@@ -656,7 +656,7 @@ textarea {
 
 .media-group-bubble {
   padding: 8px;
-  width: min(860px, 100%);
+  width: min(620px, 100%);
 }
 
 .image-preview {
@@ -671,13 +671,14 @@ textarea {
   max-height: 420px;
   max-width: 100%;
   object-fit: contain;
-  width: 100%;
+  width: min(520px, 100%);
 }
 
 .compact-media.image-preview img {
   aspect-ratio: 1 / 1;
   max-height: none;
   object-fit: cover;
+  width: 100%;
 }
 
 .video-preview video {
@@ -686,7 +687,7 @@ textarea {
   border-radius: 8px;
   display: block;
   max-height: 460px;
-  max-width: 100%;
+  max-width: min(520px, 100%);
   object-fit: contain;
   width: 100%;
 }
@@ -696,7 +697,7 @@ textarea {
   background: #000;
   border-radius: 8px;
   max-height: 460px;
-  max-width: 100%;
+  max-width: min(520px, 100%);
   overflow: hidden;
   position: relative;
   width: 100%;
@@ -719,7 +720,7 @@ textarea {
   color: #dce7e3;
   display: block;
   max-height: 460px;
-  max-width: 100%;
+  max-width: min(520px, 100%);
   min-height: 160px;
   padding: 18px;
   text-align: center;
@@ -781,6 +782,14 @@ textarea {
 .video-preview.portrait video {
   aspect-ratio: 9 / 16;
   max-width: min(320px, 100%);
+}
+
+.media-grid.multi .video-stage,
+.media-grid.multi .video-load-button,
+.media-grid.multi .video-preview video {
+  aspect-ratio: 1 / 1;
+  max-height: none;
+  max-width: 100%;
 }
 
 .video-fallback {
@@ -902,6 +911,7 @@ textarea {
   gap: 10px;
   overflow: auto;
   padding: 14px;
+  min-height: 0;
 }
 
 .download-item {
@@ -911,6 +921,7 @@ textarea {
   display: grid;
   gap: 8px;
   padding: 12px;
+  min-width: 0;
 }
 
 .download-item.completed {
@@ -926,7 +937,6 @@ textarea {
 }
 
 .download-item-head,
-.download-meta,
 .download-actions {
   align-items: center;
   display: flex;
@@ -934,7 +944,12 @@ textarea {
   justify-content: space-between;
 }
 
+.download-item-head {
+  min-width: 0;
+}
+
 .download-item-head strong {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -944,6 +959,23 @@ textarea {
 .download-meta {
   color: var(--muted);
   font-size: 0.82rem;
+}
+
+.download-item-head span {
+  flex: 0 0 auto;
+}
+
+.download-meta {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) 88px 58px;
+  white-space: nowrap;
+}
+
+.download-meta span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .download-progress {
@@ -963,45 +995,36 @@ textarea {
 .download-error {
   color: #ff7b7b;
   font-size: 0.82rem;
+  margin: 0;
+  overflow-wrap: anywhere;
 }
 
 .download-actions {
+  flex-wrap: wrap;
   justify-content: flex-start;
 }
 
-.download-actions button,
-.download-menu button {
+.download-actions button {
   align-items: center;
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 7px;
   color: inherit;
   display: inline-flex;
-  gap: 5px;
-  padding: 6px 9px;
-}
-
-.download-menu {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  box-shadow: var(--shadow);
-  display: grid;
-  gap: 6px;
-  min-width: 150px;
-  padding: 8px;
-  position: fixed;
-  z-index: 80;
+  font-size: 0.78rem;
+  gap: 4px;
+  min-height: 28px;
+  padding: 4px 7px;
 }
 
 .chat-info-panel {
   background: var(--panel);
   border-left: 1px solid var(--line);
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   height: 100%;
   min-width: 320px;
-  overflow: auto;
+  overflow: hidden;
   width: 340px;
 }
 
@@ -1019,7 +1042,7 @@ textarea {
   display: grid;
   gap: 8px;
   justify-items: center;
-  padding: 22px 16px;
+  padding: 18px 16px;
   text-align: center;
 }
 
@@ -1040,6 +1063,7 @@ textarea {
   display: grid;
   gap: 10px;
   padding: 16px;
+  align-content: start;
 }
 
 .chat-info-section h3 {
@@ -1059,6 +1083,8 @@ textarea {
   color: var(--muted);
   display: grid;
   gap: 4px;
+  min-height: 64px;
+  align-content: center;
   padding: 10px;
   text-align: center;
 }
@@ -1071,6 +1097,11 @@ textarea {
 .info-file-list {
   display: grid;
   gap: 8px;
+}
+
+.chat-info-content {
+  min-height: 0;
+  overflow: auto;
 }
 
 .info-file-item {
@@ -1139,10 +1170,10 @@ textarea {
 .admin-modal {
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
-  width: min(760px, 100%);
+  width: min(920px, 100%);
   height: min(760px, calc(100dvh - 36px));
   max-height: min(760px, calc(100dvh - 36px));
-  overflow: auto;
+  overflow: hidden;
 }
 
 .announcement-list {
@@ -1154,8 +1185,10 @@ textarea {
 .admin-modal > .account-admin,
 .admin-modal > .user-list,
 .admin-modal > .stack {
+  align-content: start;
   min-height: 0;
   overflow: auto;
+  padding-right: 4px;
 }
 
 .hint {
@@ -1230,8 +1263,19 @@ textarea {
 .admin-grid {
   display: grid;
   gap: 8px;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   margin-bottom: 16px;
+  align-items: end;
+}
+
+.admin-grid input,
+.admin-grid select,
+.admin-grid button {
+  min-height: 42px;
+}
+
+.admin-grid button {
+  align-self: stretch;
 }
 
 .user-list {

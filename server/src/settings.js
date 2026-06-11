@@ -26,7 +26,7 @@ function envDefaults() {
     foldersEnabled: process.env.FOLDERS_ENABLED !== "false",
     foldersShowArchived: process.env.FOLDERS_SHOW_ARCHIVED === "true",
     foldersAutoSelectFirst: process.env.FOLDERS_AUTO_SELECT_FIRST !== "false",
-    playerMode: process.env.PLAYER_MODE || "hls"
+    playerMode: process.env.PLAYER_MODE || "browser"
   };
 }
 
@@ -51,7 +51,7 @@ function sanitize(input = {}) {
     foldersEnabled: bool(input.foldersEnabled, true),
     foldersShowArchived: bool(input.foldersShowArchived, false),
     foldersAutoSelectFirst: bool(input.foldersAutoSelectFirst, true),
-    playerMode: ["hls", "browser", "local"].includes(input.playerMode) ? input.playerMode : "hls"
+    playerMode: ["hls", "browser", "local"].includes(input.playerMode) ? input.playerMode : "browser"
   };
 }
 

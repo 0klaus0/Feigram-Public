@@ -46,6 +46,23 @@ function formatBytes(value) {
   return `${(size / (1024 ** index)).toFixed(index ? 1 : 0)} ${units[index]}`;
 }
 
+function downloadDisplayKey(item) {
+  const mediaKey = `${item.accountId}:${item.peerId}:${item.messageId}`;
+  if (item.fileName && item.size) return `${item.accountId}:${item.peerId}:${item.fileName}:${item.size}`;
+  return mediaKey;
+}
+
+function mergeDownloads(items) {
+  return [...items.reduce((map, item) => {
+    const key = item.status === "completed" ? downloadDisplayKey(item) : `${item.accountId}:${item.peerId}:${item.messageId}`;
+    const existing = map.get(key);
+    if (!existing || String(item.updatedAt).localeCompare(String(existing.updatedAt)) > 0 || item.status === "completed") {
+      map.set(key, item);
+    }
+    return map;
+  }, new Map()).values()].sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+}
+
 function normalizeLink(value) {
   if (value.startsWith("@")) return `https://t.me/${value.slice(1)}`;
   if (value.startsWith("t.me/")) return `https://${value}`;
@@ -140,44 +157,45 @@ function hlsMediaUrl(accountId, chatId, messageId) {
   return `/api/media/${accountId}/${encodeURIComponent(chatId)}/${messageId}/hls/master.m3u8?${params.toString()}`;
 }
 
-function FeigramVideo({ src, hlsSrc, mode = "hls", onError, onMode }) {
+function FeigramVideo({ src, hlsSrc, mode = "browser", onError, onMode }) {
   const ref = useRef(null);
   useEffect(() => {
     const video = ref.current;
     if (!video) return undefined;
     if (mode === "browser") {
-      onMode?.("浏览器原始播放");
+      onMode?.("原始视频在线播放");
       video.src = src;
       return undefined;
     }
     if (video.canPlayType("application/vnd.apple.mpegurl")) {
-      onMode?.("内置 HLS 转码播放");
+      onMode?.("HLS 转码播放");
       video.src = hlsSrc;
       return undefined;
     }
     if (Hls.isSupported()) {
-      onMode?.("内置 HLS 转码播放");
+      onMode?.("HLS 转码准备中");
       const hls = new Hls({ enableWorker: true, lowLatencyMode: false });
       hls.loadSource(hlsSrc);
       hls.attachMedia(video);
+      hls.on(Hls.Events.MANIFEST_PARSED, () => onMode?.("HLS 转码播放"));
       hls.on(Hls.Events.ERROR, (_event, data) => {
         if (data?.fatal) {
           hls.destroy();
-          onMode?.("浏览器原始播放");
+          onMode?.("回退原始播放");
           video.src = src;
           video.load();
         }
       });
       return () => hls.destroy();
     }
-    onMode?.("浏览器原始播放");
+    onMode?.("原始视频在线播放");
     video.src = src;
     return undefined;
   }, [src, hlsSrc, mode, onMode]);
   return <video ref={ref} controls autoPlay preload="metadata" playsInline onError={onError} />;
 }
 
-function MessageMedia({ accountId, chatId, message, compact = false, onCache, task, playerMode = "hls" }) {
+function MessageMedia({ accountId, chatId, message, compact = false, onCache, task, playerMode = "browser" }) {
   const [failed, setFailed] = useState(false);
   const [active, setActive] = useState(false);
   const [localStatus, setLocalStatus] = useState("");
@@ -458,7 +476,7 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
     foldersEnabled: true,
     foldersShowArchived: false,
     foldersAutoSelectFirst: true,
-    playerMode: "hls"
+    playerMode: "browser"
   });
   const [apiIdPlaceholder, setApiIdPlaceholder] = useState("");
   const [hashPlaceholder, setHashPlaceholder] = useState("");
@@ -494,7 +512,7 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
         foldersEnabled: nextSettings.foldersEnabled !== false,
         foldersShowArchived: Boolean(nextSettings.foldersShowArchived),
         foldersAutoSelectFirst: nextSettings.foldersAutoSelectFirst !== false,
-        playerMode: nextSettings.playerMode || "hls"
+        playerMode: nextSettings.playerMode || "browser"
       });
       setApiIdPlaceholder(nextSettings.telegramApiIdSet ? "已保存，留空则不修改" : "请输入 Telegram API ID");
       setHashPlaceholder(nextSettings.telegramApiHashSet ? "已保存，留空则不修改" : "请输入 Telegram API Hash");
@@ -627,11 +645,11 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
         </form>}
         {canAdmin && tab === "player" && <form className="stack" onSubmit={saveSettings}>
           <label><span>视频在线播放模式</span><select value={settings.playerMode} onChange={(e) => setSettings({ ...settings, playerMode: e.target.value })}>
-            <option value="hls">内置播放器（ffmpeg 转码 HLS，推荐）</option>
-            <option value="browser">浏览器原始播放器</option>
+            <option value="browser">原始视频在线播放（推荐）</option>
+            <option value="hls">内置转码播放器（ffmpeg HLS，实验）</option>
             <option value="local">本地播放器（下载后打开）</option>
           </select></label>
-          <p className="hint">内置模式会优先缓存并转码为 H.264/AAC HLS，兼容性最好；首次播放需要等待转码。</p>
+          <p className="hint">推荐优先使用原始视频在线播放，和官方客户端的即点即播体验更接近；遇到浏览器不支持的编码时，再切换内置转码或本地播放器。</p>
           {saved && <p className="success">{saved}</p>}
           <button className="primary"><Settings size={18} />保存播放器设置</button>
         </form>}
@@ -676,10 +694,6 @@ function InfoModal({ announcements, about, open, onClose }) {
 }
 
 function DownloadCenter({ open, downloads, onStart, onCancel, onClear, onDelete, onPlay, onClose }) {
-  const [menu, setMenu] = useState(null);
-  useEffect(() => {
-    if (!open) setMenu(null);
-  }, [open]);
   if (!open) return null;
   const active = downloads.filter((item) => ["queued", "downloading"].includes(item.status)).length;
   const statusText = {
@@ -690,8 +704,9 @@ function DownloadCenter({ open, downloads, onStart, onCancel, onClear, onDelete,
     error: "失败"
   };
   const progressFor = (item) => item.size ? Math.min(100, Math.round((Number(item.downloaded || 0) / Number(item.size)) * 100)) : 0;
+  const deduped = mergeDownloads(downloads);
   return (
-    <div className="download-layer" onClick={() => setMenu(null)}>
+    <div className="download-layer">
       <section className="download-panel" onClick={(event) => event.stopPropagation()}>
         <header>
           <div>
@@ -701,7 +716,7 @@ function DownloadCenter({ open, downloads, onStart, onCancel, onClear, onDelete,
           <button className="icon-button" onClick={onClose} title="关闭"><X size={18} /></button>
         </header>
         <div className="download-list">
-          {downloads.map((item) => {
+          {deduped.map((item) => {
             const progress = progressFor(item);
             return (
               <article
@@ -718,38 +733,30 @@ function DownloadCenter({ open, downloads, onStart, onCancel, onClear, onDelete,
                     onPlay?.(item);
                   }
                 }}
-                onContextMenu={(event) => {
-                  event.preventDefault();
-                  setMenu({ task: item, x: event.clientX, y: event.clientY });
-                }}
               >
                 <div className="download-item-head">
-                  <strong>{item.fileName || "Telegram 媒体"}</strong>
+                  <strong title={item.fileName || "Telegram 媒体"}>{item.fileName || "Telegram 媒体"}</strong>
                   <span>{statusText[item.status] || item.status}</span>
                 </div>
                 <div className="download-meta">
                   <span>{formatBytes(item.downloaded)} / {formatBytes(item.size)}</span>
-                  <span>{item.status === "downloading" ? `${formatBytes(item.speedBps)}/s` : formatTime(item.updatedAt)}</span>
+                  <span>{formatBytes(item.speedBps)}/s</span>
+                  <span>{formatTime(item.updatedAt)}</span>
                 </div>
                 <div className="download-progress"><i style={{ width: `${progress}%` }} /></div>
                 {item.error && <p className="download-error">{item.error}</p>}
                 <div className="download-actions" onClick={(event) => event.stopPropagation()}>
-                  {item.status !== "downloading" && item.status !== "completed" && <button onClick={() => onStart(item)}><Play size={14} />开始</button>}
-                  {item.status === "downloading" && <button onClick={() => onCancel(item)}><X size={14} />取消</button>}
-                  <button onClick={() => onClear(item)}><X size={14} />清除列表</button>
-                  <button onClick={() => onDelete(item)}><Trash2 size={14} />删除缓存</button>
+                  {item.status === "completed" && item.kind === "video" && <button onClick={() => onPlay(item)}><Play size={12} />播放</button>}
+                  {item.status !== "downloading" && item.status !== "completed" && <button onClick={() => onStart(item)}><Play size={12} />开始</button>}
+                  {item.status === "downloading" && <button onClick={() => onCancel(item)}><X size={12} />取消</button>}
+                  <button onClick={() => onClear(item)}><X size={12} />清除</button>
+                  <button onClick={() => onDelete(item)}><Trash2 size={12} />删缓存</button>
                 </div>
               </article>
             );
           })}
-          {!downloads.length && <div className="empty">点击视频右上角缓存后，任务会出现在这里。</div>}
+          {!deduped.length && <div className="empty">点击视频右上角缓存后，任务会出现在这里。</div>}
         </div>
-        {menu && <div className="download-menu" style={{ left: menu.x, top: menu.y }} onClick={(event) => event.stopPropagation()}>
-          {menu.task.status !== "downloading" && menu.task.status !== "completed" && <button onClick={() => { onStart(menu.task); setMenu(null); }}>开始/继续</button>}
-          {menu.task.status === "downloading" && <button onClick={() => { onCancel(menu.task); setMenu(null); }}>取消</button>}
-          <button onClick={() => { onClear(menu.task); setMenu(null); }}>清除列表记录</button>
-          <button onClick={() => { onDelete(menu.task); setMenu(null); }}>删除缓存文件</button>
-        </div>}
       </section>
     </div>
   );
@@ -770,7 +777,7 @@ function PlaybackModal({ item, playerMode, onClose }) {
         <div className="playback-stage">
           {playerMode === "local"
             ? <a className="video-load-button local-player-link" href={download}>下载后用本地播放器打开</a>
-            : <FeigramVideo src={src} hlsSrc={hlsSrc} mode={playerMode} onMode={setModeLabel} onError={() => setFailed(true)} />}
+            : <FeigramVideo src={src} hlsSrc={hlsSrc} mode={playerMode || "browser"} onMode={setModeLabel} onError={() => setFailed(true)} />}
           {modeLabel && playerMode !== "local" ? <span className="video-mode-pill">{modeLabel}</span> : null}
           {failed ? <div className="video-fallback">当前模式无法播放，请切换播放器模式或下载到本地播放。</div> : null}
         </div>
@@ -788,33 +795,35 @@ function ChatInfoPanel({ open, accountId, chat, details, loading, onClose, onOpe
         <button className="icon-button" onClick={onClose} title="关闭"><X size={18} /></button>
         <strong>群组信息</strong>
       </header>
-      <div className="chat-info-profile">
-        <Avatar accountId={accountId} peerId={chat.id} label={chat.title} size={72} />
-        <h2>{info.title}</h2>
-        <p>{info.username ? `@${info.username}` : info.type}</p>
-        {!!info.participantsCount && <span>{info.participantsCount.toLocaleString("zh-CN")} 位成员/订阅者</span>}
+      <div className="chat-info-content">
+        <div className="chat-info-profile">
+          <Avatar accountId={accountId} peerId={chat.id} label={chat.title} size={72} />
+          <h2>{info.title}</h2>
+          <p>{info.username ? `@${info.username}` : info.type}</p>
+          {!!info.participantsCount && <span>{info.participantsCount.toLocaleString("zh-CN")} 位成员/订阅者</span>}
+        </div>
+        {loading ? <div className="empty">加载中</div> : <>
+          {info.about && <section className="chat-info-section"><h3>简介</h3><p>{info.about}</p></section>}
+          <section className="chat-info-section">
+            <h3>文件与媒体</h3>
+            <div className="media-summary">
+              <span><b>{info.mediaSummary?.images || 0}</b>图片</span>
+              <span><b>{info.mediaSummary?.videos || 0}</b>视频</span>
+              <span><b>{info.mediaSummary?.files || 0}</b>文件</span>
+            </div>
+          </section>
+          <section className="chat-info-section">
+            <h3>最近文件</h3>
+            <div className="info-file-list">
+              {(info.files || []).map((file) => <button className="info-file-item" type="button" key={`${file.id}-${file.fileName}`} onClick={() => onOpenMedia?.(file)}>
+                <Folder size={17} />
+                <span><strong>{file.fileName}</strong><small>{file.kind} · {formatBytes(file.size)} · {formatTime(file.date)}</small></span>
+              </button>)}
+              {!info.files?.length && <div className="empty">暂无最近文件</div>}
+            </div>
+          </section>
+        </>}
       </div>
-      {loading ? <div className="empty">加载中</div> : <>
-        {info.about && <section className="chat-info-section"><h3>简介</h3><p>{info.about}</p></section>}
-        <section className="chat-info-section">
-          <h3>文件与媒体</h3>
-          <div className="media-summary">
-            <span><b>{info.mediaSummary?.images || 0}</b>图片</span>
-            <span><b>{info.mediaSummary?.videos || 0}</b>视频</span>
-            <span><b>{info.mediaSummary?.files || 0}</b>文件</span>
-          </div>
-        </section>
-        <section className="chat-info-section">
-          <h3>最近文件</h3>
-          <div className="info-file-list">
-            {(info.files || []).map((file) => <button className="info-file-item" type="button" key={`${file.id}-${file.fileName}`} onClick={() => onOpenMedia?.(file)}>
-              <Folder size={17} />
-              <span><strong>{file.fileName}</strong><small>{file.kind} · {formatBytes(file.size)} · {formatTime(file.date)}</small></span>
-            </button>)}
-            {!info.files?.length && <div className="empty">暂无最近文件</div>}
-          </div>
-        </section>
-      </>}
     </aside>
   );
 }
@@ -836,7 +845,7 @@ function App() {
     foldersEnabled: true,
     foldersShowArchived: false,
     foldersAutoSelectFirst: true,
-    playerMode: "hls"
+    playerMode: "browser"
   });
   const [activeFolder, setActiveFolder] = useState("all");
   const [activeChat, setActiveChat] = useState(null);
@@ -936,10 +945,10 @@ function App() {
     const update = (task) => {
       setDownloads((current) => {
         const index = current.findIndex((item) => item.id === task.id);
-        if (index === -1) return [task, ...current];
+        if (index === -1) return mergeDownloads([task, ...current]);
         const next = [...current];
         next[index] = task;
-        return next.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+        return mergeDownloads(next);
       });
     };
     const remove = ({ id }) => setDownloads((current) => current.filter((item) => item.id !== id));
@@ -1169,7 +1178,7 @@ function App() {
     setError("");
     try {
       const result = await api(`/api/media/${accountId}/${encodeURIComponent(activeChat.id)}/${message.id}/cache`, { method: "POST" });
-      setDownloads((current) => [result, ...current.filter((item) => item.id !== result.id)]);
+      setDownloads((current) => mergeDownloads([result, ...current.filter((item) => item.id !== result.id)]));
       notify(`${result.fileName || "视频"} 已加入下载列表`);
       return result;
     } catch (err) {
@@ -1213,14 +1222,14 @@ function App() {
 
   async function loadDownloads() {
     const list = await api("/api/downloads").catch(() => []);
-    setDownloads(list);
+    setDownloads(mergeDownloads(list));
   }
 
   async function updateDownload(task, action, method = "POST") {
     try {
       const result = await api(`/api/downloads/${encodeURIComponent(task.id)}/${action}`, { method });
       if (result?.id) {
-        setDownloads((current) => [result, ...current.filter((item) => item.id !== result.id)]);
+        setDownloads((current) => mergeDownloads([result, ...current.filter((item) => item.id !== result.id)]));
       }
       return result;
     } catch (err) {
@@ -1266,7 +1275,7 @@ function App() {
       foldersEnabled: settings.foldersEnabled !== false,
       foldersShowArchived: Boolean(settings.foldersShowArchived),
       foldersAutoSelectFirst: settings.foldersAutoSelectFirst !== false,
-      playerMode: settings.playerMode || "hls"
+      playerMode: settings.playerMode || "browser"
     });
   }
 
