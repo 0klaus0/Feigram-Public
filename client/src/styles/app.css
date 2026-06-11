@@ -1541,6 +1541,85 @@ textarea {
   white-space: nowrap;
 }
 
+.diagnostics-panel {
+  display: grid;
+  gap: 14px;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.diagnostics-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.diagnostics-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+
+.diagnostics-grid span,
+.update-card,
+.diagnostics-paths,
+.log-tail {
+  background: var(--soft);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.diagnostics-grid span {
+  display: grid;
+  gap: 4px;
+  min-height: 72px;
+  padding: 12px;
+}
+
+.diagnostics-grid b,
+.diagnostics-paths strong {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.diagnostics-paths {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+}
+
+.diagnostics-paths p {
+  display: grid;
+  gap: 4px;
+  overflow-wrap: anywhere;
+}
+
+.update-card {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+}
+
+.update-card span,
+.update-card small {
+  color: var(--muted);
+}
+
+.update-card a {
+  color: #5fb7ff;
+  text-decoration: none;
+}
+
+.log-tail {
+  color: var(--muted);
+  font-size: 0.78rem;
+  max-height: 220px;
+  overflow: auto;
+  padding: 12px;
+  white-space: pre-wrap;
+}
+
 .modal h2 {
   margin-bottom: 18px;
 }

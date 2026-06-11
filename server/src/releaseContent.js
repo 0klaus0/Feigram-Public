@@ -14,6 +14,21 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.0",
+    title: "Feigram 2.0 fnOS Client Edition",
+    version: "2.0.0",
+    level: "success",
+    createdAt: "2026-06-11T18:00:00.000Z",
+    body: [
+      "Feigram 2.0 开始按 fnOS Client Edition 方向整合，保留现有稳定功能。",
+      "新增系统诊断页，可查看版本、缓存大小、任务数量、数据目录和日志尾部。",
+      "新增应用内更新检测，可跳转到 GitHub 发布页。",
+      "用户主动下载任务和群组后台静默缓存任务支持落盘，重启或升级后自动恢复。",
+      "群组后台缓存限制最多 5 个并发，避免大群一次性拉起过多任务。",
+      "群组信息资源列表支持滚动加载更多。"
+    ].join("\n")
+  },
+  {
     id: "release-1.5.9",
     title: "Feigram 1.5.9 更新",
     version: "1.5.9",

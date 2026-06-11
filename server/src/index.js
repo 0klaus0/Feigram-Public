@@ -20,6 +20,8 @@ const { hashPassword } = require("./cryptoBox");
 const { publicSettings, readSettings, writeSettings } = require("./settings");
 const { readPolicies } = require("./policies");
 const { readAbout, readAnnouncements } = require("./releaseContent");
+const { checkForUpdates, diagnostics } = require("./diagnostics");
+const { migrateStore } = require("./migrations");
 const { rateLimit } = require("./rateLimit");
 const tg = require("./telegramService");
 
@@ -68,6 +70,14 @@ app.put("/api/settings", adminOnly, asyncRoute(async (req, res) => {
 
 app.get("/api/admin/users", adminOnly, asyncRoute(async (_req, res) => {
   res.json((await readUsers()).map(publicUser));
+}));
+
+app.get("/api/admin/diagnostics", adminOnly, asyncRoute(async (_req, res) => {
+  res.json(await diagnostics());
+}));
+
+app.get("/api/admin/update-check", adminOnly, asyncRoute(async (_req, res) => {
+  res.json(await checkForUpdates());
 }));
 
 app.post("/api/admin/users", adminOnly, asyncRoute(async (req, res) => {
@@ -127,6 +137,13 @@ app.get("/api/chats", asyncRoute(async (req, res) => {
 
 app.get("/api/chats/:account/:peer/details", asyncRoute(async (req, res) => {
   res.json(await tg.chatDetails(req.user.id, req.params.account, req.params.peer));
+}));
+
+app.get("/api/chats/:account/:peer/media", asyncRoute(async (req, res) => {
+  res.json(await tg.chatMedia(req.user.id, req.params.account, req.params.peer, {
+    before: req.query.before,
+    limit: req.query.limit
+  }));
 }));
 
 app.post("/api/chats/:account/:peer/cache-large-videos", asyncRoute(async (req, res) => {
@@ -311,7 +328,9 @@ app.use((error, _req, res, _next) => {
 });
 
 ensureStore()
+  .then(() => migrateStore())
   .then(() => tg.loadSavedClients(io))
+  .then(() => tg.restoreBackgroundTasks(io))
   .then(() => tg.cleanupCache().catch((error) => console.warn("Cache cleanup failed:", error.message)))
   .then(() => {
     setInterval(() => {

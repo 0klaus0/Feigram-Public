@@ -4,6 +4,8 @@ const path = require("path");
 
 const dataDir = process.env.DATA_DIR || path.join(__dirname, "..", "data");
 const accountsPath = path.join(dataDir, "accounts.json");
+const downloadTasksPath = path.join(dataDir, "download-tasks.json");
+const silentCachePath = path.join(dataDir, "silent-cache-tasks.json");
 const secretPath = path.join(dataDir, "app-secret");
 const usersPath = path.join(dataDir, "users.json");
 
@@ -85,6 +87,7 @@ function safeId(prefix = "id") {
 
 module.exports = {
   dataDir,
+  downloadTasksPath,
   ensureStore,
   getSecret,
   findUserByUsername,
@@ -92,6 +95,7 @@ module.exports = {
   readUsers,
   removeAccount,
   safeId,
+  silentCachePath,
   upsertAccount,
   upsertUser,
   writeUsers

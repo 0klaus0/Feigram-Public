@@ -501,6 +501,8 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
   });
   const [apiIdPlaceholder, setApiIdPlaceholder] = useState("");
   const [hashPlaceholder, setHashPlaceholder] = useState("");
+  const [diagnostics, setDiagnostics] = useState(null);
+  const [updateInfo, setUpdateInfo] = useState(null);
   const [newUser, setNewUser] = useState({ username: "", password: "", displayName: "", role: "user" });
   const [error, setError] = useState("");
   const [saved, setSaved] = useState("");
@@ -579,6 +581,22 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
     }
   }
 
+  async function loadDiagnostics() {
+    setError("");
+    setDiagnostics(await api("/api/admin/diagnostics").catch((err) => {
+      setError(err.message);
+      return null;
+    }));
+  }
+
+  async function checkUpdates() {
+    setError("");
+    setUpdateInfo(await api("/api/admin/update-check").catch((err) => {
+      setError(err.message);
+      return null;
+    }));
+  }
+
   if (!open) return null;
 
   return (
@@ -595,6 +613,7 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
           {canAdmin && <button className={cx(tab === "privacy" && "active")} onClick={() => setTab("privacy")}>隐私</button>}
           {canAdmin && <button className={cx(tab === "player" && "active")} onClick={() => setTab("player")}>播放器</button>}
           {canAdmin && <button className={cx(tab === "folders" && "active")} onClick={() => setTab("folders")}>分组</button>}
+          {canAdmin && <button className={cx(tab === "diagnostics" && "active")} onClick={() => { setTab("diagnostics"); loadDiagnostics(); }}>诊断</button>}
         </div>
         {error && <p className="error">{error}</p>}
         {tab === "accounts" && <div className="account-admin">
@@ -681,6 +700,32 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
           {saved && <p className="success">{saved}</p>}
           <button className="primary"><Settings size={18} />保存分组设置</button>
         </form>}
+        {canAdmin && tab === "diagnostics" && <div className="diagnostics-panel">
+          <div className="diagnostics-actions">
+            <button className="icon-button" type="button" onClick={loadDiagnostics}><RefreshCw size={16} />刷新诊断</button>
+            <button className="icon-button" type="button" onClick={checkUpdates}><Download size={16} />检查更新</button>
+          </div>
+          {diagnostics ? <div className="diagnostics-grid">
+            <span><b>版本</b>{diagnostics.app?.version}</span>
+            <span><b>版本线</b>{diagnostics.app?.edition}</span>
+            <span><b>运行时间</b>{Math.floor((diagnostics.app?.uptime || 0) / 60)} 分钟</span>
+            <span><b>缓存大小</b>{formatBytes(diagnostics.cache?.bytes)}</span>
+            <span><b>下载任务</b>{diagnostics.cache?.downloadTasks || 0}</span>
+            <span><b>后台缓存</b>{diagnostics.cache?.silentCacheTasks || 0}</span>
+          </div> : <div className="empty">点击刷新诊断查看系统状态</div>}
+          {diagnostics && <div className="diagnostics-paths">
+            <p><strong>数据目录</strong>{diagnostics.paths?.dataDir}</p>
+            <p><strong>缓存目录</strong>{diagnostics.paths?.cacheBase}</p>
+            <p><strong>日志文件</strong>{diagnostics.paths?.logFile || "未设置"}</p>
+          </div>}
+          {updateInfo && <div className="update-card">
+            <strong>{updateInfo.updateAvailable ? "发现新版本" : "当前版本已是最新或暂未发现发布版"}</strong>
+            <span>当前：{updateInfo.current || "-"} / 最新：{updateInfo.latest || "-"}</span>
+            {updateInfo.error && <small>{updateInfo.error}</small>}
+            <a href={updateInfo.url} target="_blank" rel="noreferrer">打开发布页</a>
+          </div>}
+          {diagnostics?.logTail && <pre className="log-tail">{diagnostics.logTail}</pre>}
+        </div>}
       </div>
     </div>
   );
@@ -807,8 +852,9 @@ function PlaybackModal({ item, playerMode, onClose }) {
   );
 }
 
-function ChatInfoPanel({ open, accountId, chat, details, loading, autoCache, autoCacheBusy, onAutoCacheChange, onClose, onOpenMedia }) {
+function ChatInfoPanel({ open, accountId, chat, details, loading, autoCache, autoCacheBusy, mediaLoadingMore, onAutoCacheChange, onClose, onOpenMedia, onLoadMoreMedia }) {
   const [mediaTab, setMediaTab] = useState("all");
+  const contentRef = useRef(null);
   if (!open || !chat) return null;
   const info = details || chat;
   const resources = info.files || [];
@@ -819,7 +865,14 @@ function ChatInfoPanel({ open, accountId, chat, details, loading, autoCache, aut
         <button className="icon-button" onClick={onClose} title="关闭"><X size={18} /></button>
         <strong>群组信息</strong>
       </header>
-      <div className="chat-info-content">
+      <div
+        className="chat-info-content"
+        ref={contentRef}
+        onScroll={(event) => {
+          const element = event.currentTarget;
+          if (element.scrollHeight - element.scrollTop - element.clientHeight < 160) onLoadMoreMedia?.();
+        }}
+      >
         <div className="chat-info-profile">
           <Avatar accountId={accountId} peerId={chat.id} label={chat.title} size={72} />
           <h2>{info.title}</h2>
@@ -858,6 +911,7 @@ function ChatInfoPanel({ open, accountId, chat, details, loading, autoCache, aut
               </button>)}
               {!visibleResources.length && <div className="empty">暂无资源</div>}
             </div>
+            {details?.hasMoreMedia && <button className="history-button" type="button" onClick={() => onLoadMoreMedia?.()} disabled={mediaLoadingMore}>{mediaLoadingMore ? "加载中" : "加载更多资源"}</button>}
           </section>
         </>}
       </div>
@@ -906,6 +960,7 @@ function App() {
   const [chatInfoOpen, setChatInfoOpen] = useState(false);
   const [chatDetails, setChatDetails] = useState(null);
   const [chatDetailsLoading, setChatDetailsLoading] = useState(false);
+  const [chatMediaLoadingMore, setChatMediaLoadingMore] = useState(false);
   const [autoCacheChats, setAutoCacheChats] = useState(() => JSON.parse(localStorage.getItem("feigrame.autoCacheChats") || "{}"));
   const [autoCacheBusy, setAutoCacheBusy] = useState(false);
   const [playback, setPlayback] = useState(null);
@@ -1077,6 +1132,7 @@ function App() {
     if (!activeChat) return;
     setChatInfoOpen(true);
     setChatDetailsLoading(true);
+    setChatMediaLoadingMore(false);
     try {
       const info = await api(`/api/chats/${encodeURIComponent(accountId)}/${encodeURIComponent(activeChat.id)}/details`);
       setChatDetails(info);
@@ -1084,6 +1140,33 @@ function App() {
       notify(err.message);
     } finally {
       setChatDetailsLoading(false);
+    }
+  }
+
+  async function loadMoreChatMedia() {
+    if (!activeChat || !chatDetails?.hasMoreMedia || chatMediaLoadingMore) return;
+    setChatMediaLoadingMore(true);
+    try {
+      const before = chatDetails.nextMediaBefore || 0;
+      const page = await api(`/api/chats/${encodeURIComponent(accountId)}/${encodeURIComponent(activeChat.id)}/media?before=${encodeURIComponent(before)}&limit=30`);
+      setChatDetails((current) => {
+        if (!current) return current;
+        const seen = new Set((current.files || []).map((file) => String(file.id)));
+        const files = [
+          ...(current.files || []),
+          ...(page.files || []).filter((file) => !seen.has(String(file.id)))
+        ];
+        return {
+          ...current,
+          files,
+          nextMediaBefore: page.nextBefore || current.nextMediaBefore,
+          hasMoreMedia: Boolean(page.hasMore)
+        };
+      });
+    } catch (err) {
+      notify(err.message);
+    } finally {
+      setChatMediaLoadingMore(false);
     }
   }
 
@@ -1447,7 +1530,9 @@ function App() {
         loading={chatDetailsLoading}
         autoCache={activeChat ? autoCacheChats[`${accountId}:${activeChat.id}`] : false}
         autoCacheBusy={autoCacheBusy}
+        mediaLoadingMore={chatMediaLoadingMore}
         onAutoCacheChange={setChatAutoCache}
+        onLoadMoreMedia={loadMoreChatMedia}
         onOpenMedia={openInfoMedia}
         onClose={() => setChatInfoOpen(false)}
       />

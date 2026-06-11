@@ -1,7 +1,7 @@
 appname=feigrampub
-version=1.5.9
-display_name=Feigram Public
-desc="""<p><strong>Feigram Public</strong> 是第三方开发的非官方 Telegram 客户端公开发布版，支持管理员后台、飞牛账户隔离、加密 Telegram session、Telegram 文件夹、媒体预览和公告中心。</p><p>仅适用于 x86_64 / amd64 飞牛 OS 设备。</p>"""
+version=2.0.0
+display_name=Feigram
+desc="""<p><strong>Feigram 2.0 fnOS Client Edition</strong> 是第三方开发的非官方 Telegram 客户端，支持管理员后台、飞牛账户隔离、加密 Telegram session、Telegram 文件夹、媒体预览、后台任务恢复、系统诊断和更新检测。</p><p>仅适用于 x86_64 / amd64 飞牛 OS 设备。</p>"""
 platform=all
 source=thirdparty
 maintainer=g-star1024
@@ -12,4 +12,4 @@ desktop_uidir=ui
 desktop_applaunchname=feigrampub.proxy.Application
 service_port=3088
 checkport=true
-changelog=固定下载列表排序，群组信息新增媒体资源浏览和大视频静默缓存，视频消息新增封面预览和时长展示。
+changelog=Feigram 2.0 fnOS Client Edition：新增系统诊断、更新检测、任务恢复、静默缓存并发控制和群组资源滚动加载。

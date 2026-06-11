@@ -1,12 +1,13 @@
 const path = require("path");
 const { spawn } = require("child_process");
+const crypto = require("crypto");
 const fs = require("fs-extra");
 const mime = require("mime-types");
 const bigInt = require("big-integer");
 const { Api, TelegramClient } = require("telegram");
 const { StringSession } = require("telegram/sessions");
 const { NewMessage } = require("telegram/events");
-const { readAccounts, removeAccount, safeId, upsertAccount } = require("./store");
+const { dataDir, downloadTasksPath, readAccounts, removeAccount, safeId, silentCachePath, upsertAccount } = require("./store");
 const { readSettings } = require("./settings");
 const { decryptText, encryptText } = require("./cryptoBox");
 
@@ -15,9 +16,93 @@ const peerCache = new Map();
 const pendingLogins = new Map();
 const downloadTasks = new Map();
 const hlsTasks = new Map();
+const silentCacheRecords = new Map();
 const silentCacheTasks = new Map();
+const silentCacheQueue = [];
+let silentCacheActive = 0;
+let downloadPersistTimer = null;
+let silentPersistTimer = null;
 const VIDEO_CACHE_THRESHOLD = 100 * 1024 * 1024;
+const MAX_SILENT_CACHE_CONCURRENCY = 5;
 const FFMPEG_BIN = process.env.FFMPEG_BIN || path.join(__dirname, "..", "..", "bin", "ffmpeg");
+
+function stableId(prefix, ...parts) {
+  return `${prefix}_${crypto.createHash("sha1").update(parts.map((part) => String(part ?? "")).join("|")).digest("hex").slice(0, 24)}`;
+}
+
+function schedulePersistDownloads() {
+  if (downloadPersistTimer) return;
+  downloadPersistTimer = setTimeout(async () => {
+    downloadPersistTimer = null;
+    await persistDownloadTasks().catch((error) => console.warn("Persist downloads failed:", error.message));
+  }, 500);
+  downloadPersistTimer.unref?.();
+}
+
+function schedulePersistSilent() {
+  if (silentPersistTimer) return;
+  silentPersistTimer = setTimeout(async () => {
+    silentPersistTimer = null;
+    await persistSilentCacheTasks().catch((error) => console.warn("Persist silent cache failed:", error.message));
+  }, 500);
+  silentPersistTimer.unref?.();
+}
+
+async function persistDownloadTasks() {
+  await fs.ensureDir(dataDir);
+  const tasks = [...downloadTasks.values()].map(({ cancelToken, ...task }) => task);
+  await fs.writeJson(downloadTasksPath, { tasks }, { spaces: 2 });
+}
+
+async function persistSilentCacheTasks() {
+  await fs.ensureDir(dataDir);
+  await fs.writeJson(silentCachePath, { tasks: [...silentCacheRecords.values()] }, { spaces: 2 });
+}
+
+async function loadPersistentTasks() {
+  const savedDownloads = await fs.readJson(downloadTasksPath).catch(() => ({ tasks: [] }));
+  for (const task of savedDownloads.tasks || []) {
+    if (!task?.id || !task.userId || !task.accountId || !task.peerId || !task.messageId) continue;
+    const completedFileExists = task.status === "completed" && task.filePath && await fs.pathExists(task.filePath);
+    const next = {
+      ...task,
+      cancelToken: null,
+      speedBps: 0,
+      status: completedFileExists ? "completed" : "queued",
+      updatedAt: new Date().toISOString()
+    };
+    downloadTasks.set(next.id, next);
+  }
+
+  const savedSilent = await fs.readJson(silentCachePath).catch(() => ({ tasks: [] }));
+  for (const task of savedSilent.tasks || []) {
+    if (!task?.id || !task.userId || !task.accountId || !task.peerId || !task.messageId) continue;
+    const completedFileExists = task.status === "completed" && task.filePath && await fs.pathExists(task.filePath);
+    const next = {
+      ...task,
+      status: completedFileExists ? "completed" : "queued",
+      error: "",
+      updatedAt: new Date().toISOString()
+    };
+    silentCacheRecords.set(next.id, next);
+    if (next.status !== "completed") silentCacheQueue.push(next);
+  }
+}
+
+async function restoreBackgroundTasks(io) {
+  await loadPersistentTasks();
+  for (const task of downloadTasks.values()) {
+    if (task.status !== "completed") {
+      startDownloadTask(task.userId, task.accountId, task.peerId, task.messageId, io).catch((error) => {
+        task.status = "error";
+        task.error = error.message || "恢复下载失败";
+        task.updatedAt = new Date().toISOString();
+        emitDownloadTask(io, task);
+      });
+    }
+  }
+  pumpSilentCacheQueue();
+}
 
 async function cacheSettings() {
   const settings = await readSettings();
@@ -299,6 +384,21 @@ function serializeMessage(message) {
   };
 }
 
+function serializeMediaResource(message) {
+  const item = serializeMessage(message);
+  return {
+    id: item.id,
+    date: item.date,
+    text: item.text,
+    fileName: item.media?.fileName || item.media?.mimeType || "Telegram 媒体",
+    kind: item.media?.kind || "file",
+    size: item.media?.size || "",
+    width: item.media?.width || 0,
+    height: item.media?.height || 0,
+    duration: item.media?.duration || 0
+  };
+}
+
 function rememberMessageSenders(accountId, messages) {
   if (!peerCache.has(accountId)) peerCache.set(accountId, new Map());
   const cache = peerCache.get(accountId);
@@ -559,30 +659,37 @@ async function chatDetails(userId, accountId, peerId) {
     }
   } catch {}
   const fullChat = full?.fullChat || full?.fullUser || {};
-  const recent = await client.getMessages(entity, { limit: 80 }).catch(() => []);
-  const mediaMessages = recent.filter((message) => message.media).map(serializeMessage);
+  const mediaPage = await chatMedia(userId, accountId, peerId, { limit: 30 });
+  const mediaMessages = mediaPage.files;
   return {
     ...chat,
     about: fullChat.about || "",
     participantsCount: Number(fullChat.participantsCount || fullChat.membersCount || entity.participantsCount || 0),
     mediaSummary: {
-      images: mediaMessages.filter((message) => message.media?.kind === "image").length,
-      videos: mediaMessages.filter((message) => message.media?.kind === "video").length,
-      files: mediaMessages.filter((message) => message.media?.kind === "file").length
+      images: mediaMessages.filter((message) => message.kind === "image").length,
+      videos: mediaMessages.filter((message) => message.kind === "video").length,
+      files: mediaMessages.filter((message) => message.kind === "file").length
     },
-    files: mediaMessages
-      .slice(0, 24)
-      .map((message) => ({
-        id: message.id,
-        date: message.date,
-        text: message.text,
-        fileName: message.media?.fileName || message.media?.mimeType || "Telegram 媒体",
-        kind: message.media?.kind || "file",
-        size: message.media?.size || "",
-        width: message.media?.width || 0,
-        height: message.media?.height || 0,
-        duration: message.media?.duration || 0
-      }))
+    files: mediaMessages,
+    nextMediaBefore: mediaPage.nextBefore,
+    hasMoreMedia: mediaPage.hasMore
+  };
+}
+
+async function chatMedia(userId, accountId, peerId, { before = 0, limit = 30 } = {}) {
+  const client = await getClient(userId, accountId);
+  const entity = await resolvePeer(userId, accountId, peerId);
+  const pageSize = Math.max(1, Math.min(60, Number(limit) || 30));
+  const requestLimit = Math.min(200, pageSize * 4);
+  const request = { limit: requestLimit };
+  if (Number(before) > 0) request.offsetId = Number(before);
+  const messages = await client.getMessages(entity, request).catch(() => []);
+  const mediaMessages = messages.filter((message) => message.media);
+  const page = mediaMessages.slice(0, pageSize);
+  return {
+    files: page.map(serializeMediaResource),
+    nextBefore: page.length ? Math.min(...page.map((message) => Number(message.id))) : 0,
+    hasMore: messages.length >= requestLimit
   };
 }
 
@@ -654,7 +761,11 @@ async function mediaFileInfo(userId, accountId, message, contentType, kind) {
 }
 
 function downloadTaskId(userId, accountId, peerId, messageId) {
-  return safeId(`${userId}-${accountId}-${peerId}-${messageId}`);
+  return stableId("download", userId, accountId, peerId, messageId);
+}
+
+function silentCacheTaskId(userId, accountId, peerId, messageId) {
+  return stableId("silent", userId, accountId, peerId, messageId);
 }
 
 function serializeDownloadTask(task) {
@@ -681,6 +792,7 @@ function serializeDownloadTask(task) {
 
 function emitDownloadTask(io, task) {
   if (io) io.to(`user:${task.userId}`).emit("download:update", serializeDownloadTask(task));
+  schedulePersistDownloads();
 }
 
 async function mediaMessage(userId, accountId, peerId, messageId) {
@@ -722,6 +834,7 @@ async function ensureDownloadTask(userId, accountId, peerId, messageId) {
     updatedAt: new Date().toISOString()
   };
   downloadTasks.set(id, task);
+  schedulePersistDownloads();
   return task;
 }
 
@@ -739,6 +852,8 @@ async function startDownloadTask(userId, accountId, peerId, messageId, io) {
     emitDownloadTask(io, task);
     return serializeDownloadTask(task);
   }
+  const partStat = await fs.stat(task.partPath).catch(() => null);
+  if (partStat) task.downloaded = partStat.size;
   task.status = "queued";
   task.error = "";
   task.updatedAt = new Date().toISOString();
@@ -771,7 +886,8 @@ async function runDownloadTask(task, io) {
     task.size = total;
     let lastBytes = 0;
     let lastTick = Date.now();
-    task.downloaded = 0;
+    const partStat = await fs.stat(task.partPath).catch(() => null);
+    task.downloaded = partStat?.size || 0;
     await fs.remove(task.partPath).catch(() => {});
     const progressCallback = async (downloadedValue, totalValue) => {
       if (cancelToken.cancelled) {
@@ -816,28 +932,78 @@ async function cacheVideoSilently(userId, accountId, peerId, message) {
   const kind = mediaKind(message, contentType);
   const size = Number(message.file?.size || message.document?.size || 0);
   if (kind !== "video" || size <= VIDEO_CACHE_THRESHOLD) return false;
-  const key = safeId(`silent-${userId}-${accountId}-${peerId}-${message.id}`);
-  if (silentCacheTasks.has(key)) return false;
+  const key = silentCacheTaskId(userId, accountId, peerId, message.id);
+  const existingSilent = silentCacheRecords.get(key);
+  if (silentCacheTasks.has(key) || (existingSilent && ["queued", "running", "completed"].includes(existingSilent.status))) return false;
   const visibleTask = downloadTasks.get(downloadTaskId(userId, accountId, peerId, message.id));
   if (visibleTask && ["queued", "downloading", "completed"].includes(visibleTask.status)) return false;
   const mediaInfo = await mediaFileInfo(userId, accountId, message, contentType, kind);
   const { filePath, downloadDir } = mediaInfo;
   const partPath = `${filePath}.silent.part`;
   if (await fs.pathExists(filePath)) return false;
-  const promise = (async () => {
-    try {
-      const client = await getClient(userId, accountId);
-      await fs.ensureDir(downloadDir);
-      await fs.remove(partPath).catch(() => {});
-      await client.downloadMedia(message, { outputFile: partPath });
-      await fs.move(partPath, filePath, { overwrite: true });
-    } finally {
-      silentCacheTasks.delete(key);
-    }
-  })();
-  silentCacheTasks.set(key, promise);
-  promise.catch(() => {});
+  const record = {
+    id: key,
+    userId,
+    accountId,
+    peerId,
+    messageId: Number(message.id),
+    fileName: mediaInfo.fileName,
+    filePath,
+    partPath,
+    downloadDir,
+    contentType,
+    size,
+    status: "queued",
+    error: "",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  silentCacheRecords.set(key, record);
+  silentCacheQueue.push(record);
+  schedulePersistSilent();
+  pumpSilentCacheQueue();
   return true;
+}
+
+function pumpSilentCacheQueue() {
+  while (silentCacheActive < MAX_SILENT_CACHE_CONCURRENCY && silentCacheQueue.length) {
+    const record = silentCacheQueue.shift();
+    if (!record || silentCacheTasks.has(record.id) || record.status === "completed") continue;
+    silentCacheActive += 1;
+    record.status = "running";
+    record.updatedAt = new Date().toISOString();
+    schedulePersistSilent();
+    const promise = runSilentCacheTask(record)
+      .catch((error) => {
+        record.status = "error";
+        record.error = error.message || "后台缓存失败";
+        record.updatedAt = new Date().toISOString();
+      })
+      .finally(() => {
+        silentCacheActive = Math.max(0, silentCacheActive - 1);
+        silentCacheTasks.delete(record.id);
+        schedulePersistSilent();
+        pumpSilentCacheQueue();
+      });
+    silentCacheTasks.set(record.id, promise);
+  }
+}
+
+async function runSilentCacheTask(record) {
+  if (await fs.pathExists(record.filePath)) {
+    record.status = "completed";
+    record.error = "";
+    record.updatedAt = new Date().toISOString();
+    return;
+  }
+  const { client, message } = await mediaMessage(record.userId, record.accountId, record.peerId, record.messageId);
+  await fs.ensureDir(record.downloadDir);
+  await fs.remove(record.partPath).catch(() => {});
+  await client.downloadMedia(message, { outputFile: record.partPath });
+  await fs.move(record.partPath, record.filePath, { overwrite: true });
+  record.status = "completed";
+  record.error = "";
+  record.updatedAt = new Date().toISOString();
 }
 
 async function cacheLargeVideosInChat(userId, accountId, peerId) {
@@ -1020,6 +1186,7 @@ async function deleteDownloadTask(userId, taskId, io) {
   const directories = await cacheSettings();
   await fs.remove(path.join(directories.hls, userId, task.id)).catch(() => {});
   downloadTasks.delete(taskId);
+  schedulePersistDownloads();
   if (io) io.to(`user:${userId}`).emit("download:delete", { id: taskId });
   return { ok: true };
 }
@@ -1029,6 +1196,7 @@ function clearDownloadTask(userId, taskId, io) {
   if (!task || task.userId !== userId) throw Object.assign(new Error("找不到下载任务"), { status: 404 });
   if (task.cancelToken) task.cancelToken.cancelled = true;
   downloadTasks.delete(taskId);
+  schedulePersistDownloads();
   if (io) io.to(`user:${userId}`).emit("download:delete", { id: taskId });
   return { ok: true };
 }
@@ -1222,6 +1390,7 @@ module.exports = {
   cacheLargeVideosInChat,
   cancelDownloadTask,
   chatDetails,
+  chatMedia,
   clearDownloadTask,
   deleteDownloadTask,
   downloadMedia,
@@ -1240,6 +1409,7 @@ module.exports = {
   cleanupCache,
   profilePhoto,
   resolveTelegramLink,
+  restoreBackgroundTasks,
   search,
   sendText,
   startLogin,
