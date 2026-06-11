@@ -65,6 +65,12 @@ function silentConcurrencyLimit() {
   return Math.max(1, Math.min(MAX_SILENT_CACHE_CONCURRENCY, Number(silentCacheConcurrency || 1)));
 }
 
+function resetSilentRateWindow() {
+  silentRateWindowStart = Date.now();
+  silentRateWindowBytes = 0;
+  silentRateChain = Promise.resolve();
+}
+
 function rebalanceSilentConcurrency(io = realtimeIo) {
   const limit = silentConcurrencyLimit();
   const running = [...silentCacheRecords.values()]
@@ -1008,9 +1014,9 @@ function silentPartSizeKb() {
   const rate = Number(silentCacheRateLimitBps || 0);
   if (!rate) return 512;
   const perTaskRate = rate / silentConcurrencyLimit();
-  if (perTaskRate >= 1024 * 1024) return 512;
-  if (perTaskRate >= 512 * 1024) return 256;
-  if (perTaskRate >= 256 * 1024) return 128;
+  if (perTaskRate >= 768 * 1024) return 512;
+  if (perTaskRate >= 256 * 1024) return 256;
+  if (perTaskRate >= 128 * 1024) return 128;
   return 64;
 }
 
@@ -1338,7 +1344,12 @@ async function runSilentCacheTask(record, io = realtimeIo) {
       record.error = "";
       enqueueSilentTask(record);
     } else if (error.status === 499 && error.paused) {
-      record.status = "paused";
+      if (silentCacheEnabled) {
+        record.status = "queued";
+        enqueueSilentTask(record);
+      } else {
+        record.status = "paused";
+      }
       record.error = "";
     } else if (error.status === 499) {
       if (!silentCacheRecords.has(record.id)) return;
@@ -1388,23 +1399,28 @@ function listSilentCacheTasks(userId) {
 }
 
 function setSilentCacheControl(userId, payload = {}, io = realtimeIo) {
+  const wasEnabled = silentCacheEnabled;
   if (payload.enabled !== undefined) {
     silentCacheEnabled = Boolean(payload.enabled);
+    if (silentCacheEnabled && !wasEnabled) resetSilentRateWindow();
   }
   if (payload.rateLimitBps !== undefined) {
     silentCacheRateLimitBps = Math.max(0, Math.min(1024 * 1024 * 1024, Number(payload.rateLimitBps || 0)));
-    silentRateWindowStart = Date.now();
-    silentRateWindowBytes = 0;
+    resetSilentRateWindow();
     rebalanceSilentConcurrency(io);
   }
   if (payload.concurrency !== undefined) {
     silentCacheConcurrency = Math.max(1, Math.min(MAX_SILENT_CACHE_CONCURRENCY, Number(payload.concurrency || 1)));
+    resetSilentRateWindow();
     rebalanceSilentConcurrency(io);
   }
   if (!silentCacheEnabled) {
     for (const task of silentCacheRecords.values()) {
       if (task.userId !== userId) continue;
-      if (task.cancelToken) task.cancelToken.paused = true;
+      if (task.cancelToken) {
+        task.cancelToken.paused = true;
+        task.cancelToken.requeue = false;
+      }
       if (["queued", "running"].includes(task.status)) {
         task.status = "paused";
         task.speedBps = 0;
@@ -1417,7 +1433,18 @@ function setSilentCacheControl(userId, payload = {}, io = realtimeIo) {
     for (const task of silentCacheRecords.values()) {
       if (task.userId !== userId) continue;
       if (["paused", "error"].includes(task.status)) {
-        if (silentCacheTasks.has(task.id)) continue;
+        if (task.cancelToken) {
+          task.cancelToken.paused = true;
+          task.cancelToken.requeue = true;
+        }
+        if (silentCacheTasks.has(task.id)) {
+          task.status = "queued";
+          task.error = "";
+          task.speedBps = 0;
+          task.updatedAt = new Date().toISOString();
+          emitSilentCacheTask(io, task);
+          continue;
+        }
         task.status = "queued";
         task.error = "";
         task.speedBps = 0;
