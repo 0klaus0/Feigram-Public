@@ -14,6 +14,20 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.1",
+    title: "Feigram 2.0.1 更新",
+    version: "2.0.1",
+    level: "success",
+    createdAt: "2026-06-11T20:00:00.000Z",
+    body: [
+      "修复聊天消息里的 Telegram 链接跳转后无法定位到目标消息的问题。",
+      "修复从跳转群聊返回时无法恢复原聊天阅读位置的问题。",
+      "管理员后台新增“群缓存”列表，可查看群组后台自动缓存视频的标题、进度、速度和状态。",
+      "群视频后台缓存进度会落盘并通过实时事件更新，重启或升级后继续展示和恢复。",
+      "修复诊断页读取日志时 handle.close is not a function 的问题。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.0",
     title: "Feigram 2.0 fnOS Client Edition",
     version: "2.0.0",

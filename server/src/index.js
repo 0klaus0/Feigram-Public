@@ -147,7 +147,7 @@ app.get("/api/chats/:account/:peer/media", asyncRoute(async (req, res) => {
 }));
 
 app.post("/api/chats/:account/:peer/cache-large-videos", asyncRoute(async (req, res) => {
-  res.json(await tg.cacheLargeVideosInChat(req.user.id, req.params.account, req.params.peer));
+  res.json(await tg.cacheLargeVideosInChat(req.user.id, req.params.account, req.params.peer, io));
 }));
 
 app.get("/api/folders", asyncRoute(async (req, res) => {
@@ -155,7 +155,7 @@ app.get("/api/folders", asyncRoute(async (req, res) => {
 }));
 
 app.get("/api/messages", asyncRoute(async (req, res) => {
-  res.json(await tg.listMessages(req.user.id, req.query.account, req.query.peer, req.query.limit, req.query.before));
+  res.json(await tg.listMessages(req.user.id, req.query.account, req.query.peer, req.query.limit, req.query.before, req.query.around));
 }));
 
 app.post("/api/messages", asyncRoute(async (req, res) => {
@@ -243,6 +243,10 @@ app.post("/api/media/:account/:peer/:messageId/cache", asyncRoute(async (req, re
 
 app.get("/api/downloads", asyncRoute(async (req, res) => {
   res.json(tg.listDownloadTasks(req.user.id));
+}));
+
+app.get("/api/silent-cache", asyncRoute(async (req, res) => {
+  res.json(tg.listSilentCacheTasks(req.user.id));
 }));
 
 app.post("/api/downloads/:id/start", asyncRoute(async (req, res) => {

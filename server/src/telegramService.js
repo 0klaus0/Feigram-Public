@@ -22,6 +22,7 @@ const silentCacheQueue = [];
 let silentCacheActive = 0;
 let downloadPersistTimer = null;
 let silentPersistTimer = null;
+let realtimeIo = null;
 const VIDEO_CACHE_THRESHOLD = 100 * 1024 * 1024;
 const MAX_SILENT_CACHE_CONCURRENCY = 5;
 const FFMPEG_BIN = process.env.FFMPEG_BIN || path.join(__dirname, "..", "..", "bin", "ffmpeg");
@@ -90,6 +91,7 @@ async function loadPersistentTasks() {
 }
 
 async function restoreBackgroundTasks(io) {
+  realtimeIo = io;
   await loadPersistentTasks();
   for (const task of downloadTasks.values()) {
     if (task.status !== "completed") {
@@ -101,7 +103,7 @@ async function restoreBackgroundTasks(io) {
       });
     }
   }
-  pumpSilentCacheQueue();
+  pumpSilentCacheQueue(io);
 }
 
 async function cacheSettings() {
@@ -345,6 +347,19 @@ function linkDomain(url) {
     return domain;
   } catch {
     return "";
+  }
+}
+
+function linkMessageId(url) {
+  try {
+    const value = String(url || "").trim();
+    const normalized = value.startsWith("t.me/") ? `https://${value}` : value;
+    const parsed = new URL(normalized);
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    const numeric = [...parts].reverse().find((part) => /^\d+$/.test(part));
+    return numeric ? Number(numeric) : 0;
+  } catch {
+    return 0;
   }
 }
 
@@ -634,14 +649,25 @@ async function resolvePeer(userId, accountId, peerId) {
   return entity;
 }
 
-async function listMessages(userId, accountId, peerId, limit = 50, before = 0) {
+async function listMessages(userId, accountId, peerId, limit = 50, before = 0, around = 0) {
   const client = await getClient(userId, accountId);
   const entity = await resolvePeer(userId, accountId, peerId);
   const request = { limit: Number(limit) || 50 };
-  if (Number(before) > 0) request.offsetId = Number(before);
+  if (Number(around) > 0) {
+    request.offsetId = Number(around);
+    request.addOffset = -Math.floor(request.limit / 2);
+  } else if (Number(before) > 0) {
+    request.offsetId = Number(before);
+  }
   const messages = await client.getMessages(entity, request);
+  if (Number(around) > 0 && !messages.some((message) => Number(message.id) === Number(around))) {
+    const [target] = await client.getMessages(entity, { ids: [Number(around)] }).catch(() => []);
+    if (target) messages.push(target);
+  }
   rememberMessageSenders(accountId, messages);
-  return messages.map(serializeMessage).reverse();
+  return messages
+    .map(serializeMessage)
+    .sort((a, b) => Number(a.id) - Number(b.id));
 }
 
 async function chatDetails(userId, accountId, peerId) {
@@ -733,7 +759,7 @@ async function resolveTelegramLink(userId, accountId, url) {
   const chat = serializeEntity(entity);
   if (!peerCache.has(accountId)) peerCache.set(accountId, new Map());
   peerCache.get(accountId).set(chat.id, entity);
-  return { ...chat, avatarKey: chat.id };
+  return { ...chat, avatarKey: chat.id, messageId: linkMessageId(url) };
 }
 
 async function search(userId, accountId, query) {
@@ -793,6 +819,30 @@ function serializeDownloadTask(task) {
 function emitDownloadTask(io, task) {
   if (io) io.to(`user:${task.userId}`).emit("download:update", serializeDownloadTask(task));
   schedulePersistDownloads();
+}
+
+function serializeSilentCacheTask(task) {
+  return {
+    id: task.id,
+    accountId: task.accountId,
+    peerId: task.peerId,
+    messageId: task.messageId,
+    fileName: task.fileName,
+    contentType: task.contentType,
+    size: task.size,
+    downloaded: task.downloaded || 0,
+    speedBps: task.speedBps || 0,
+    status: task.status,
+    error: task.error || "",
+    createdAt: task.createdAt,
+    updatedAt: task.updatedAt
+  };
+}
+
+function emitSilentCacheTask(io, task) {
+  const target = io || realtimeIo;
+  if (target) target.to(`user:${task.userId}`).emit("silent-cache:update", serializeSilentCacheTask(task));
+  schedulePersistSilent();
 }
 
 async function mediaMessage(userId, accountId, peerId, messageId) {
@@ -953,6 +1003,8 @@ async function cacheVideoSilently(userId, accountId, peerId, message) {
     downloadDir,
     contentType,
     size,
+    downloaded: 0,
+    speedBps: 0,
     status: "queued",
     error: "",
     createdAt: new Date().toISOString(),
@@ -960,53 +1012,86 @@ async function cacheVideoSilently(userId, accountId, peerId, message) {
   };
   silentCacheRecords.set(key, record);
   silentCacheQueue.push(record);
-  schedulePersistSilent();
-  pumpSilentCacheQueue();
+  emitSilentCacheTask(realtimeIo, record);
+  pumpSilentCacheQueue(realtimeIo);
   return true;
 }
 
-function pumpSilentCacheQueue() {
+function pumpSilentCacheQueue(io = realtimeIo) {
   while (silentCacheActive < MAX_SILENT_CACHE_CONCURRENCY && silentCacheQueue.length) {
     const record = silentCacheQueue.shift();
     if (!record || silentCacheTasks.has(record.id) || record.status === "completed") continue;
     silentCacheActive += 1;
     record.status = "running";
+    record.speedBps = 0;
     record.updatedAt = new Date().toISOString();
-    schedulePersistSilent();
-    const promise = runSilentCacheTask(record)
+    emitSilentCacheTask(io, record);
+    const promise = runSilentCacheTask(record, io)
       .catch((error) => {
         record.status = "error";
         record.error = error.message || "后台缓存失败";
+        record.speedBps = 0;
         record.updatedAt = new Date().toISOString();
+        emitSilentCacheTask(io, record);
       })
       .finally(() => {
         silentCacheActive = Math.max(0, silentCacheActive - 1);
         silentCacheTasks.delete(record.id);
-        schedulePersistSilent();
-        pumpSilentCacheQueue();
+        emitSilentCacheTask(io, record);
+        pumpSilentCacheQueue(io);
       });
     silentCacheTasks.set(record.id, promise);
   }
 }
 
-async function runSilentCacheTask(record) {
+async function runSilentCacheTask(record, io = realtimeIo) {
   if (await fs.pathExists(record.filePath)) {
+    const stat = await fs.stat(record.filePath).catch(() => null);
+    if (stat) {
+      record.downloaded = stat.size;
+      record.size = record.size || stat.size;
+    }
     record.status = "completed";
     record.error = "";
+    record.speedBps = 0;
     record.updatedAt = new Date().toISOString();
+    emitSilentCacheTask(io, record);
     return;
   }
   const { client, message } = await mediaMessage(record.userId, record.accountId, record.peerId, record.messageId);
   await fs.ensureDir(record.downloadDir);
   await fs.remove(record.partPath).catch(() => {});
-  await client.downloadMedia(message, { outputFile: record.partPath });
+  const total = record.size || Number(message.file?.size || message.document?.size || 0);
+  record.size = total;
+  let lastBytes = 0;
+  let lastTick = Date.now();
+  const progressCallback = async (downloadedValue, totalValue) => {
+    const downloaded = Number(downloadedValue?.toString?.() || downloadedValue || 0);
+    const fullSize = Number(totalValue?.toString?.() || totalValue || total || 0);
+    record.downloaded = downloaded;
+    record.size = fullSize || record.size;
+    const now = Date.now();
+    if (now - lastTick >= 1000 || downloaded >= fullSize) {
+      record.speedBps = Math.max(0, Math.round((downloaded - lastBytes) / Math.max(0.001, (now - lastTick) / 1000)));
+      record.updatedAt = new Date().toISOString();
+      lastTick = now;
+      lastBytes = downloaded;
+      emitSilentCacheTask(io, record);
+    }
+  };
+  await client.downloadMedia(message, { outputFile: record.partPath, progressCallback });
   await fs.move(record.partPath, record.filePath, { overwrite: true });
+  const stat = await fs.stat(record.filePath).catch(() => null);
+  if (stat) record.downloaded = stat.size;
   record.status = "completed";
   record.error = "";
+  record.speedBps = 0;
   record.updatedAt = new Date().toISOString();
+  emitSilentCacheTask(io, record);
 }
 
-async function cacheLargeVideosInChat(userId, accountId, peerId) {
+async function cacheLargeVideosInChat(userId, accountId, peerId, io = realtimeIo) {
+  realtimeIo = io || realtimeIo;
   const client = await getClient(userId, accountId);
   const entity = await resolvePeer(userId, accountId, peerId);
   const recent = await client.getMessages(entity, { limit: 120 }).catch(() => []);
@@ -1015,6 +1100,7 @@ async function cacheLargeVideosInChat(userId, accountId, peerId) {
     if (!message?.media) continue;
     if (await cacheVideoSilently(userId, accountId, peerId, message)) queued += 1;
   }
+  pumpSilentCacheQueue(io);
   return { queued };
 }
 
@@ -1023,6 +1109,18 @@ function listDownloadTasks(userId) {
     .filter((task) => task.userId === userId)
     .sort((a, b) => String(b.createdAt || b.updatedAt).localeCompare(String(a.createdAt || a.updatedAt)))
     .map(serializeDownloadTask);
+}
+
+function listSilentCacheTasks(userId) {
+  return [...silentCacheRecords.values()]
+    .filter((task) => task.userId === userId)
+    .sort((a, b) => {
+      const order = { running: 0, queued: 1, error: 2, completed: 3 };
+      const statusDiff = (order[a.status] ?? 9) - (order[b.status] ?? 9);
+      if (statusDiff) return statusDiff;
+      return String(b.createdAt || b.updatedAt).localeCompare(String(a.createdAt || a.updatedAt));
+    })
+    .map(serializeSilentCacheTask);
 }
 
 async function resumeDownloadTask(userId, taskId, io) {
@@ -1397,6 +1495,7 @@ module.exports = {
   hlsMediaFile,
   mediaThumbnail,
   listDownloadTasks,
+  listSilentCacheTasks,
   resumeDownloadTask,
   startDownloadTask,
   streamVideoMedia,

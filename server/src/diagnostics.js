@@ -1,4 +1,5 @@
 const fs = require("fs-extra");
+const fsp = require("fs/promises");
 const os = require("os");
 const path = require("path");
 const { dataDir, downloadTasksPath, silentCachePath } = require("./store");
@@ -22,7 +23,7 @@ async function tail(filePath, maxBytes = 16000) {
   if (!filePath || !(await fs.pathExists(filePath))) return "";
   const stat = await fs.stat(filePath);
   const start = Math.max(0, stat.size - maxBytes);
-  const handle = await fs.open(filePath, "r");
+  const handle = await fsp.open(filePath, "r");
   try {
     const buffer = Buffer.alloc(stat.size - start);
     await handle.read(buffer, 0, buffer.length, start);

@@ -74,6 +74,15 @@ function mergeDownloads(items) {
   }, new Map()).values()].sort((a, b) => String(b.createdAt || b.updatedAt).localeCompare(String(a.createdAt || a.updatedAt)));
 }
 
+function sortSilentCaches(items) {
+  const order = { running: 0, queued: 1, error: 2, completed: 3 };
+  return [...items].sort((a, b) => {
+    const statusDiff = (order[a.status] ?? 9) - (order[b.status] ?? 9);
+    if (statusDiff) return statusDiff;
+    return String(b.createdAt || b.updatedAt).localeCompare(String(a.createdAt || a.updatedAt));
+  });
+}
+
 function normalizeLink(value) {
   if (value.startsWith("@")) return `https://t.me/${value.slice(1)}`;
   if (value.startsWith("t.me/")) return `https://${value}`;
@@ -291,7 +300,7 @@ function buildMessageItems(messages) {
   return items;
 }
 
-function MessageBubble({ item, accountId, chatId, showSender, showMedia, playerMode, onOpenLink, onInlineButton, onCacheMedia, downloadTasks }) {
+function MessageBubble({ item, accountId, chatId, showSender, showMedia, playerMode, onOpenLink, onInlineButton, onCacheMedia, downloadTasks, highlighted = false, messageRef }) {
   const messages = item.type === "group" ? item.messages : [item.message];
   const first = messages[0];
   const caption = messages.find((message) => message.text) || first;
@@ -299,7 +308,7 @@ function MessageBubble({ item, accountId, chatId, showSender, showMedia, playerM
     task.accountId === accountId && task.peerId === chatId && Number(task.messageId) === Number(message.id)
   ));
   return (
-    <article className={cx("message-row", first.outgoing && "mine")}>
+    <article ref={messageRef} className={cx("message-row", first.outgoing && "mine", highlighted && "jump-highlight")}>
       {showSender && !first.outgoing && <Avatar accountId={accountId} peerId={first.sender?.id} label={first.sender?.title || first.senderId} size={34} />}
       <div className={cx("bubble", first.outgoing && "mine", item.type === "group" && "media-group-bubble")}>
         {showSender && !first.outgoing && <div className="sender-line">{first.sender?.title || first.senderId}<span>{first.sender?.username ? `@${first.sender.username}` : first.senderId}</span></div>}
@@ -477,7 +486,7 @@ function AccountLogin({ socket, onDone }) {
   );
 }
 
-function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountLogout, onAccountsChanged, onSettingsChanged, open, onClose, initialTab = "accounts", socket }) {
+function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountLogout, onAccountsChanged, onSettingsChanged, open, onClose, initialTab = "accounts", socket, silentCaches = [], onRefreshSilentCaches }) {
   const [tab, setTab] = useState(initialTab);
   const [users, setUsers] = useState([]);
   const [settings, setSettings] = useState({
@@ -609,6 +618,7 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
           {canAdmin && <button className={cx(tab === "users" && "active")} onClick={() => setTab("users")}>飞牛账户</button>}
           {canAdmin && <button className={cx(tab === "settings" && "active")} onClick={() => setTab("settings")}>覆盖 API 设置</button>}
           {canAdmin && <button className={cx(tab === "cache" && "active")} onClick={() => setTab("cache")}>缓存下载</button>}
+          {canAdmin && <button className={cx(tab === "silent-cache" && "active")} onClick={() => { setTab("silent-cache"); onRefreshSilentCaches?.(); }}>群缓存</button>}
           {canAdmin && <button className={cx(tab === "notifications" && "active")} onClick={() => setTab("notifications")}>通知</button>}
           {canAdmin && <button className={cx(tab === "privacy" && "active")} onClick={() => setTab("privacy")}>隐私</button>}
           {canAdmin && <button className={cx(tab === "player" && "active")} onClick={() => setTab("player")}>播放器</button>}
@@ -670,6 +680,34 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
           {saved && <p className="success">{saved}</p>}
           <button className="primary"><Settings size={18} />保存缓存设置</button>
         </form>}
+        {canAdmin && tab === "silent-cache" && <div className="silent-cache-panel">
+          <div className="silent-cache-head">
+            <strong>群视频后台缓存</strong>
+            <button className="icon-button" type="button" onClick={onRefreshSilentCaches}><RefreshCw size={14} />刷新</button>
+          </div>
+          <p className="hint">这里展示群组信息页勾选后自动缓存的大于 100MB 视频，和用户主动下载列表分开；升级或重启后未完成任务会继续。</p>
+          <div className="silent-cache-list">
+            {silentCaches.map((task) => {
+              const progress = task.size ? Math.min(100, Math.round((Number(task.downloaded || 0) / Number(task.size)) * 100)) : 0;
+              return (
+                <div className="silent-cache-row" key={task.id}>
+                  <div className="silent-cache-title">
+                    <strong title={task.fileName}>{task.fileName || "Telegram 视频"}</strong>
+                    <span>{task.status === "running" ? "缓存中" : task.status === "queued" ? "排队中" : task.status === "completed" ? "已完成" : "失败"}</span>
+                  </div>
+                  <div className="silent-cache-meta">
+                    <span>{formatBytes(task.downloaded)} / {formatBytes(task.size)}</span>
+                    <span>{task.status === "running" ? `${formatBytes(task.speedBps)}/s` : "-"}</span>
+                    <span>{formatTime(task.updatedAt)}</span>
+                  </div>
+                  <div className="mini-progress"><i style={{ width: `${progress}%` }} /></div>
+                  {task.error && <small>{task.error}</small>}
+                </div>
+              );
+            })}
+            {!silentCaches.length && <div className="empty">暂无群视频后台缓存任务</div>}
+          </div>
+        </div>}
         {canAdmin && tab === "notifications" && <form className="stack" onSubmit={saveSettings}>
           <label className="check-row"><input type="checkbox" checked={settings.notificationEnabled} onChange={(e) => setSettings({ ...settings, notificationEnabled: e.target.checked })} /><span>启用桌面通知</span></label>
           <label className="check-row"><input type="checkbox" checked={settings.notificationPreview} onChange={(e) => setSettings({ ...settings, notificationPreview: e.target.checked })} /><span>通知显示消息预览</span></label>
@@ -956,6 +994,7 @@ function App() {
   const [about, setAbout] = useState({});
   const [announcementOpen, setAnnouncementOpen] = useState(false);
   const [downloads, setDownloads] = useState([]);
+  const [silentCaches, setSilentCaches] = useState([]);
   const [downloadOpen, setDownloadOpen] = useState(false);
   const [chatInfoOpen, setChatInfoOpen] = useState(false);
   const [chatDetails, setChatDetails] = useState(null);
@@ -966,7 +1005,10 @@ function App() {
   const [playback, setPlayback] = useState(null);
   const socket = useSocket(token);
   const messagesRef = useRef(null);
+  const messageNodeRefs = useRef(new Map());
   const shouldScrollBottomRef = useRef(false);
+  const pendingScrollRef = useRef(null);
+  const [highlightMessageId, setHighlightMessageId] = useState(0);
   const activeAccount = accounts.find((account) => account.id === accountId);
   const newestAnnouncementId = announcements[0]?.id || "";
   const unreadAnnouncement = newestAnnouncementId && localStorage.getItem("feigrame.lastAnnouncement") !== newestAnnouncementId;
@@ -1005,6 +1047,7 @@ function App() {
     loadAnnouncements();
     loadAbout();
     loadDownloads();
+    loadSilentCaches();
     refreshAccounts();
   }, [token]);
 
@@ -1055,6 +1098,19 @@ function App() {
   }, [socket]);
 
   useEffect(() => {
+    if (!socket) return;
+    const update = (task) => {
+      setSilentCaches((current) => {
+        const index = current.findIndex((item) => item.id === task.id);
+        const next = index === -1 ? [task, ...current] : current.map((item) => item.id === task.id ? task : item);
+        return sortSilentCaches(next);
+      });
+    };
+    socket.on("silent-cache:update", update);
+    return () => socket.off("silent-cache:update", update);
+  }, [socket]);
+
+  useEffect(() => {
     const element = messagesRef.current;
     if (!element || loadingOlder || !shouldScrollBottomRef.current) return;
     shouldScrollBottomRef.current = false;
@@ -1062,6 +1118,29 @@ function App() {
       element.scrollTop = element.scrollHeight;
     });
   }, [activeChat?.id, messages.length, loadingOlder]);
+
+  useEffect(() => {
+    const pending = pendingScrollRef.current;
+    if (!pending || !activeChat) return;
+    if (pending.chatId !== activeChat.id) return;
+    const element = messagesRef.current;
+    requestAnimationFrame(() => {
+      if (!element) return;
+      if (pending.messageId) {
+        const node = messageNodeRefs.current.get(String(pending.messageId));
+        if (node) {
+          node.scrollIntoView({ block: "center" });
+          setHighlightMessageId(Number(pending.messageId));
+          window.clearTimeout(pendingScrollRef.highlightTimer);
+          pendingScrollRef.highlightTimer = window.setTimeout(() => setHighlightMessageId(0), 2400);
+          pendingScrollRef.current = null;
+          return;
+        }
+      }
+      if (Number.isFinite(pending.scrollTop)) element.scrollTop = pending.scrollTop;
+      pendingScrollRef.current = null;
+    });
+  }, [activeChat?.id, messages.length]);
 
   function isNearBottom(element) {
     if (!element) return true;
@@ -1104,14 +1183,26 @@ function App() {
     setActiveFolder("all");
   }
 
-  async function selectChat(chat) {
+  async function selectChat(chat, options = {}) {
     setActiveChat(chat);
     setChatInfoOpen(false);
     setChatDetails(null);
-    shouldScrollBottomRef.current = true;
+    messageNodeRefs.current.clear();
+    const targetMessageId = Number(options.messageId || 0);
+    if (targetMessageId) {
+      shouldScrollBottomRef.current = false;
+      pendingScrollRef.current = { chatId: chat.id, messageId: targetMessageId };
+    } else if (Number.isFinite(options.restoreScrollTop)) {
+      shouldScrollBottomRef.current = false;
+      pendingScrollRef.current = { chatId: chat.id, scrollTop: options.restoreScrollTop };
+    } else {
+      shouldScrollBottomRef.current = true;
+      pendingScrollRef.current = null;
+    }
     setBusy(true);
     try {
-      const list = await api(`/api/messages?account=${encodeURIComponent(accountId)}&peer=${encodeURIComponent(chat.id)}&limit=80`);
+      const around = targetMessageId ? `&around=${encodeURIComponent(targetMessageId)}` : "";
+      const list = await api(`/api/messages?account=${encodeURIComponent(accountId)}&peer=${encodeURIComponent(chat.id)}&limit=80${around}`);
       setMessages(list);
       setHasOlder(list.length >= 80);
     } catch (err) {
@@ -1125,7 +1216,7 @@ function App() {
     const previous = chatStack[chatStack.length - 1];
     if (!previous) return;
     setChatStack((current) => current.slice(0, -1));
-    await selectChat(previous);
+    await selectChat(previous.chat || previous, { restoreScrollTop: previous.scrollTop });
   }
 
   async function openChatInfo() {
@@ -1282,9 +1373,12 @@ function App() {
       });
       setChats((current) => current.some((item) => item.id === chat.id) ? current : [chat, ...current]);
       if (activeChat && activeChat.id !== chat.id) {
-        setChatStack((current) => [...current, activeChat].slice(-12));
+        setChatStack((current) => [...current, {
+          chat: activeChat,
+          scrollTop: messagesRef.current?.scrollTop || 0
+        }].slice(-12));
       }
-      await selectChat(chat);
+      await selectChat(chat, { messageId: chat.messageId });
     } catch {
       window.open(normalized, "_blank", "noopener,noreferrer");
     }
@@ -1364,6 +1458,11 @@ function App() {
   async function loadDownloads() {
     const list = await api("/api/downloads").catch(() => []);
     setDownloads(mergeDownloads(list));
+  }
+
+  async function loadSilentCaches() {
+    const list = await api("/api/silent-cache").catch(() => []);
+    setSilentCaches(sortSilentCaches(list));
   }
 
   async function updateDownload(task, action, method = "POST") {
@@ -1499,19 +1598,29 @@ function App() {
           {error && <p className="error inline">{error}</p>}
           <div className="messages" ref={messagesRef}>
             {hasOlder && <button className="history-button" onClick={loadOlderMessages} disabled={loadingOlder}>{loadingOlder ? "加载中" : "加载更早消息"}</button>}
-            {messageItems.map((item) => <MessageBubble
-              key={item.id}
-              item={item}
-              accountId={accountId}
-              chatId={activeChat.id}
-              showSender={appSettings.messageShowSender}
-              showMedia={appSettings.privacyMediaPreview}
-              playerMode={appSettings.playerMode}
-              onOpenLink={openTelegramLink}
-              onInlineButton={clickInlineButton}
-              onCacheMedia={cacheMedia}
-              downloadTasks={downloads}
-            />)}
+            {messageItems.map((item) => {
+              const ids = item.type === "group" ? item.messages.map((message) => String(message.id)) : [String(item.message.id)];
+              return <MessageBubble
+                key={item.id}
+                item={item}
+                accountId={accountId}
+                chatId={activeChat.id}
+                showSender={appSettings.messageShowSender}
+                showMedia={appSettings.privacyMediaPreview}
+                playerMode={appSettings.playerMode}
+                onOpenLink={openTelegramLink}
+                onInlineButton={clickInlineButton}
+                onCacheMedia={cacheMedia}
+                downloadTasks={downloads}
+                highlighted={ids.includes(String(highlightMessageId))}
+                messageRef={(node) => {
+                  ids.forEach((id) => {
+                    if (node) messageNodeRefs.current.set(id, node);
+                    else messageNodeRefs.current.delete(id);
+                  });
+                }}
+              />;
+            })}
             {busy && <div className="empty">加载中</div>}
           </div>
           <form className="composer" onSubmit={sendMessage}><textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => {
@@ -1554,6 +1663,8 @@ function App() {
         initialTab={adminInitialTab}
         onClose={() => setAdminOpen(false)}
         socket={socket}
+        silentCaches={silentCaches}
+        onRefreshSilentCaches={loadSilentCaches}
       />
       <InfoModal announcements={announcements} about={about} open={announcementOpen} onClose={() => setAnnouncementOpen(false)} />
       <DownloadCenter
