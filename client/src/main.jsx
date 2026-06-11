@@ -46,6 +46,17 @@ function formatBytes(value) {
   return `${(size / (1024 ** index)).toFixed(index ? 1 : 0)} ${units[index]}`;
 }
 
+function formatDuration(value) {
+  const seconds = Math.max(0, Math.round(Number(value || 0)));
+  if (!seconds) return "";
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  const hours = Math.floor(mins / 60);
+  const restMins = mins % 60;
+  if (hours) return `${hours}:${String(restMins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+  return `${mins}:${String(secs).padStart(2, "0")}`;
+}
+
 function downloadDisplayKey(item) {
   const mediaKey = `${item.accountId}:${item.peerId}:${item.messageId}`;
   if (item.fileName && item.size) return `${item.accountId}:${item.peerId}:${item.fileName}:${item.size}`;
@@ -60,7 +71,7 @@ function mergeDownloads(items) {
       map.set(key, item);
     }
     return map;
-  }, new Map()).values()].sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+  }, new Map()).values()].sort((a, b) => String(b.createdAt || b.updatedAt).localeCompare(String(a.createdAt || a.updatedAt)));
 }
 
 function normalizeLink(value) {
@@ -157,6 +168,11 @@ function hlsMediaUrl(accountId, chatId, messageId) {
   return `/api/media/${accountId}/${encodeURIComponent(chatId)}/${messageId}/hls/master.m3u8?${params.toString()}`;
 }
 
+function thumbnailMediaUrl(accountId, chatId, messageId) {
+  const params = new URLSearchParams({ token: getToken() });
+  return `/api/media/${accountId}/${encodeURIComponent(chatId)}/${messageId}/thumbnail?${params.toString()}`;
+}
+
 function FeigramVideo({ src, hlsSrc, mode = "browser", onError, onMode }) {
   const ref = useRef(null);
   useEffect(() => {
@@ -204,6 +220,7 @@ function MessageMedia({ accountId, chatId, message, compact = false, onCache, ta
   if (!media) return null;
   const previewUrl = mediaUrl(accountId, chatId, message.id, true);
   const hlsUrl = hlsMediaUrl(accountId, chatId, message.id);
+  const thumbUrl = thumbnailMediaUrl(accountId, chatId, message.id);
   const downloadUrl = mediaUrl(accountId, chatId, message.id);
   const label = media.fileName || media.mimeType || "下载媒体";
   const cacheStatus = task?.status || localStatus;
@@ -240,10 +257,14 @@ function MessageMedia({ accountId, chatId, message, compact = false, onCache, ta
           >
             <Download size={14} />{cacheLabel}
           </button>
-          {!active && !failed && playerMode !== "local" ? <button className="video-load-button" type="button" onClick={() => setActive(true)}>点击播放视频</button> : null}
+          {!active && !failed && playerMode !== "local" ? <button className="video-load-button" type="button" onClick={() => setActive(true)}>
+            <img src={thumbUrl} alt="" loading="lazy" onError={(event) => { event.currentTarget.style.display = "none"; }} />
+            <span><Play size={18} />点击播放视频</span>
+            {!!media.duration && <b>{formatDuration(media.duration)}</b>}
+          </button> : null}
           {active && !failed && playerMode !== "local" ? <FeigramVideo src={previewUrl} hlsSrc={hlsUrl} mode={playerMode} onMode={setPlayModeLabel} onError={() => setFailed(true)} /> : null}
           {playerMode === "local" ? <a className="video-load-button local-player-link" href={downloadUrl}>下载后用本地播放器打开</a> : null}
-          {playModeLabel && active && !failed ? <span className="video-mode-pill">{playModeLabel}</span> : null}
+          {playModeLabel && active && !failed ? null : null}
           {failed ? <div className="video-fallback">当前模式无法播放这个视频，请切换播放器模式或先缓存后下载到本地播放。</div> : null}
         </div>
       </div>
@@ -778,7 +799,7 @@ function PlaybackModal({ item, playerMode, onClose }) {
           {playerMode === "local"
             ? <a className="video-load-button local-player-link" href={download}>下载后用本地播放器打开</a>
             : <FeigramVideo src={src} hlsSrc={hlsSrc} mode={playerMode || "browser"} onMode={setModeLabel} onError={() => setFailed(true)} />}
-          {modeLabel && playerMode !== "local" ? <span className="video-mode-pill">{modeLabel}</span> : null}
+          {modeLabel && playerMode !== "local" ? null : null}
           {failed ? <div className="video-fallback">当前模式无法播放，请切换播放器模式或下载到本地播放。</div> : null}
         </div>
       </div>
@@ -786,9 +807,12 @@ function PlaybackModal({ item, playerMode, onClose }) {
   );
 }
 
-function ChatInfoPanel({ open, accountId, chat, details, loading, onClose, onOpenMedia }) {
+function ChatInfoPanel({ open, accountId, chat, details, loading, autoCache, autoCacheBusy, onAutoCacheChange, onClose, onOpenMedia }) {
+  const [mediaTab, setMediaTab] = useState("all");
   if (!open || !chat) return null;
   const info = details || chat;
+  const resources = info.files || [];
+  const visibleResources = mediaTab === "all" ? resources : resources.filter((file) => file.kind === mediaTab);
   return (
     <aside className="chat-info-panel">
       <header>
@@ -807,19 +831,32 @@ function ChatInfoPanel({ open, accountId, chat, details, loading, onClose, onOpe
           <section className="chat-info-section">
             <h3>文件与媒体</h3>
             <div className="media-summary">
-              <span><b>{info.mediaSummary?.images || 0}</b>图片</span>
-              <span><b>{info.mediaSummary?.videos || 0}</b>视频</span>
-              <span><b>{info.mediaSummary?.files || 0}</b>文件</span>
+              <button className={cx(mediaTab === "image" && "active")} type="button" onClick={() => setMediaTab("image")}><b>{info.mediaSummary?.images || 0}</b>图片</button>
+              <button className={cx(mediaTab === "video" && "active")} type="button" onClick={() => setMediaTab("video")}><b>{info.mediaSummary?.videos || 0}</b>视频</button>
+              <button className={cx(mediaTab === "file" && "active")} type="button" onClick={() => setMediaTab("file")}><b>{info.mediaSummary?.files || 0}</b>文件</button>
             </div>
+            <label className="info-cache-toggle">
+              <input type="checkbox" checked={Boolean(autoCache)} disabled={autoCacheBusy} onChange={(event) => onAutoCacheChange?.(event.target.checked)} />
+              <span>{autoCacheBusy ? "正在提交后台缓存任务" : "后台自动缓存本群大于 100MB 的视频"}</span>
+            </label>
           </section>
           <section className="chat-info-section">
-            <h3>最近文件</h3>
-            <div className="info-file-list">
-              {(info.files || []).map((file) => <button className="info-file-item" type="button" key={`${file.id}-${file.fileName}`} onClick={() => onOpenMedia?.(file)}>
-                <Folder size={17} />
+            <div className="info-resource-head">
+              <h3>{mediaTab === "all" ? "最近资源" : mediaTab === "image" ? "图片" : mediaTab === "video" ? "视频" : "文件"}</h3>
+              <button type="button" onClick={() => setMediaTab("all")}>全部</button>
+            </div>
+            <div className={cx("info-resource-grid", mediaTab === "file" && "files")}>
+              {visibleResources.map((file) => <button className={cx("info-resource-item", file.kind)} type="button" key={`${file.id}-${file.fileName}`} onClick={() => onOpenMedia?.(file)}>
+                {file.kind === "image" && <img src={mediaUrl(accountId, chat.id, file.id, true)} alt="" loading="lazy" />}
+                {file.kind === "video" && <>
+                  <img src={thumbnailMediaUrl(accountId, chat.id, file.id)} alt="" loading="lazy" onError={(event) => { event.currentTarget.style.display = "none"; }} />
+                  <Play size={18} />
+                  {!!file.duration && <b>{formatDuration(file.duration)}</b>}
+                </>}
+                {file.kind === "file" && <Folder size={22} />}
                 <span><strong>{file.fileName}</strong><small>{file.kind} · {formatBytes(file.size)} · {formatTime(file.date)}</small></span>
               </button>)}
-              {!info.files?.length && <div className="empty">暂无最近文件</div>}
+              {!visibleResources.length && <div className="empty">暂无资源</div>}
             </div>
           </section>
         </>}
@@ -869,6 +906,8 @@ function App() {
   const [chatInfoOpen, setChatInfoOpen] = useState(false);
   const [chatDetails, setChatDetails] = useState(null);
   const [chatDetailsLoading, setChatDetailsLoading] = useState(false);
+  const [autoCacheChats, setAutoCacheChats] = useState(() => JSON.parse(localStorage.getItem("feigrame.autoCacheChats") || "{}"));
+  const [autoCacheBusy, setAutoCacheBusy] = useState(false);
   const [playback, setPlayback] = useState(null);
   const socket = useSocket(token);
   const messagesRef = useRef(null);
@@ -1066,6 +1105,25 @@ function App() {
       setPlayback(item);
     } else {
       window.open(mediaUrl(accountId, activeChat.id, file.id, file.kind === "image"), "_blank", "noopener,noreferrer");
+    }
+  }
+
+  async function setChatAutoCache(enabled) {
+    if (!activeChat) return;
+    const key = `${accountId}:${activeChat.id}`;
+    const next = { ...autoCacheChats, [key]: enabled };
+    if (!enabled) delete next[key];
+    setAutoCacheChats(next);
+    localStorage.setItem("feigrame.autoCacheChats", JSON.stringify(next));
+    if (!enabled) return;
+    setAutoCacheBusy(true);
+    try {
+      const result = await api(`/api/chats/${encodeURIComponent(accountId)}/${encodeURIComponent(activeChat.id)}/cache-large-videos`, { method: "POST" });
+      notify(result.queued ? `已提交 ${result.queued} 个后台视频缓存任务` : "没有需要后台缓存的大视频");
+    } catch (err) {
+      notify(err.message);
+    } finally {
+      setAutoCacheBusy(false);
     }
   }
 
@@ -1387,6 +1445,9 @@ function App() {
         chat={activeChat}
         details={chatDetails}
         loading={chatDetailsLoading}
+        autoCache={activeChat ? autoCacheChats[`${accountId}:${activeChat.id}`] : false}
+        autoCacheBusy={autoCacheBusy}
+        onAutoCacheChange={setChatAutoCache}
         onOpenMedia={openInfoMedia}
         onClose={() => setChatInfoOpen(false)}
       />

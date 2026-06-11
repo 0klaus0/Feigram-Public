@@ -16,8 +16,8 @@ export TELEGRAM_API_HASH="${wizard_telegram_api_hash}"
 export DATA_DIR="${DATA_HOME}/data"
 export DOWNLOAD_DIR="${DATA_HOME}/data/downloads"
 export FFMPEG_BIN="${APP_HOME}/bin/ffmpeg"
-export APP_VERSION="1.5.8"
-export APP_CHANGELOG="修复后台和群组信息布局变形，优化下载中心去重、标题和速度展示，默认改为原始视频在线播放优先，HLS 转码作为实验兜底。"
+export APP_VERSION="1.5.9"
+export APP_CHANGELOG="固定下载列表排序，群组信息新增媒体资源浏览和大视频静默缓存，视频消息新增封面预览和时长展示。"
 export NODE_ENV="production"
 
 is_running() {

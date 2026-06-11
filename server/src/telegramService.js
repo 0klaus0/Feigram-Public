@@ -15,6 +15,7 @@ const peerCache = new Map();
 const pendingLogins = new Map();
 const downloadTasks = new Map();
 const hlsTasks = new Map();
+const silentCacheTasks = new Map();
 const VIDEO_CACHE_THRESHOLD = 100 * 1024 * 1024;
 const FFMPEG_BIN = process.env.FFMPEG_BIN || path.join(__dirname, "..", "..", "bin", "ffmpeg");
 
@@ -27,6 +28,7 @@ async function cacheSettings() {
     video: settings.videoCacheDir || path.join(base, "videos"),
     file: settings.fileCacheDir || path.join(base, "files"),
     avatars: path.join(base, "avatars"),
+    thumbs: path.join(base, "thumbs"),
     hls: path.join(settings.videoCacheDir || path.join(base, "videos"), "hls"),
     retentionDays: Math.max(1, Number(settings.cacheRetentionDays || 30))
   };
@@ -578,7 +580,8 @@ async function chatDetails(userId, accountId, peerId) {
         kind: message.media?.kind || "file",
         size: message.media?.size || "",
         width: message.media?.width || 0,
-        height: message.media?.height || 0
+        height: message.media?.height || 0,
+        duration: message.media?.duration || 0
       }))
   };
 }
@@ -668,6 +671,7 @@ function serializeDownloadTask(task) {
     downloaded: task.downloaded,
     speedBps: task.speedBps,
     error: task.error || "",
+    createdAt: task.createdAt,
     updatedAt: task.updatedAt,
     inlineUrl: task.status === "completed"
       ? `/api/media/${task.accountId}/${encodeURIComponent(task.peerId)}/${task.messageId}?inline=1`
@@ -714,6 +718,7 @@ async function ensureDownloadTask(userId, accountId, peerId, messageId) {
     status: "queued",
     error: "",
     cancelToken: null,
+    createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString()
   };
   downloadTasks.set(id, task);
@@ -806,10 +811,51 @@ async function runDownloadTask(task, io) {
   }
 }
 
+async function cacheVideoSilently(userId, accountId, peerId, message) {
+  const contentType = message.document?.mimeType || "";
+  const kind = mediaKind(message, contentType);
+  const size = Number(message.file?.size || message.document?.size || 0);
+  if (kind !== "video" || size <= VIDEO_CACHE_THRESHOLD) return false;
+  const key = safeId(`silent-${userId}-${accountId}-${peerId}-${message.id}`);
+  if (silentCacheTasks.has(key)) return false;
+  const visibleTask = downloadTasks.get(downloadTaskId(userId, accountId, peerId, message.id));
+  if (visibleTask && ["queued", "downloading", "completed"].includes(visibleTask.status)) return false;
+  const mediaInfo = await mediaFileInfo(userId, accountId, message, contentType, kind);
+  const { filePath, downloadDir } = mediaInfo;
+  const partPath = `${filePath}.silent.part`;
+  if (await fs.pathExists(filePath)) return false;
+  const promise = (async () => {
+    try {
+      const client = await getClient(userId, accountId);
+      await fs.ensureDir(downloadDir);
+      await fs.remove(partPath).catch(() => {});
+      await client.downloadMedia(message, { outputFile: partPath });
+      await fs.move(partPath, filePath, { overwrite: true });
+    } finally {
+      silentCacheTasks.delete(key);
+    }
+  })();
+  silentCacheTasks.set(key, promise);
+  promise.catch(() => {});
+  return true;
+}
+
+async function cacheLargeVideosInChat(userId, accountId, peerId) {
+  const client = await getClient(userId, accountId);
+  const entity = await resolvePeer(userId, accountId, peerId);
+  const recent = await client.getMessages(entity, { limit: 120 }).catch(() => []);
+  let queued = 0;
+  for (const message of recent) {
+    if (!message?.media) continue;
+    if (await cacheVideoSilently(userId, accountId, peerId, message)) queued += 1;
+  }
+  return { queued };
+}
+
 function listDownloadTasks(userId) {
   return [...downloadTasks.values()]
     .filter((task) => task.userId === userId)
-    .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)))
+    .sort((a, b) => String(b.createdAt || b.updatedAt).localeCompare(String(a.createdAt || a.updatedAt)))
     .map(serializeDownloadTask);
 }
 
@@ -926,6 +972,43 @@ async function hlsMediaFile(userId, accountId, peerId, messageId, fileName, io) 
     filePath,
     contentType: safeFile.endsWith(".m3u8") ? "application/vnd.apple.mpegurl" : "video/mp2t"
   };
+}
+
+async function mediaThumbnail(userId, accountId, peerId, messageId) {
+  const { client, message } = await mediaMessage(userId, accountId, peerId, messageId);
+  const contentType = message.photo ? "image/jpeg" : message.document?.mimeType || "";
+  const kind = mediaKind(message, contentType);
+  const directories = await cacheSettings();
+  const thumbDir = path.join(directories.thumbs, userId);
+  await fs.ensureDir(thumbDir);
+  const filePath = path.join(thumbDir, `${safeId(`${accountId}-${peerId}-${messageId}`)}.jpg`);
+  if (await fs.pathExists(filePath)) {
+    return { filePath, contentType: "image/jpeg" };
+  }
+
+  const thumbCount = message.document?.thumbs?.length || message.photo?.sizes?.length || 0;
+  if (thumbCount) {
+    const buffer = await client.downloadMedia(message, { thumb: thumbCount - 1 }).catch(() => null);
+    if (buffer?.length) {
+      await fs.writeFile(filePath, buffer);
+      return { filePath, contentType: "image/jpeg" };
+    }
+  }
+
+  if (kind === "image") {
+    const media = await downloadMedia(userId, accountId, peerId, messageId, { forceCache: true });
+    return { filePath: media.filePath, contentType: media.contentType };
+  }
+
+  if (kind === "video") {
+    const { filePath: videoPath } = await mediaFileInfo(userId, accountId, message, contentType, kind);
+    if (await fs.pathExists(videoPath)) {
+      await runFfmpeg(["-y", "-ss", "00:00:01", "-i", videoPath, "-frames:v", "1", "-vf", "scale=640:-2", filePath]);
+      if (await fs.pathExists(filePath)) return { filePath, contentType: "image/jpeg" };
+    }
+  }
+
+  throw Object.assign(new Error("暂无视频封面"), { status: 404 });
 }
 
 async function deleteDownloadTask(userId, taskId, io) {
@@ -1110,7 +1193,7 @@ async function profilePhoto(userId, accountId, peerId = "__self") {
 async function cleanupCache() {
   const settings = await cacheSettings();
   const cutoff = Date.now() - settings.retentionDays * 24 * 60 * 60 * 1000;
-  for (const dir of [settings.image, settings.video, settings.file, settings.avatars, settings.hls]) {
+  for (const dir of [settings.image, settings.video, settings.file, settings.avatars, settings.thumbs, settings.hls]) {
     if (!(await fs.pathExists(dir))) continue;
     const entries = await fs.readdir(dir).catch(() => []);
     for (const entry of entries) {
@@ -1136,12 +1219,14 @@ module.exports = {
   completeCode,
   completePassword,
   cacheMedia,
+  cacheLargeVideosInChat,
   cancelDownloadTask,
   chatDetails,
   clearDownloadTask,
   deleteDownloadTask,
   downloadMedia,
   hlsMediaFile,
+  mediaThumbnail,
   listDownloadTasks,
   resumeDownloadTask,
   startDownloadTask,

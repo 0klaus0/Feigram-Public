@@ -129,6 +129,10 @@ app.get("/api/chats/:account/:peer/details", asyncRoute(async (req, res) => {
   res.json(await tg.chatDetails(req.user.id, req.params.account, req.params.peer));
 }));
 
+app.post("/api/chats/:account/:peer/cache-large-videos", asyncRoute(async (req, res) => {
+  res.json(await tg.cacheLargeVideosInChat(req.user.id, req.params.account, req.params.peer));
+}));
+
 app.get("/api/folders", asyncRoute(async (req, res) => {
   res.json(await tg.listFolders(req.user.id, req.query.account));
 }));
@@ -207,6 +211,13 @@ app.get("/api/media/:account/:peer/:messageId", asyncRoute(async (req, res) => {
     return;
   }
   res.download(media.filePath, media.fileName);
+}));
+
+app.get("/api/media/:account/:peer/:messageId/thumbnail", asyncRoute(async (req, res) => {
+  const thumb = await tg.mediaThumbnail(req.user.id, req.params.account, req.params.peer, req.params.messageId);
+  res.setHeader("Content-Type", thumb.contentType);
+  res.setHeader("Cache-Control", "private, max-age=86400");
+  res.sendFile(thumb.filePath);
 }));
 
 app.post("/api/media/:account/:peer/:messageId/cache", asyncRoute(async (req, res) => {

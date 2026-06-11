@@ -1,5 +1,5 @@
 appname=feigrampub
-version=1.5.8
+version=1.5.9
 display_name=Feigram Public
 desc="""<p><strong>Feigram Public</strong> 是第三方开发的非官方 Telegram 客户端公开发布版，支持管理员后台、飞牛账户隔离、加密 Telegram session、Telegram 文件夹、媒体预览和公告中心。</p><p>仅适用于 x86_64 / amd64 飞牛 OS 设备。</p>"""
 platform=all
@@ -12,4 +12,4 @@ desktop_uidir=ui
 desktop_applaunchname=feigrampub.proxy.Application
 service_port=3088
 checkport=true
-changelog=修复后台和群组信息布局变形，优化下载中心去重、标题和速度展示，默认改为原始视频在线播放优先，HLS 转码作为实验兜底。
+changelog=固定下载列表排序，群组信息新增媒体资源浏览和大视频静默缓存，视频消息新增封面预览和时长展示。
