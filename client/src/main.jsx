@@ -707,7 +707,7 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
               <option value={String(10 * 1024 * 1024)}>10 MB/s</option>
             </select></label>
             <label><span>并发数量</span><select value={String(silentCacheState.concurrency || 1)} onChange={(e) => onSilentCacheControl?.({ concurrency: Number(e.target.value) })}>
-              {[1, 2, 3, 4, 5].map((value) => <option value={String(value)} key={value}>{value}</option>)}
+              {[1, 2, 3, 4, 5, 10].map((value) => <option value={String(value)} key={value}>{value}</option>)}
             </select></label>
           </div>
           <p className="hint">这里展示群组信息页勾选后自动缓存的大于 100MB 视频，和用户主动下载列表分开；升级或重启后未完成任务会继续。</p>

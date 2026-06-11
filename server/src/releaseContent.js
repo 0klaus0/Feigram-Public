@@ -14,6 +14,19 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.11",
+    title: "Feigram 2.0.11 更新",
+    version: "2.0.11",
+    level: "success",
+    createdAt: "2026-06-12T05:00:00.000Z",
+    body: [
+      "缓存信息的最大缓存速率确认支持不限速，选择不限速时后台缓存不再执行全局节流。",
+      "后台缓存并发数量新增 10，服务端会强制限制在 1-10。",
+      "限速模式下并发任务继续共享总速率限制；不限速模式下使用 Telegram 默认下载策略。",
+      "新增缓存与下载逻辑文档，便于后续继续调整限速、并发、分片和重试策略。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.10",
     title: "Feigram 2.0.10 更新",
     version: "2.0.10",
