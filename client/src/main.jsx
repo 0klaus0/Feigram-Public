@@ -75,10 +75,9 @@ function mergeDownloads(items) {
 }
 
 function sortSilentCaches(items) {
-  const order = { running: 0, queued: 1, error: 2, completed: 3 };
   return [...items].sort((a, b) => {
-    const statusDiff = (order[a.status] ?? 9) - (order[b.status] ?? 9);
-    if (statusDiff) return statusDiff;
+    const orderDiff = Number(a.order || 0) - Number(b.order || 0);
+    if (orderDiff) return orderDiff;
     return String(b.createdAt || b.updatedAt).localeCompare(String(a.createdAt || a.updatedAt));
   });
 }
@@ -513,6 +512,7 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
   const [diagnostics, setDiagnostics] = useState(null);
   const [updateInfo, setUpdateInfo] = useState(null);
   const [newUser, setNewUser] = useState({ username: "", password: "", displayName: "", role: "user" });
+  const [dragSilentId, setDragSilentId] = useState("");
   const [error, setError] = useState("");
   const [saved, setSaved] = useState("");
 
@@ -702,7 +702,19 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
               const progress = task.size ? Math.min(100, Math.round((Number(task.downloaded || 0) / Number(task.size)) * 100)) : 0;
               const statusText = task.status === "running" ? "缓存中" : task.status === "queued" ? "排队中" : task.status === "paused" ? "已暂停" : task.status === "completed" ? "已完成" : task.status === "cancelled" ? "已取消" : "失败";
               return (
-                <div className="silent-cache-row" key={task.id}>
+                <div
+                  className="silent-cache-row"
+                  key={task.id}
+                  draggable
+                  onDragStart={() => setDragSilentId(task.id)}
+                  onDragOver={(event) => event.preventDefault()}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    if (dragSilentId && dragSilentId !== task.id) onSilentCacheControl?.({ reorder: { fromId: dragSilentId, toId: task.id } });
+                    setDragSilentId("");
+                  }}
+                  onDragEnd={() => setDragSilentId("")}
+                >
                   <div className="silent-cache-title">
                     <strong title={task.fileName}>{task.fileName || "Telegram 视频"}</strong>
                     <span>{statusText}</span>
@@ -1120,8 +1132,13 @@ function App() {
         return sortSilentCaches(next);
       });
     };
+    const remove = ({ id }) => setSilentCaches((current) => current.filter((item) => item.id !== id));
     socket.on("silent-cache:update", update);
-    return () => socket.off("silent-cache:update", update);
+    socket.on("silent-cache:delete", remove);
+    return () => {
+      socket.off("silent-cache:update", update);
+      socket.off("silent-cache:delete", remove);
+    };
   }, [socket]);
 
   useEffect(() => {
@@ -1491,6 +1508,23 @@ function App() {
 
   async function updateSilentCacheControl(patch) {
     try {
+      if (patch?.reorder) {
+        const { fromId, toId } = patch.reorder;
+        const current = [...silentCaches];
+        const from = current.findIndex((item) => item.id === fromId);
+        const to = current.findIndex((item) => item.id === toId);
+        if (from < 0 || to < 0) return;
+        const [moved] = current.splice(from, 1);
+        current.splice(to, 0, moved);
+        setSilentCaches(current);
+        const result = await api("/api/silent-cache/reorder", {
+          method: "POST",
+          body: JSON.stringify({ orderedIds: current.map((item) => item.id) })
+        });
+        setSilentCacheState({ enabled: result.enabled !== false, rateLimitBps: Number(result.rateLimitBps || 0) });
+        setSilentCaches(sortSilentCaches(result.tasks || []));
+        return;
+      }
       const result = await api("/api/silent-cache/control", { method: "PUT", body: JSON.stringify(patch) });
       setSilentCacheState({ enabled: result.enabled !== false, rateLimitBps: Number(result.rateLimitBps || 0) });
       setSilentCaches(sortSilentCaches(result.tasks || []));
@@ -1502,7 +1536,7 @@ function App() {
   async function cancelSilentCache(task) {
     try {
       const result = await api(`/api/silent-cache/${encodeURIComponent(task.id)}`, { method: "DELETE" });
-      setSilentCaches((current) => sortSilentCaches(current.map((item) => item.id === result.id ? result : item)));
+      setSilentCaches((current) => current.filter((item) => item.id !== result.id));
     } catch (err) {
       notify(err.message);
     }

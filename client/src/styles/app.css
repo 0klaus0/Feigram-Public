@@ -1669,10 +1669,15 @@ textarea {
   background: var(--soft);
   border: 1px solid var(--line);
   border-radius: 8px;
+  cursor: grab;
   display: grid;
   font-size: 0.82rem;
   gap: 5px;
   padding: 8px 10px;
+}
+
+.silent-cache-row:active {
+  cursor: grabbing;
 }
 
 .silent-cache-title,

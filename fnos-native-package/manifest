@@ -1,5 +1,5 @@
 appname=feigrampub
-version=2.0.2
+version=2.0.3
 display_name=Feigram
 desc="""<p><strong>Feigram 2.0 fnOS Client Edition</strong> 是第三方开发的非官方 Telegram 客户端，支持管理员后台、飞牛账户隔离、加密 Telegram session、Telegram 文件夹、媒体预览、后台任务恢复、系统诊断和更新检测。</p><p>仅适用于 x86_64 / amd64 飞牛 OS 设备。</p>"""
 platform=all
@@ -12,4 +12,4 @@ desktop_uidir=ui
 desktop_applaunchname=feigrampub.proxy.Application
 service_port=3088
 checkport=true
-changelog=优化群视频后台缓存恢复、暂停、限速和单任务取消，改进 Telegram 消息链接精准定位和删除提示。
+changelog=优化群缓存取消移除、排重、拖动排序和 10 分钟巡检重试，增强下载与缓存网络失败自动恢复。

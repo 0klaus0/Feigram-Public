@@ -253,6 +253,10 @@ app.put("/api/silent-cache/control", asyncRoute(async (req, res) => {
   res.json(tg.setSilentCacheControl(req.user.id, req.body || {}, io));
 }));
 
+app.post("/api/silent-cache/reorder", asyncRoute(async (req, res) => {
+  res.json(tg.reorderSilentCacheTasks(req.user.id, req.body?.orderedIds || [], io));
+}));
+
 app.delete("/api/silent-cache/:id", asyncRoute(async (req, res) => {
   res.json(tg.cancelSilentCacheTask(req.user.id, req.params.id, io));
 }));
@@ -348,6 +352,13 @@ ensureStore()
     setInterval(() => {
       tg.cleanupCache().catch((error) => console.warn("Cache cleanup failed:", error.message));
     }, 24 * 60 * 60 * 1000).unref?.();
+    setInterval(() => {
+      try {
+        tg.monitorSilentCacheTasks(io);
+      } catch (error) {
+        console.warn("Silent cache monitor failed:", error.message);
+      }
+    }, 10 * 60 * 1000).unref?.();
     server.listen(port, "0.0.0.0", () => {
       console.log(`Feigram Public is listening on http://0.0.0.0:${port}`);
     });

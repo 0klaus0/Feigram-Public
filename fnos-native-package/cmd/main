@@ -18,8 +18,8 @@ export DOWNLOAD_DIR="${DATA_HOME}/data/downloads"
 export FFMPEG_BIN="${APP_HOME}/bin/ffmpeg"
 export LOG_FILE="$LOG_FILE"
 export APP_EDITION="Feigram 2.0 fnOS Client Edition"
-export APP_VERSION="2.0.2"
-export APP_CHANGELOG="优化群视频后台缓存恢复、暂停、限速和单任务取消，改进 Telegram 消息链接精准定位和删除提示。"
+export APP_VERSION="2.0.3"
+export APP_CHANGELOG="优化群缓存取消移除、排重、拖动排序和 10 分钟巡检重试，增强下载与缓存网络失败自动恢复。"
 export NODE_ENV="production"
 
 is_running() {

@@ -14,6 +14,20 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.3",
+    title: "Feigram 2.0.3 更新",
+    version: "2.0.3",
+    level: "success",
+    createdAt: "2026-06-11T22:00:00.000Z",
+    body: [
+      "群缓存取消后会直接移出缓存列表，不再保留已取消记录。",
+      "群缓存新增按视频标题和大小排重，避免同一视频反复进入队列。",
+      "群缓存列表支持拖动排序，排序结果会保存到服务端并影响后续缓存顺序。",
+      "后台每 10 分钟巡检群缓存状态，失败、停滞或排队任务会自动重新拉起，直到缓存完成。",
+      "下载列表和群缓存都增加网络波动自动重试，缓解 Request was unsuccessful 5 time(s) 这类 Telegram 网络请求失败。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.2",
     title: "Feigram 2.0.2 更新",
     version: "2.0.2",
