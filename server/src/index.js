@@ -246,7 +246,15 @@ app.get("/api/downloads", asyncRoute(async (req, res) => {
 }));
 
 app.get("/api/silent-cache", asyncRoute(async (req, res) => {
-  res.json(tg.listSilentCacheTasks(req.user.id));
+  res.json(tg.silentCacheState(req.user.id));
+}));
+
+app.put("/api/silent-cache/control", asyncRoute(async (req, res) => {
+  res.json(tg.setSilentCacheControl(req.user.id, req.body || {}, io));
+}));
+
+app.delete("/api/silent-cache/:id", asyncRoute(async (req, res) => {
+  res.json(tg.cancelSilentCacheTask(req.user.id, req.params.id, io));
 }));
 
 app.post("/api/downloads/:id/start", asyncRoute(async (req, res) => {

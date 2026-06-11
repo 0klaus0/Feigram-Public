@@ -23,12 +23,18 @@ let silentCacheActive = 0;
 let downloadPersistTimer = null;
 let silentPersistTimer = null;
 let realtimeIo = null;
+let silentCacheEnabled = true;
+let silentCacheRateLimitBps = 0;
 const VIDEO_CACHE_THRESHOLD = 100 * 1024 * 1024;
 const MAX_SILENT_CACHE_CONCURRENCY = 5;
 const FFMPEG_BIN = process.env.FFMPEG_BIN || path.join(__dirname, "..", "..", "bin", "ffmpeg");
 
 function stableId(prefix, ...parts) {
   return `${prefix}_${crypto.createHash("sha1").update(parts.map((part) => String(part ?? "")).join("|")).digest("hex").slice(0, 24)}`;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function schedulePersistDownloads() {
@@ -57,7 +63,12 @@ async function persistDownloadTasks() {
 
 async function persistSilentCacheTasks() {
   await fs.ensureDir(dataDir);
-  await fs.writeJson(silentCachePath, { tasks: [...silentCacheRecords.values()] }, { spaces: 2 });
+  const tasks = [...silentCacheRecords.values()].map(({ cancelToken, ...task }) => task);
+  await fs.writeJson(silentCachePath, {
+    enabled: silentCacheEnabled,
+    rateLimitBps: silentCacheRateLimitBps,
+    tasks
+  }, { spaces: 2 });
 }
 
 async function loadPersistentTasks() {
@@ -76,17 +87,22 @@ async function loadPersistentTasks() {
   }
 
   const savedSilent = await fs.readJson(silentCachePath).catch(() => ({ tasks: [] }));
+  silentCacheEnabled = savedSilent.enabled !== false;
+  silentCacheRateLimitBps = Math.max(0, Number(savedSilent.rateLimitBps || 0));
   for (const task of savedSilent.tasks || []) {
     if (!task?.id || !task.userId || !task.accountId || !task.peerId || !task.messageId) continue;
     const completedFileExists = task.status === "completed" && task.filePath && await fs.pathExists(task.filePath);
+    const shouldResume = !["completed", "cancelled"].includes(task.status);
     const next = {
       ...task,
-      status: completedFileExists ? "completed" : "queued",
+      cancelToken: null,
+      speedBps: 0,
+      status: completedFileExists ? "completed" : shouldResume ? "queued" : task.status,
       error: "",
       updatedAt: new Date().toISOString()
     };
     silentCacheRecords.set(next.id, next);
-    if (next.status !== "completed") silentCacheQueue.push(next);
+    if (next.status === "queued") silentCacheQueue.push(next);
   }
 }
 
@@ -360,6 +376,20 @@ function linkMessageId(url) {
     return numeric ? Number(numeric) : 0;
   } catch {
     return 0;
+  }
+}
+
+function linkPrivatePeerId(url) {
+  try {
+    const value = String(url || "").trim();
+    const normalized = value.startsWith("t.me/") ? `https://${value}` : value;
+    const parsed = new URL(normalized);
+    if (!["t.me", "telegram.me", "www.t.me", "www.telegram.me"].includes(parsed.hostname)) return "";
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    if (parts[0] !== "c" || !/^\d+$/.test(parts[1] || "")) return "";
+    return `Channel:${parts[1]}`;
+  } catch {
+    return "";
   }
 }
 
@@ -753,9 +783,13 @@ async function clickMessageButton(userId, accountId, peerId, messageId, data) {
 
 async function resolveTelegramLink(userId, accountId, url) {
   const domain = linkDomain(url);
-  if (!domain) throw Object.assign(new Error("这个链接暂不支持在客户端内打开"), { status: 400 });
   const client = await getClient(userId, accountId);
-  const entity = await client.getEntity(domain);
+  if (!peerCache.has(accountId)) await listChats(userId, accountId);
+  const privatePeerId = linkPrivatePeerId(url);
+  let entity = null;
+  if (privatePeerId) entity = peerCache.get(accountId)?.get(privatePeerId) || null;
+  if (!entity && domain) entity = await client.getEntity(domain);
+  if (!entity) throw Object.assign(new Error("这个链接暂不支持在客户端内打开，或你当前账号无权访问"), { status: 400 });
   const chat = serializeEntity(entity);
   if (!peerCache.has(accountId)) peerCache.set(accountId, new Map());
   peerCache.get(accountId).set(chat.id, entity);
@@ -839,6 +873,15 @@ function serializeSilentCacheTask(task) {
   };
 }
 
+function serializeSilentCacheState(userId) {
+  return {
+    enabled: silentCacheEnabled,
+    rateLimitBps: silentCacheRateLimitBps,
+    running: silentCacheActive,
+    tasks: listSilentCacheTasks(userId)
+  };
+}
+
 function emitSilentCacheTask(io, task) {
   const target = io || realtimeIo;
   if (target) target.to(`user:${task.userId}`).emit("silent-cache:update", serializeSilentCacheTask(task));
@@ -914,7 +957,7 @@ async function startDownloadTask(userId, accountId, peerId, messageId, io) {
 
 async function runDownloadTask(task, io) {
   if (task.status === "downloading") return;
-  const cancelToken = { cancelled: false };
+  const cancelToken = { cancelled: false, paused: false };
   task.cancelToken = cancelToken;
   task.status = "downloading";
   task.error = "";
@@ -1005,6 +1048,7 @@ async function cacheVideoSilently(userId, accountId, peerId, message) {
     size,
     downloaded: 0,
     speedBps: 0,
+    cancelToken: null,
     status: "queued",
     error: "",
     createdAt: new Date().toISOString(),
@@ -1018,9 +1062,10 @@ async function cacheVideoSilently(userId, accountId, peerId, message) {
 }
 
 function pumpSilentCacheQueue(io = realtimeIo) {
+  if (!silentCacheEnabled) return;
   while (silentCacheActive < MAX_SILENT_CACHE_CONCURRENCY && silentCacheQueue.length) {
     const record = silentCacheQueue.shift();
-    if (!record || silentCacheTasks.has(record.id) || record.status === "completed") continue;
+    if (!record || silentCacheTasks.has(record.id) || ["completed", "cancelled"].includes(record.status)) continue;
     silentCacheActive += 1;
     record.status = "running";
     record.speedBps = 0;
@@ -1065,11 +1110,25 @@ async function runSilentCacheTask(record, io = realtimeIo) {
   record.size = total;
   let lastBytes = 0;
   let lastTick = Date.now();
+  const startedAt = Date.now();
+  const cancelToken = { cancelled: false };
+  record.cancelToken = cancelToken;
   const progressCallback = async (downloadedValue, totalValue) => {
+    if (cancelToken.cancelled || cancelToken.paused || !silentCacheEnabled) {
+      throw Object.assign(new Error(cancelToken.cancelled ? "后台缓存已取消" : "后台缓存已暂停"), {
+        status: 499,
+        paused: cancelToken.paused || !silentCacheEnabled
+      });
+    }
     const downloaded = Number(downloadedValue?.toString?.() || downloadedValue || 0);
     const fullSize = Number(totalValue?.toString?.() || totalValue || total || 0);
     record.downloaded = downloaded;
     record.size = fullSize || record.size;
+    if (silentCacheRateLimitBps > 0 && downloaded > 0) {
+      const expectedMs = (downloaded / silentCacheRateLimitBps) * 1000;
+      const elapsedMs = Date.now() - startedAt;
+      if (expectedMs > elapsedMs) await sleep(Math.min(5000, expectedMs - elapsedMs));
+    }
     const now = Date.now();
     if (now - lastTick >= 1000 || downloaded >= fullSize) {
       record.speedBps = Math.max(0, Math.round((downloaded - lastBytes) / Math.max(0.001, (now - lastTick) / 1000)));
@@ -1079,15 +1138,32 @@ async function runSilentCacheTask(record, io = realtimeIo) {
       emitSilentCacheTask(io, record);
     }
   };
-  await client.downloadMedia(message, { outputFile: record.partPath, progressCallback });
-  await fs.move(record.partPath, record.filePath, { overwrite: true });
-  const stat = await fs.stat(record.filePath).catch(() => null);
-  if (stat) record.downloaded = stat.size;
-  record.status = "completed";
-  record.error = "";
-  record.speedBps = 0;
-  record.updatedAt = new Date().toISOString();
-  emitSilentCacheTask(io, record);
+  try {
+    await client.downloadMedia(message, { outputFile: record.partPath, progressCallback });
+    await fs.move(record.partPath, record.filePath, { overwrite: true });
+    const stat = await fs.stat(record.filePath).catch(() => null);
+    if (stat) record.downloaded = stat.size;
+    record.status = "completed";
+    record.error = "";
+    record.speedBps = 0;
+    record.updatedAt = new Date().toISOString();
+    emitSilentCacheTask(io, record);
+  } catch (error) {
+    if (error.status === 499 && error.paused) {
+      record.status = "paused";
+      record.error = "";
+    } else if (error.status === 499) {
+      record.status = "cancelled";
+      record.error = "";
+    } else {
+      throw error;
+    }
+    record.speedBps = 0;
+    record.updatedAt = new Date().toISOString();
+    emitSilentCacheTask(io, record);
+  } finally {
+    record.cancelToken = null;
+  }
 }
 
 async function cacheLargeVideosInChat(userId, accountId, peerId, io = realtimeIo) {
@@ -1115,12 +1191,64 @@ function listSilentCacheTasks(userId) {
   return [...silentCacheRecords.values()]
     .filter((task) => task.userId === userId)
     .sort((a, b) => {
-      const order = { running: 0, queued: 1, error: 2, completed: 3 };
+      const order = { running: 0, queued: 1, paused: 2, error: 3, completed: 4, cancelled: 5 };
       const statusDiff = (order[a.status] ?? 9) - (order[b.status] ?? 9);
       if (statusDiff) return statusDiff;
       return String(b.createdAt || b.updatedAt).localeCompare(String(a.createdAt || a.updatedAt));
     })
     .map(serializeSilentCacheTask);
+}
+
+function setSilentCacheControl(userId, payload = {}, io = realtimeIo) {
+  if (payload.enabled !== undefined) {
+    silentCacheEnabled = Boolean(payload.enabled);
+  }
+  if (payload.rateLimitBps !== undefined) {
+    silentCacheRateLimitBps = Math.max(0, Math.min(1024 * 1024 * 1024, Number(payload.rateLimitBps || 0)));
+  }
+  if (!silentCacheEnabled) {
+    for (const task of silentCacheRecords.values()) {
+      if (task.userId !== userId) continue;
+      if (task.cancelToken) task.cancelToken.paused = true;
+      if (["queued", "running"].includes(task.status)) {
+        task.status = "paused";
+        task.speedBps = 0;
+        task.updatedAt = new Date().toISOString();
+        emitSilentCacheTask(io, task);
+      }
+    }
+    silentCacheQueue.splice(0, silentCacheQueue.length, ...silentCacheQueue.filter((task) => task.userId !== userId));
+  } else {
+    for (const task of silentCacheRecords.values()) {
+      if (task.userId !== userId) continue;
+      if (["paused", "error"].includes(task.status)) {
+        if (silentCacheTasks.has(task.id)) continue;
+        task.status = "queued";
+        task.error = "";
+        task.speedBps = 0;
+        task.updatedAt = new Date().toISOString();
+        if (!silentCacheQueue.some((item) => item.id === task.id)) silentCacheQueue.push(task);
+        emitSilentCacheTask(io, task);
+      }
+    }
+    pumpSilentCacheQueue(io);
+  }
+  schedulePersistSilent();
+  return serializeSilentCacheState(userId);
+}
+
+function cancelSilentCacheTask(userId, taskId, io = realtimeIo) {
+  const task = silentCacheRecords.get(taskId);
+  if (!task || task.userId !== userId) throw Object.assign(new Error("找不到后台缓存任务"), { status: 404 });
+  if (task.cancelToken) task.cancelToken.cancelled = true;
+  task.status = "cancelled";
+  task.speedBps = 0;
+  task.error = "";
+  task.updatedAt = new Date().toISOString();
+  const index = silentCacheQueue.findIndex((item) => item.id === task.id);
+  if (index >= 0) silentCacheQueue.splice(index, 1);
+  emitSilentCacheTask(io, task);
+  return serializeSilentCacheTask(task);
 }
 
 async function resumeDownloadTask(userId, taskId, io) {
@@ -1496,6 +1624,9 @@ module.exports = {
   mediaThumbnail,
   listDownloadTasks,
   listSilentCacheTasks,
+  silentCacheState: serializeSilentCacheState,
+  setSilentCacheControl,
+  cancelSilentCacheTask,
   resumeDownloadTask,
   startDownloadTask,
   streamVideoMedia,

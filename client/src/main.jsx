@@ -486,7 +486,7 @@ function AccountLogin({ socket, onDone }) {
   );
 }
 
-function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountLogout, onAccountsChanged, onSettingsChanged, open, onClose, initialTab = "accounts", socket, silentCaches = [], onRefreshSilentCaches }) {
+function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountLogout, onAccountsChanged, onSettingsChanged, open, onClose, initialTab = "accounts", socket, silentCacheState, silentCaches = [], onRefreshSilentCaches, onSilentCacheControl, onCancelSilentCache }) {
   const [tab, setTab] = useState(initialTab);
   const [users, setUsers] = useState([]);
   const [settings, setSettings] = useState({
@@ -685,15 +685,28 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
             <strong>群视频后台缓存</strong>
             <button className="icon-button" type="button" onClick={onRefreshSilentCaches}><RefreshCw size={14} />刷新</button>
           </div>
+          <div className="silent-cache-controls">
+            <label className="check-row"><input type="checkbox" checked={silentCacheState.enabled !== false} onChange={(e) => onSilentCacheControl?.({ enabled: e.target.checked })} /><span>{silentCacheState.enabled !== false ? "已开启后台缓存" : "已暂停后台缓存"}</span></label>
+            <label><span>最大缓存速率</span><select value={String(silentCacheState.rateLimitBps || 0)} onChange={(e) => onSilentCacheControl?.({ rateLimitBps: Number(e.target.value) })}>
+              <option value="0">不限速</option>
+              <option value={String(512 * 1024)}>512 KB/s</option>
+              <option value={String(1024 * 1024)}>1 MB/s</option>
+              <option value={String(2 * 1024 * 1024)}>2 MB/s</option>
+              <option value={String(5 * 1024 * 1024)}>5 MB/s</option>
+              <option value={String(10 * 1024 * 1024)}>10 MB/s</option>
+            </select></label>
+          </div>
           <p className="hint">这里展示群组信息页勾选后自动缓存的大于 100MB 视频，和用户主动下载列表分开；升级或重启后未完成任务会继续。</p>
           <div className="silent-cache-list">
             {silentCaches.map((task) => {
               const progress = task.size ? Math.min(100, Math.round((Number(task.downloaded || 0) / Number(task.size)) * 100)) : 0;
+              const statusText = task.status === "running" ? "缓存中" : task.status === "queued" ? "排队中" : task.status === "paused" ? "已暂停" : task.status === "completed" ? "已完成" : task.status === "cancelled" ? "已取消" : "失败";
               return (
                 <div className="silent-cache-row" key={task.id}>
                   <div className="silent-cache-title">
                     <strong title={task.fileName}>{task.fileName || "Telegram 视频"}</strong>
-                    <span>{task.status === "running" ? "缓存中" : task.status === "queued" ? "排队中" : task.status === "completed" ? "已完成" : "失败"}</span>
+                    <span>{statusText}</span>
+                    {task.status !== "completed" && task.status !== "cancelled" && <button type="button" title="取消缓存" onClick={() => onCancelSilentCache?.(task)}><X size={12} /></button>}
                   </div>
                   <div className="silent-cache-meta">
                     <span>{formatBytes(task.downloaded)} / {formatBytes(task.size)}</span>
@@ -995,6 +1008,7 @@ function App() {
   const [announcementOpen, setAnnouncementOpen] = useState(false);
   const [downloads, setDownloads] = useState([]);
   const [silentCaches, setSilentCaches] = useState([]);
+  const [silentCacheState, setSilentCacheState] = useState({ enabled: true, rateLimitBps: 0 });
   const [downloadOpen, setDownloadOpen] = useState(false);
   const [chatInfoOpen, setChatInfoOpen] = useState(false);
   const [chatDetails, setChatDetails] = useState(null);
@@ -1136,6 +1150,7 @@ function App() {
           pendingScrollRef.current = null;
           return;
         }
+        return;
       }
       if (Number.isFinite(pending.scrollTop)) element.scrollTop = pending.scrollTop;
       pendingScrollRef.current = null;
@@ -1205,6 +1220,10 @@ function App() {
       const list = await api(`/api/messages?account=${encodeURIComponent(accountId)}&peer=${encodeURIComponent(chat.id)}&limit=80${around}`);
       setMessages(list);
       setHasOlder(list.length >= 80);
+      if (targetMessageId && !list.some((message) => Number(message.id) === targetMessageId)) {
+        pendingScrollRef.current = null;
+        notify("你要访问的内容已被删除");
+      }
     } catch (err) {
       setError(err.message);
     } finally {
@@ -1461,8 +1480,32 @@ function App() {
   }
 
   async function loadSilentCaches() {
-    const list = await api("/api/silent-cache").catch(() => []);
-    setSilentCaches(sortSilentCaches(list));
+    const result = await api("/api/silent-cache").catch(() => ({ enabled: true, rateLimitBps: 0, tasks: [] }));
+    const tasks = Array.isArray(result) ? result : result.tasks || [];
+    setSilentCacheState({
+      enabled: Array.isArray(result) ? true : result.enabled !== false,
+      rateLimitBps: Array.isArray(result) ? 0 : Number(result.rateLimitBps || 0)
+    });
+    setSilentCaches(sortSilentCaches(tasks));
+  }
+
+  async function updateSilentCacheControl(patch) {
+    try {
+      const result = await api("/api/silent-cache/control", { method: "PUT", body: JSON.stringify(patch) });
+      setSilentCacheState({ enabled: result.enabled !== false, rateLimitBps: Number(result.rateLimitBps || 0) });
+      setSilentCaches(sortSilentCaches(result.tasks || []));
+    } catch (err) {
+      notify(err.message);
+    }
+  }
+
+  async function cancelSilentCache(task) {
+    try {
+      const result = await api(`/api/silent-cache/${encodeURIComponent(task.id)}`, { method: "DELETE" });
+      setSilentCaches((current) => sortSilentCaches(current.map((item) => item.id === result.id ? result : item)));
+    } catch (err) {
+      notify(err.message);
+    }
   }
 
   async function updateDownload(task, action, method = "POST") {
@@ -1663,8 +1706,11 @@ function App() {
         initialTab={adminInitialTab}
         onClose={() => setAdminOpen(false)}
         socket={socket}
+        silentCacheState={silentCacheState}
         silentCaches={silentCaches}
         onRefreshSilentCaches={loadSilentCaches}
+        onSilentCacheControl={updateSilentCacheControl}
+        onCancelSilentCache={cancelSilentCache}
       />
       <InfoModal announcements={announcements} about={about} open={announcementOpen} onClose={() => setAnnouncementOpen(false)} />
       <DownloadCenter
