@@ -23,6 +23,7 @@
 - 入口：群组信息页勾选后台自动缓存后调用 `POST /api/chats/:account/:peer/cache-large-videos`
 - 任务表：内存 `silentCacheRecords`，落盘到 `silent-cache-tasks.json`
 - 任务 id：按用户、Telegram 账号、会话、消息 id 生成
+- Telegram 连接：使用缓存专用 Telegram client，和前台聊天、消息更新连接隔离
 - 自动缓存范围：只缓存大于 100MB 的视频
 - 排重规则：优先按 `用户 + Telegram 账号 + 会话 + 文件名 + 文件大小` 排重
 - 临时文件：`*.silent.part`
@@ -91,7 +92,8 @@
 - 巡检会读取 `*.silent.part` 的真实文件大小，并同步到缓存信息列表
 - `running` 任务超过 20 秒没有真实写盘进度时会清零旧速度
 - `running` 任务超过 90 秒没有真实写盘进度时会请求当前任务暂停并续传
-- Telegram `upload.GetFile` 单次分片请求有 45 秒本地超时，超时后 3 秒重新排队
+- 不对单次 GramJS 请求套外层 Promise 超时，避免底层请求残留为 hanging sender 状态
+- `running` 任务停滞时会重置缓存专用 Telegram client，然后从已有 `*.silent.part` 续传
 - 同一个后台缓存文件不会被强行并发重启，避免多个写入器同时写同一个 `*.silent.part`
 - `error`、`paused`、`queued` 或停滞的 `running` 任务会重新排队
 - 已经存在正式缓存文件的任务会直接标记为 `completed`

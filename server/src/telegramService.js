@@ -11,6 +11,7 @@ const { readSettings } = require("./settings");
 const { decryptText, encryptText } = require("./cryptoBox");
 
 const clients = new Map();
+const cacheClients = new Map();
 const peerCache = new Map();
 const pendingLogins = new Map();
 const downloadTasks = new Map();
@@ -36,7 +37,6 @@ const DOWNLOAD_RETRY_LIMIT = 3;
 const SILENT_RETRY_DELAY_MS = 60 * 1000;
 const STALE_TASK_MS = 90 * 1000;
 const IDLE_SPEED_RESET_MS = 20 * 1000;
-const GET_FILE_TIMEOUT_MS = 45 * 1000;
 const DIALOG_FETCH_LIMIT = 500;
 
 function stableId(prefix, ...parts) {
@@ -91,26 +91,6 @@ function rebalanceSilentConcurrency(io = realtimeIo) {
     enqueueSilentTask(task);
     emitSilentCacheTask(io, task);
   });
-}
-
-async function invokeWithTimeout(promise, timeoutMs, message = "Telegram 请求超时") {
-  let timer = null;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise((_, reject) => {
-        timer = setTimeout(() => {
-          const error = new Error(message);
-          error.code = "LOCAL_GETFILE_TIMEOUT";
-          error.errorMessage = "TIMEOUT";
-          reject(error);
-        }, timeoutMs);
-        timer.unref?.();
-      })
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
 }
 
 async function throttleSilentCache(deltaBytes) {
@@ -623,6 +603,32 @@ async function getClient(userId, accountId) {
   return client;
 }
 
+async function getCacheClient(userId, accountId) {
+  const existing = cacheClients.get(accountId);
+  if (existing) {
+    try {
+      if (existing.connected !== false && await existing.checkAuthorization()) return existing;
+    } catch {}
+    await resetCacheClient(accountId);
+  }
+  const account = (await readAccounts()).find((item) => item.id === accountId && item.userId === userId);
+  if (!account) throw Object.assign(new Error("账号不存在"), { status: 404 });
+  const client = await createClient(await decryptText(account.session));
+  if (!(await client.checkAuthorization())) throw Object.assign(new Error("账号登录已失效"), { status: 401 });
+  cacheClients.set(accountId, client);
+  return client;
+}
+
+async function resetCacheClient(accountId) {
+  const client = cacheClients.get(accountId);
+  if (client) {
+    try {
+      await client.disconnect();
+    } catch {}
+  }
+  cacheClients.delete(accountId);
+}
+
 async function startLogin(userId, { label, phoneNumber }) {
   const { apiId, apiHash } = await telegramConfig();
   const client = await createClient("");
@@ -703,6 +709,7 @@ async function logout(userId, accountId) {
     } catch {}
   }
   clients.delete(accountId);
+  await resetCacheClient(accountId);
   peerCache.delete(accountId);
   const account = (await readAccounts()).find((item) => item.id === accountId);
   if (!account || account.userId !== userId) throw Object.assign(new Error("账号不存在"), { status: 404 });
@@ -1078,11 +1085,7 @@ async function readTelegramDocumentChunks(client, doc, offset, bytesToRead, onCh
       limit
     });
     try {
-      const result = await invokeWithTimeout(
-        client.invokeWithSender(request, sender),
-        GET_FILE_TIMEOUT_MS,
-        "Telegram GetFile 请求超时"
-      );
+      const result = await client.invokeWithSender(request, sender);
       if (result instanceof Api.upload.FileCdnRedirect) {
         throw new Error("Telegram CDN 文件暂不支持后台缓存");
       }
@@ -1104,9 +1107,6 @@ async function readTelegramDocumentChunks(client, doc, offset, bytesToRead, onCh
           metrics.effectiveChunkSize = chunkSize;
           continue;
         }
-      }
-      if (error?.code === "LOCAL_GETFILE_TIMEOUT") {
-        throw error;
       }
       if (error?.errorMessage === "TIMEOUT" && !timedOut) {
         timedOut = true;
@@ -1365,10 +1365,10 @@ function pumpSilentCacheQueue(io = realtimeIo) {
       .catch((error) => {
         if (isTransientDownloadError(error) && silentCacheRecords.has(record.id)) {
           const fileReferenceExpired = isFileReferenceExpired(error);
-          const localTimeout = error?.code === "LOCAL_GETFILE_TIMEOUT";
+          resetCacheClient(record.accountId).catch(() => {});
           record.retryCount = Number(record.retryCount || 0) + 1;
           record.status = "queued";
-          record.error = fileReferenceExpired ? "文件引用过期，已刷新后重试" : localTimeout ? "Telegram 分片请求超时，已重新排队续传" : "网络波动，等待自动重试";
+          record.error = fileReferenceExpired ? "文件引用过期，已刷新后重试" : "Telegram 连接波动，已重置缓存连接并等待续传";
           record.speedBps = 0;
           record.updatedAt = new Date().toISOString();
           emitSilentCacheTask(io, record);
@@ -1378,7 +1378,7 @@ function pumpSilentCacheQueue(io = realtimeIo) {
               enqueueSilentTask(current);
               pumpSilentCacheQueue(io);
             }
-          }, fileReferenceExpired || localTimeout ? 3000 : Math.min(10 * 60 * 1000, SILENT_RETRY_DELAY_MS * Math.min(10, record.retryCount))).unref?.();
+          }, fileReferenceExpired ? 3000 : Math.min(60 * 1000, 3000 * Math.min(10, record.retryCount))).unref?.();
           return;
         }
         record.status = "error";
@@ -1414,7 +1414,10 @@ async function runSilentCacheTask(record, io = realtimeIo, runToken = null) {
     emitSilentCacheTask(io, record);
     return;
   }
-  const { client, entity, message } = await mediaMessage(record.userId, record.accountId, record.peerId, record.messageId);
+  const client = await getCacheClient(record.userId, record.accountId);
+  const entity = await resolvePeer(record.userId, record.accountId, record.peerId);
+  const [message] = await client.getMessages(entity, { ids: [Number(record.messageId)] });
+  if (!message || !message.media) throw Object.assign(new Error("这条消息没有可下载媒体"), { status: 404 });
   await fs.ensureDir(record.downloadDir);
   const total = record.size || Number(message.file?.size || message.document?.size || 0);
   record.size = total;
@@ -1755,7 +1758,8 @@ function monitorSilentCacheTasks(io = realtimeIo) {
       if (stale && task.status === "running" && task.cancelToken) {
         task.cancelToken.paused = true;
         task.cancelToken.requeue = true;
-        task.error = "真实写盘停滞，等待当前请求超时后续传";
+        resetCacheClient(task.accountId).catch(() => {});
+        task.error = "真实写盘停滞，已重置缓存连接并等待续传";
         task.speedBps = 0;
         task.updatedAt = new Date().toISOString();
         emitSilentCacheTask(io, task);

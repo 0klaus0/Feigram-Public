@@ -14,6 +14,20 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.20",
+    title: "Feigram 2.0.20 更新",
+    version: "2.0.20",
+    level: "success",
+    createdAt: "2026-06-12T15:45:00.000Z",
+    body: [
+      "复盘飞牛日志后修复后台缓存 Telegram sender 重连风暴问题。",
+      "撤销 2.0.19 的外层 Promise 超时，避免底层 GramJS 请求残留为 hanging states。",
+      "群视频后台缓存改用独立 Telegram client，不再和前台聊天、消息更新共用连接。",
+      "真实写盘停滞时只重置缓存专用连接，然后从现有 .silent.part 文件续传，不影响前台会话。",
+      "确认服务端缓存清理为每天一次且保留至少 1 天，不会 3-5 分钟删除正在缓存的文件。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.19",
     title: "Feigram 2.0.19 更新",
     version: "2.0.19",
