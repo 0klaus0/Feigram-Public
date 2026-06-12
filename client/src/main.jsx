@@ -787,7 +787,7 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
             </div>}
             {cacheSpeedTest.error && <p className="error">{cacheSpeedTest.error}</p>}
             {cacheSpeedTest.note && <p className="hint">{cacheSpeedTest.note}</p>}
-            <pre className="log-tail">{JSON.stringify(cacheSpeedTest, null, 2)}</pre>
+            <pre className="log-tail cache-speed-json">{JSON.stringify(cacheSpeedTest, null, 2)}</pre>
           </div>}
           {updateInfo && <div className="update-card">
             <strong>{updateInfo.updateAvailable ? "发现新版本" : "当前版本已是最新或暂未发现发布版"}</strong>
@@ -795,7 +795,7 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
             {updateInfo.error && <small>{updateInfo.error}</small>}
             <a href={updateInfo.url} target="_blank" rel="noreferrer">打开发布页</a>
           </div>}
-          {diagnostics?.logTail && <pre className="log-tail">{diagnostics.logTail}</pre>}
+          {diagnostics?.logTail && <pre className="log-tail system-log-tail">{diagnostics.logTail}</pre>}
         </div>}
       </div>
     </div>

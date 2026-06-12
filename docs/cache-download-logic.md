@@ -67,13 +67,12 @@
 
 ## 下载分片
 
-- 后台缓存 document 文件时：直接调用 Telegram `upload.getFile` 顺序分片，从 `*.silent.part` 当前大小继续写入
+- 后台缓存 document 文件时：通过 GramJS `iterDownload` 顺序分片，从 `*.silent.part` 当前大小继续写入
 - 分片大小：Telegram 单次请求最大 512KB
 - 续传 offset 会按 4096 字节对齐，避免旧分片尾部导致 `OFFSET_INVALID`
-- 遇到 `LIMIT_INVALID` 时，会自动按 512KB、256KB、128KB、64KB、32KB 逐级降级分片后继续请求
 - 不限速时：不执行 sleep，按 Telegram 和当前网络实际吞吐下载
 - 限速时：仍通过 `throttleSilentCache(deltaBytes)` 做全局总速率控制
-- 说明：不再使用 GramJS `iterDownload` 作为后台缓存 document 视频的续传路径，避免大 offset 续传时落入较慢的 generic 下载迭代器
+- 说明：使用 GramJS 下载迭代器管理 `upload.GetFile`、TIMEOUT 重试、断线休眠和 sender close，避免手工 sender 管理造成 hanging states
 
 ## 运行诊断
 
@@ -94,6 +93,7 @@
 - `running` 任务超过 90 秒没有真实写盘进度时会请求当前任务暂停并续传
 - 不对单次 GramJS 请求套外层 Promise 超时，避免底层请求残留为 hanging sender 状态
 - `running` 任务停滞时会重置缓存专用 Telegram client，然后从已有 `*.silent.part` 续传
+- `CONNECTION_NOT_INITED`、`AUTH_KEY_UNREGISTERED`、`Not connected` 和 `TIMEOUT` 会视为可恢复连接错误
 - 同一个后台缓存文件不会被强行并发重启，避免多个写入器同时写同一个 `*.silent.part`
 - `error`、`paused`、`queued` 或停滞的 `running` 任务会重新排队
 - 已经存在正式缓存文件的任务会直接标记为 `completed`

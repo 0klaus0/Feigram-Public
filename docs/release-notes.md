@@ -1,5 +1,15 @@
 # Feigram Public 发布说明
 
+## 版本 2.0.21
+
+### 修复
+
+- 修复后台缓存 `400: CONNECTION_NOT_INITED`、`401: AUTH_KEY_UNREGISTERED` 后无法继续续传的问题。
+- 后台缓存下载链路从手工 `getSender/invokeWithSender` 改为 GramJS `iterDownload`，使用库内置的下载重试和 sender 管理。
+- `400/401`、`Not connected`、`TIMEOUT` 等连接类错误会重置缓存专用连接并重新排队续传。
+- 任务重新进入运行状态时会清空旧错误，避免正在缓存仍显示历史 `400/401`。
+- 运行诊断页优化缓存速度诊断和飞牛日志区域高度，飞牛日志不会再被测速窗口挤压。
+
 ## 版本 2.0.20
 
 ### 修复

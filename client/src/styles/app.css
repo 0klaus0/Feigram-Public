@@ -1646,6 +1646,15 @@ textarea {
   white-space: pre-wrap;
 }
 
+.cache-speed-json {
+  max-height: 150px;
+}
+
+.system-log-tail {
+  min-height: 180px;
+  max-height: 380px;
+}
+
 .message-row.jump-highlight .bubble {
   box-shadow: 0 0 0 2px #5fb7ff, 0 0 0 8px rgba(95, 183, 255, 0.18);
   transition: box-shadow 160ms ease;

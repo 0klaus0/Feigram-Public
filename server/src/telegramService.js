@@ -32,7 +32,6 @@ const VIDEO_CACHE_THRESHOLD = 100 * 1024 * 1024;
 const MAX_SILENT_CACHE_CONCURRENCY = 10;
 const TELEGRAM_MIN_CHUNK_SIZE = 4096;
 const MAX_TELEGRAM_CHUNK_SIZE = 512 * 1024;
-const TELEGRAM_CHUNK_FALLBACKS = [512 * 1024, 256 * 1024, 128 * 1024, 64 * 1024, 32 * 1024];
 const DOWNLOAD_RETRY_LIMIT = 3;
 const SILENT_RETRY_DELAY_MS = 60 * 1000;
 const STALE_TASK_MS = 90 * 1000;
@@ -49,7 +48,7 @@ function sleep(ms) {
 
 function isTransientDownloadError(error) {
   const message = String(error?.message || error || "");
-  return /FILE_REFERENCE_EXPIRED|File reference expired|Request was unsuccessful|TIMEOUT|timeout|ECONN|ETIMEDOUT|EPIPE|socket|network|disconnect/i.test(message);
+  return /FILE_REFERENCE_EXPIRED|File reference expired|Request was unsuccessful|TIMEOUT|timeout|ECONN|ETIMEDOUT|EPIPE|socket|network|disconnect|CONNECTION_NOT_INITED|AUTH_KEY_UNREGISTERED|Not connected/i.test(message);
 }
 
 function isFileReferenceExpired(error) {
@@ -1052,75 +1051,32 @@ function silentPartSizeKb() {
   return 64;
 }
 
-function isLimitInvalid(error) {
-  return /LIMIT_INVALID/i.test(String(error?.message || error?.errorMessage || error || ""));
-}
-
 async function readTelegramDocumentChunks(client, doc, offset, bytesToRead, onChunk) {
-  const location = new Api.InputDocumentFileLocation({
-    id: doc.id,
-    accessHash: doc.accessHash,
-    fileReference: doc.fileReference,
-    thumbSize: ""
-  });
   let currentOffset = Math.max(0, Number(offset || 0));
   let remaining = Math.max(0, Number(bytesToRead || 0));
-  let currentDcId = doc.dcId;
-  let sender = await client.getSender(currentDcId);
-  let timedOut = false;
-  let chunkSize = MAX_TELEGRAM_CHUNK_SIZE;
-  let fallbackCount = 0;
+  const requestSize = MAX_TELEGRAM_CHUNK_SIZE;
   const metrics = {
-    requestedChunkSize: chunkSize,
-    effectiveChunkSize: chunkSize,
-    fallbackCount,
+    requestedChunkSize: requestSize,
+    effectiveChunkSize: requestSize,
+    fallbackCount: 0,
     limitInvalidCount: 0,
-    dcId: currentDcId
+    dcId: doc.dcId
   };
-  while (remaining > 0) {
-    const limit = chunkSize;
-    const request = new Api.upload.GetFile({
-      location,
-      offset: bigInt(currentOffset),
-      limit
-    });
-    try {
-      const result = await client.invokeWithSender(request, sender);
-      if (result instanceof Api.upload.FileCdnRedirect) {
-        throw new Error("Telegram CDN 文件暂不支持后台缓存");
-      }
-      const chunk = result.bytes || Buffer.alloc(0);
-      if (!chunk.length) break;
-      await onChunk(chunk, currentOffset, metrics);
-      currentOffset += chunk.length;
-      remaining -= chunk.length;
-      timedOut = false;
-      if (chunk.length < limit) break;
-    } catch (error) {
-      if (isLimitInvalid(error)) {
-        metrics.limitInvalidCount += 1;
-        const nextChunkSize = TELEGRAM_CHUNK_FALLBACKS.find((size) => size < chunkSize);
-        if (nextChunkSize) {
-          chunkSize = nextChunkSize;
-          fallbackCount += 1;
-          metrics.fallbackCount = fallbackCount;
-          metrics.effectiveChunkSize = chunkSize;
-          continue;
-        }
-      }
-      if (error?.errorMessage === "TIMEOUT" && !timedOut) {
-        timedOut = true;
-        await sleep(1000);
-        continue;
-      }
-      if (error?.newDc) {
-        currentDcId = error.newDc;
-        sender = await client.getSender(currentDcId);
-        metrics.dcId = currentDcId;
-        continue;
-      }
-      throw error;
-    }
+  const limit = Math.ceil(remaining / requestSize);
+  for await (const chunk of client.iterDownload({
+    file: doc,
+    offset: bigInt(currentOffset),
+    requestSize,
+    chunkSize: requestSize,
+    fileSize: bigInt(currentOffset + remaining),
+    limit,
+    dcId: doc.dcId
+  })) {
+    if (!chunk?.length) break;
+    await onChunk(chunk, currentOffset, metrics);
+    currentOffset += chunk.length;
+    remaining -= chunk.length;
+    if (remaining <= 0 || chunk.length < requestSize) break;
   }
   metrics.bytesRead = currentOffset - Math.max(0, Number(offset || 0));
   return metrics;
@@ -1358,6 +1314,7 @@ function pumpSilentCacheQueue(io = realtimeIo) {
     const runToken = { detached: false, startedAt: Date.now() };
     record.runToken = runToken;
     record.status = "running";
+    record.error = "";
     record.speedBps = 0;
     record.updatedAt = new Date().toISOString();
     emitSilentCacheTask(io, record);
