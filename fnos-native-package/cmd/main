@@ -5,6 +5,7 @@ NODE_BIN="${APP_HOME}/bin/node"
 SERVER_DIR="${APP_HOME}/server"
 DATA_HOME="/${TRIM_APPDEST_VOL}/@appshare/feigrampub"
 PID_FILE="${DATA_HOME}/feigram.pid"
+VERSION_FILE="${DATA_HOME}/feigram.version"
 LOG_FILE="${DATA_HOME}/feigram.log"
 PORT="${wizard_app_port:-3088}"
 
@@ -17,8 +18,8 @@ export DATA_DIR="${DATA_HOME}/data"
 export DOWNLOAD_DIR="${DATA_HOME}/data/downloads"
 export LOG_FILE="$LOG_FILE"
 export APP_EDITION="Feigram 2.0 fnOS Client Edition"
-export APP_VERSION="2.0.23"
-export APP_CHANGELOG="修复后台缓存 AUTH_KEY_DUPLICATED 和会话空界面提示。"
+export APP_VERSION="2.0.24"
+export APP_CHANGELOG="修复升级后旧后端进程未重启导致 AUTH_KEY_DUPLICATED。"
 export NODE_ENV="production"
 
 is_running() {
@@ -31,12 +32,55 @@ is_running() {
     return 1
 }
 
+stop_running() {
+    if is_running; then
+        pid="$(cat "$PID_FILE")"
+        kill "$pid" >/dev/null 2>&1 || true
+        for _ in 1 2 3 4 5; do
+            if ! kill -0 "$pid" >/dev/null 2>&1; then
+                break
+            fi
+            sleep 1
+        done
+        if kill -0 "$pid" >/dev/null 2>&1; then
+            kill -9 "$pid" >/dev/null 2>&1 || true
+        fi
+    fi
+    rm -f "$PID_FILE"
+    if command -v pgrep >/dev/null 2>&1; then
+        pattern="${APP_HOME}/bin/node.*src/index.js|${SERVER_DIR}/src/index.js"
+        for old_pid in $(pgrep -f "$pattern" 2>/dev/null || true); do
+            if [ -n "$old_pid" ] && [ "$old_pid" != "$$" ]; then
+                kill "$old_pid" >/dev/null 2>&1 || true
+            fi
+        done
+        sleep 1
+        for old_pid in $(pgrep -f "$pattern" 2>/dev/null || true); do
+            if [ -n "$old_pid" ] && [ "$old_pid" != "$$" ]; then
+                kill -9 "$old_pid" >/dev/null 2>&1 || true
+            fi
+        done
+    fi
+}
+
 case "$1" in
 start)
     mkdir -p "$DATA_HOME" "$DATA_DIR" "$DOWNLOAD_DIR"
     chmod +x "$NODE_BIN"
     if is_running; then
-        exit 0
+        running_version=""
+        if [ -f "$VERSION_FILE" ]; then
+            running_version="$(cat "$VERSION_FILE")"
+        fi
+        if [ "$running_version" = "$APP_VERSION" ]; then
+            exit 0
+        fi
+        {
+            echo "==== $(date '+%Y-%m-%d %H:%M:%S') Feigram upgrade restart ===="
+            echo "From: ${running_version:-unknown}"
+            echo "To: ${APP_VERSION}"
+        } >> "$LOG_FILE"
+        stop_running
     fi
     cd "$SERVER_DIR" || exit 1
     {
@@ -51,16 +95,14 @@ start)
     echo $! > "$PID_FILE"
     sleep 2
     if is_running; then
+        echo "$APP_VERSION" > "$VERSION_FILE"
         exit 0
     fi
     tail -80 "$LOG_FILE"
     exit 1
     ;;
 stop)
-    if is_running; then
-        kill "$(cat "$PID_FILE")" >/dev/null 2>&1 || true
-        rm -f "$PID_FILE"
-    fi
+    stop_running
     exit 0
     ;;
 status)

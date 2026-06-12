@@ -12,6 +12,7 @@ const { decryptText, encryptText } = require("./cryptoBox");
 
 const clients = new Map();
 const cacheClients = new Map();
+const clientConnectLocks = new Map();
 const peerCache = new Map();
 const pendingLogins = new Map();
 const downloadTasks = new Map();
@@ -49,6 +50,10 @@ function sleep(ms) {
 function isTransientDownloadError(error) {
   const message = String(error?.message || error || "");
   return /FILE_REFERENCE_EXPIRED|File reference expired|Request was unsuccessful|TIMEOUT|timeout|ECONN|ETIMEDOUT|EPIPE|socket|network|disconnect|CONNECTION_NOT_INITED|AUTH_KEY_UNREGISTERED|AUTH_KEY_DUPLICATED|Not connected/i.test(message);
+}
+
+function isDuplicatedAuthKey(error) {
+  return /AUTH_KEY_DUPLICATED/i.test(String(error?.message || error || ""));
 }
 
 function isFileReferenceExpired(error) {
@@ -566,14 +571,11 @@ async function createClient(sessionString = "") {
 }
 
 async function loadSavedClients(io) {
+  realtimeIo = io || realtimeIo;
   const accounts = await readAccounts();
   for (const account of accounts) {
     try {
-      const client = await createClient(await decryptText(account.session));
-      if (await client.checkAuthorization()) {
-        clients.set(account.id, client);
-        registerUpdates(io, account.id, client);
-      }
+      await getClient(account.userId, account.id);
     } catch (error) {
       console.warn(`Failed to connect account ${account.label}:`, error.message);
     }
@@ -603,18 +605,43 @@ async function listAccounts(userId) {
 }
 
 async function getClient(userId, accountId) {
+  const lockKey = String(accountId || "");
+  const existingLock = clientConnectLocks.get(lockKey);
+  if (existingLock) return existingLock;
+  const lock = getClientUnlocked(userId, accountId).finally(() => {
+    if (clientConnectLocks.get(lockKey) === lock) clientConnectLocks.delete(lockKey);
+  });
+  clientConnectLocks.set(lockKey, lock);
+  return lock;
+}
+
+async function getClientUnlocked(userId, accountId) {
   const existing = clients.get(accountId);
   if (existing) {
     try {
       if (existing.connected === false) await existing.connect();
       if (await existing.checkAuthorization()) return existing;
-    } catch {}
-    await resetTelegramClient(accountId);
+    } catch (error) {
+      await resetTelegramClient(accountId);
+      if (!isDuplicatedAuthKey(error)) {
+        // Fall through and rebuild the client from the saved session.
+      } else {
+        await sleep(1500);
+      }
+    }
   }
   const account = (await readAccounts()).find((item) => item.id === accountId && item.userId === userId);
   if (!account) throw Object.assign(new Error("账号不存在"), { status: 404 });
-  const client = await createClient(await decryptText(account.session));
-  if (!(await client.checkAuthorization())) throw Object.assign(new Error("账号登录已失效"), { status: 401 });
+  let client;
+  try {
+    client = await createClient(await decryptText(account.session));
+    if (!(await client.checkAuthorization())) throw Object.assign(new Error("账号登录已失效"), { status: 401 });
+  } catch (error) {
+    if (isDuplicatedAuthKey(error)) {
+      throw Object.assign(new Error("Telegram 检测到账号重复连接。请先安装 2.0.24 并等待服务重启；如果仍出现，请在账号管理里退出后重新登录 Telegram。"), { status: 409 });
+    }
+    throw error;
+  }
   clients.set(accountId, client);
   if (realtimeIo) registerUpdates(realtimeIo, accountId, client);
   return client;

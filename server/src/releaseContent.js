@@ -14,6 +14,20 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.24",
+    title: "Feigram 2.0.24 更新",
+    version: "2.0.24",
+    level: "success",
+    createdAt: "2026-06-12T18:15:00.000Z",
+    body: [
+      "修复升级安装时旧 Node 后端进程未重启，导致新前端连接旧后端的问题。",
+      "启动脚本新增版本检测，安装新版本时会自动停止旧进程并启动新服务。",
+      "启动脚本会按 Feigram app 路径清理残留 Node 进程，避免 PID 文件丢失时旧服务继续占用 Telegram session。",
+      "Telegram 账号连接增加账号级连接锁，启动恢复、后台任务和前端请求不会再同时为同一个账号创建多个 GramJS client。",
+      "遇到 AUTH_KEY_DUPLICATED 时会先断开旧连接并重试；如果 Telegram 已判定 session 失效，会提示重新登录账号。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.23",
     title: "Feigram 2.0.23 更新",
     version: "2.0.23",
