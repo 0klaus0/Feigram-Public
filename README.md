@@ -58,7 +58,7 @@ npm start
 bash scripts/build-native-fpk.sh
 ```
 
-构建产物会输出到 `release/`。脚本会打包前端静态资源、后端服务、Node.js 运行时以及 ffmpeg/ffprobe。
+构建产物会输出到 `release/`。脚本会打包前端静态资源、后端服务和 Node.js 运行时。
 
 ## 官网部署
 
@@ -85,7 +85,6 @@ Feigram 使用和打包了以下主要开源项目：
 - GramJS `telegram`：Telegram MTProto 客户端能力。
 - Express、Socket.IO、cors、dotenv、fs-extra、mime-types：后端服务和实时通信。
 - lucide-react：界面图标。
-- ffmpeg / ffprobe：视频封面兜底截帧与媒体探测能力。
 - Node.js：FPK 内置运行时。
 
 Telegram 名称、协议和相关商标归其各自权利人所有。Feigram 只是第三方客户端项目，不代表 Telegram 或飞牛官方。

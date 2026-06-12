@@ -1,5 +1,4 @@
 const path = require("path");
-const { spawn } = require("child_process");
 const crypto = require("crypto");
 const fs = require("fs-extra");
 const mime = require("mime-types");
@@ -36,7 +35,6 @@ const DOWNLOAD_RETRY_LIMIT = 3;
 const SILENT_RETRY_DELAY_MS = 60 * 1000;
 const STALE_TASK_MS = 10 * 60 * 1000;
 const DIALOG_FETCH_LIMIT = 500;
-const FFMPEG_BIN = process.env.FFMPEG_BIN || path.join(__dirname, "..", "..", "bin", "ffmpeg");
 
 function stableId(prefix, ...parts) {
   return `${prefix}_${crypto.createHash("sha1").update(parts.map((part) => String(part ?? "")).join("|")).digest("hex").slice(0, 24)}`;
@@ -1676,22 +1674,6 @@ function cancelDownloadTask(userId, taskId, io) {
   return serializeDownloadTask(task);
 }
 
-function runFfmpeg(args) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(FFMPEG_BIN, args, { stdio: ["ignore", "ignore", "pipe"] });
-    let stderr = "";
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-      if (stderr.length > 8000) stderr = stderr.slice(-8000);
-    });
-    child.on("error", (error) => reject(Object.assign(new Error(`ffmpeg 启动失败：${error.message}`), { status: 500 })));
-    child.on("close", (code) => {
-      if (code === 0) resolve();
-      else reject(Object.assign(new Error(`ffmpeg 转码失败：${stderr || `exit ${code}`}`), { status: 500 }));
-    });
-  });
-}
-
 async function mediaThumbnail(userId, accountId, peerId, messageId) {
   const { client, message } = await mediaMessage(userId, accountId, peerId, messageId);
   const contentType = message.photo ? "image/jpeg" : message.document?.mimeType || "";
@@ -1716,14 +1698,6 @@ async function mediaThumbnail(userId, accountId, peerId, messageId) {
   if (kind === "image") {
     const media = await downloadMedia(userId, accountId, peerId, messageId, { forceCache: true });
     return { filePath: media.filePath, contentType: media.contentType };
-  }
-
-  if (kind === "video") {
-    const { filePath: videoPath } = await mediaFileInfo(userId, accountId, message, contentType, kind);
-    if (await fs.pathExists(videoPath)) {
-      await runFfmpeg(["-y", "-ss", "00:00:01", "-i", videoPath, "-frames:v", "1", "-vf", "scale=640:-2", filePath]);
-      if (await fs.pathExists(filePath)) return { filePath, contentType: "image/jpeg" };
-    }
   }
 
   throw Object.assign(new Error("暂无视频封面"), { status: 404 });

@@ -14,6 +14,19 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.15",
+    title: "Feigram 2.0.15 更新",
+    version: "2.0.15",
+    level: "success",
+    createdAt: "2026-06-12T12:20:00.000Z",
+    body: [
+      "移除 FPK 中的 ffmpeg/ffprobe 运行时残留，进一步缩小安装包体积。",
+      "构建脚本不再下载或打包 ffmpeg 静态运行时。",
+      "服务端不再使用 ffmpeg 为已缓存视频兜底截帧。",
+      "视频封面改为只使用 Telegram 自带缩略图；Telegram 未提供时会显示无封面状态。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.14",
     title: "Feigram 2.0.14 更新",
     version: "2.0.14",
