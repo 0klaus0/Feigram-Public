@@ -420,8 +420,19 @@ function mediaKind(message, mimeType = "") {
   return "file";
 }
 
+function inputDocumentFileLocation(doc) {
+  if (!doc) return null;
+  return new Api.InputDocumentFileLocation({
+    id: doc.id,
+    accessHash: doc.accessHash,
+    fileReference: doc.fileReference,
+    thumbSize: ""
+  });
+}
+
 function inputFileLocation(message) {
-  return message.document || message.photo || message.media;
+  if (message.document) return inputDocumentFileLocation(message.document);
+  return message.photo || message.media;
 }
 
 function serializeMessageEntities(message) {
@@ -1054,6 +1065,8 @@ function silentPartSizeKb() {
 async function readTelegramDocumentChunks(client, doc, offset, bytesToRead, onChunk) {
   let currentOffset = Math.max(0, Number(offset || 0));
   let remaining = Math.max(0, Number(bytesToRead || 0));
+  const fileLocation = inputDocumentFileLocation(doc);
+  if (!fileLocation) throw new Error("无法定位 Telegram 文档文件");
   const requestSize = MAX_TELEGRAM_CHUNK_SIZE;
   const metrics = {
     requestedChunkSize: requestSize,
@@ -1064,7 +1077,7 @@ async function readTelegramDocumentChunks(client, doc, offset, bytesToRead, onCh
   };
   const limit = Math.ceil(remaining / requestSize);
   for await (const chunk of client.iterDownload({
-    file: doc,
+    file: fileLocation,
     offset: bigInt(currentOffset),
     requestSize,
     chunkSize: requestSize,

@@ -1,5 +1,13 @@
 # Feigram Public 发布说明
 
+## 版本 2.0.22
+
+### 修复
+
+- 修复后台缓存 `Cannot cast Document to any kind of InputFileLocation` 的问题。
+- 后台缓存和缓存速度诊断会把 Telegram `Document` 转换为 `InputDocumentFileLocation` 后再读取。
+- 在线视频播放路径也统一使用明确的 Telegram 文件定位对象，避免同类类型转换错误。
+
 ## 版本 2.0.21
 
 ### 修复
