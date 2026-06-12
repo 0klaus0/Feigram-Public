@@ -14,6 +14,20 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.19",
+    title: "Feigram 2.0.19 更新",
+    version: "2.0.19",
+    level: "success",
+    createdAt: "2026-06-12T15:05:00.000Z",
+    body: [
+      "修复后台缓存停滞重排时被误显示为“已取消”的问题。",
+      "后台缓存不再强行并发重启同一个文件，避免旧任务和新任务同时写同一个 part 文件。",
+      "Telegram upload.GetFile 单次分片请求新增 45 秒本地超时，超时后 3 秒重新排队并从现有 part 文件续传。",
+      "真实写盘停滞时会显示“等待当前请求超时后续传”，不再误导为用户取消。",
+      "这版将后台缓存状态机调整为更接近 Telegram 客户端的顺序续传模型。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.18",
     title: "Feigram 2.0.18 更新",
     version: "2.0.18",

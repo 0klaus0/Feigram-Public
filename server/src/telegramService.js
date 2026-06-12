@@ -36,6 +36,7 @@ const DOWNLOAD_RETRY_LIMIT = 3;
 const SILENT_RETRY_DELAY_MS = 60 * 1000;
 const STALE_TASK_MS = 90 * 1000;
 const IDLE_SPEED_RESET_MS = 20 * 1000;
+const GET_FILE_TIMEOUT_MS = 45 * 1000;
 const DIALOG_FETCH_LIMIT = 500;
 
 function stableId(prefix, ...parts) {
@@ -92,16 +93,23 @@ function rebalanceSilentConcurrency(io = realtimeIo) {
   });
 }
 
-function detachSilentRun(task) {
-  if (!task) return;
-  if (task.cancelToken) {
-    task.cancelToken.cancelled = true;
-    task.cancelToken.detached = true;
-  }
-  if (task.runToken) task.runToken.detached = true;
-  if (silentCacheTasks.has(task.id)) {
-    silentCacheTasks.delete(task.id);
-    silentCacheActive = Math.max(0, silentCacheActive - 1);
+async function invokeWithTimeout(promise, timeoutMs, message = "Telegram 请求超时") {
+  let timer = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          const error = new Error(message);
+          error.code = "LOCAL_GETFILE_TIMEOUT";
+          error.errorMessage = "TIMEOUT";
+          reject(error);
+        }, timeoutMs);
+        timer.unref?.();
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -1070,7 +1078,11 @@ async function readTelegramDocumentChunks(client, doc, offset, bytesToRead, onCh
       limit
     });
     try {
-      const result = await client.invokeWithSender(request, sender);
+      const result = await invokeWithTimeout(
+        client.invokeWithSender(request, sender),
+        GET_FILE_TIMEOUT_MS,
+        "Telegram GetFile 请求超时"
+      );
       if (result instanceof Api.upload.FileCdnRedirect) {
         throw new Error("Telegram CDN 文件暂不支持后台缓存");
       }
@@ -1092,6 +1104,9 @@ async function readTelegramDocumentChunks(client, doc, offset, bytesToRead, onCh
           metrics.effectiveChunkSize = chunkSize;
           continue;
         }
+      }
+      if (error?.code === "LOCAL_GETFILE_TIMEOUT") {
+        throw error;
       }
       if (error?.errorMessage === "TIMEOUT" && !timedOut) {
         timedOut = true;
@@ -1350,9 +1365,10 @@ function pumpSilentCacheQueue(io = realtimeIo) {
       .catch((error) => {
         if (isTransientDownloadError(error) && silentCacheRecords.has(record.id)) {
           const fileReferenceExpired = isFileReferenceExpired(error);
+          const localTimeout = error?.code === "LOCAL_GETFILE_TIMEOUT";
           record.retryCount = Number(record.retryCount || 0) + 1;
           record.status = "queued";
-          record.error = fileReferenceExpired ? "文件引用过期，已刷新后重试" : "网络波动，等待自动重试";
+          record.error = fileReferenceExpired ? "文件引用过期，已刷新后重试" : localTimeout ? "Telegram 分片请求超时，已重新排队续传" : "网络波动，等待自动重试";
           record.speedBps = 0;
           record.updatedAt = new Date().toISOString();
           emitSilentCacheTask(io, record);
@@ -1362,7 +1378,7 @@ function pumpSilentCacheQueue(io = realtimeIo) {
               enqueueSilentTask(current);
               pumpSilentCacheQueue(io);
             }
-          }, fileReferenceExpired ? 3000 : Math.min(10 * 60 * 1000, SILENT_RETRY_DELAY_MS * Math.min(10, record.retryCount))).unref?.();
+          }, fileReferenceExpired || localTimeout ? 3000 : Math.min(10 * 60 * 1000, SILENT_RETRY_DELAY_MS * Math.min(10, record.retryCount))).unref?.();
           return;
         }
         record.status = "error";
@@ -1414,10 +1430,11 @@ async function runSilentCacheTask(record, io = realtimeIo, runToken = null) {
   record.cancelToken = cancelToken;
   const progressCallback = async (downloadedValue, totalValue) => {
     if (cancelToken.cancelled || cancelToken.paused || !silentCacheEnabled) {
-      throw Object.assign(new Error(cancelToken.cancelled ? "后台缓存已取消" : "后台缓存已暂停"), {
+      throw Object.assign(new Error(cancelToken.detached ? "后台缓存重排" : cancelToken.cancelled ? "后台缓存已取消" : "后台缓存已暂停"), {
         status: 499,
         paused: cancelToken.paused || !silentCacheEnabled,
-        requeue: cancelToken.requeue
+        requeue: cancelToken.requeue,
+        detached: cancelToken.detached
       });
     }
     const downloaded = Number(downloadedValue?.toString?.() || downloadedValue || 0);
@@ -1427,10 +1444,11 @@ async function runSilentCacheTask(record, io = realtimeIo, runToken = null) {
     await throttleSilentCache(downloaded - lastThrottleBytes);
     lastThrottleBytes = downloaded;
     if (cancelToken.cancelled || cancelToken.paused || !silentCacheEnabled) {
-      throw Object.assign(new Error(cancelToken.cancelled ? "后台缓存已取消" : "后台缓存已暂停"), {
+      throw Object.assign(new Error(cancelToken.detached ? "后台缓存重排" : cancelToken.cancelled ? "后台缓存已取消" : "后台缓存已暂停"), {
         status: 499,
         paused: cancelToken.paused || !silentCacheEnabled,
-        requeue: cancelToken.requeue
+        requeue: cancelToken.requeue,
+        detached: cancelToken.detached
       });
     }
     const now = Date.now();
@@ -1458,11 +1476,13 @@ async function runSilentCacheTask(record, io = realtimeIo, runToken = null) {
     record.updatedAt = new Date().toISOString();
     emitSilentCacheTask(io, record);
   } catch (error) {
-    if (error.status === 499 && error.requeue) {
+    if (error.status === 499 && (error.requeue || error.detached)) {
+      if (runToken && record.runToken !== runToken) return;
       record.status = "queued";
       record.error = "";
       enqueueSilentTask(record);
     } else if (error.status === 499 && error.paused) {
+      if (runToken && record.runToken !== runToken) return;
       if (silentCacheEnabled) {
         record.status = "queued";
         enqueueSilentTask(record);
@@ -1472,6 +1492,7 @@ async function runSilentCacheTask(record, io = realtimeIo, runToken = null) {
       record.error = "";
     } else if (error.status === 499) {
       if (!silentCacheRecords.has(record.id)) return;
+      if (runToken && record.runToken !== runToken) return;
       record.status = "cancelled";
       record.error = "";
     } else {
@@ -1731,7 +1752,15 @@ function monitorSilentCacheTasks(io = realtimeIo) {
       emitSilentCacheTask(io, task);
     }
     if (["error", "paused", "queued"].includes(task.status) || stale) {
-      if (stale) detachSilentRun(task);
+      if (stale && task.status === "running" && task.cancelToken) {
+        task.cancelToken.paused = true;
+        task.cancelToken.requeue = true;
+        task.error = "真实写盘停滞，等待当前请求超时后续传";
+        task.speedBps = 0;
+        task.updatedAt = new Date().toISOString();
+        emitSilentCacheTask(io, task);
+        continue;
+      }
       task.status = "queued";
       task.error = stale ? "真实写盘停滞，已重新排队" : task.error || "";
       task.speedBps = 0;
