@@ -87,7 +87,10 @@
 
 - 应用启动时会读取 `silent-cache-tasks.json`
 - 未完成任务恢复为 `queued`
-- 后台每 10 分钟巡检一次
+- 后台每 30 秒巡检一次
+- 巡检会读取 `*.silent.part` 的真实文件大小，并同步到缓存信息列表
+- `running` 任务超过 20 秒没有真实写盘进度时会清零旧速度
+- `running` 任务超过 90 秒没有真实写盘进度时会判定停滞并重新排队
 - `error`、`paused`、`queued` 或停滞的 `running` 任务会重新排队
 - 已经存在正式缓存文件的任务会直接标记为 `completed`
 - 遇到 `FILE_REFERENCE_EXPIRED` 时会短间隔重新排队，下一轮重新拉取消息刷新 `fileReference`

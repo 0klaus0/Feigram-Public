@@ -17,8 +17,8 @@ export DATA_DIR="${DATA_HOME}/data"
 export DOWNLOAD_DIR="${DATA_HOME}/data/downloads"
 export LOG_FILE="$LOG_FILE"
 export APP_EDITION="Feigram 2.0 fnOS Client Edition"
-export APP_VERSION="2.0.17"
-export APP_CHANGELOG="缓存速度诊断默认聚合运行任务速度，避免测速探针干扰后台缓存。"
+export APP_VERSION="2.0.18"
+export APP_CHANGELOG="修复后台缓存显示有速度但真实文件不增长，并增强真实写盘巡检。"
 export NODE_ENV="production"
 
 is_running() {

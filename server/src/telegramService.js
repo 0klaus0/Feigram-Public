@@ -34,7 +34,8 @@ const MAX_TELEGRAM_CHUNK_SIZE = 512 * 1024;
 const TELEGRAM_CHUNK_FALLBACKS = [512 * 1024, 256 * 1024, 128 * 1024, 64 * 1024, 32 * 1024];
 const DOWNLOAD_RETRY_LIMIT = 3;
 const SILENT_RETRY_DELAY_MS = 60 * 1000;
-const STALE_TASK_MS = 10 * 60 * 1000;
+const STALE_TASK_MS = 90 * 1000;
+const IDLE_SPEED_RESET_MS = 20 * 1000;
 const DIALOG_FETCH_LIMIT = 500;
 
 function stableId(prefix, ...parts) {
@@ -91,6 +92,19 @@ function rebalanceSilentConcurrency(io = realtimeIo) {
   });
 }
 
+function detachSilentRun(task) {
+  if (!task) return;
+  if (task.cancelToken) {
+    task.cancelToken.cancelled = true;
+    task.cancelToken.detached = true;
+  }
+  if (task.runToken) task.runToken.detached = true;
+  if (silentCacheTasks.has(task.id)) {
+    silentCacheTasks.delete(task.id);
+    silentCacheActive = Math.max(0, silentCacheActive - 1);
+  }
+}
+
 async function throttleSilentCache(deltaBytes) {
   const delta = Math.max(0, Number(deltaBytes || 0));
   const rate = Number(silentCacheRateLimitBps || 0);
@@ -139,7 +153,7 @@ async function persistDownloadTasks() {
 
 async function persistSilentCacheTasks() {
   await fs.ensureDir(dataDir);
-  const tasks = [...silentCacheRecords.values()].map(({ cancelToken, ...task }) => task);
+  const tasks = [...silentCacheRecords.values()].map(({ cancelToken, runToken, lastObservedPartSize, lastObservedAt, ...task }) => task);
   await fs.writeJson(silentCachePath, {
     enabled: silentCacheEnabled,
     rateLimitBps: silentCacheRateLimitBps,
@@ -1326,11 +1340,13 @@ function pumpSilentCacheQueue(io = realtimeIo) {
     const record = silentCacheQueue.shift();
     if (!record || silentCacheTasks.has(record.id) || ["completed", "cancelled"].includes(record.status)) continue;
     silentCacheActive += 1;
+    const runToken = { detached: false, startedAt: Date.now() };
+    record.runToken = runToken;
     record.status = "running";
     record.speedBps = 0;
     record.updatedAt = new Date().toISOString();
     emitSilentCacheTask(io, record);
-    const promise = runSilentCacheTask(record, io)
+    const promise = runSilentCacheTask(record, io, runToken)
       .catch((error) => {
         if (isTransientDownloadError(error) && silentCacheRecords.has(record.id)) {
           const fileReferenceExpired = isFileReferenceExpired(error);
@@ -1356,16 +1372,19 @@ function pumpSilentCacheQueue(io = realtimeIo) {
         emitSilentCacheTask(io, record);
       })
       .finally(() => {
-        silentCacheActive = Math.max(0, silentCacheActive - 1);
-        silentCacheTasks.delete(record.id);
-        if (silentCacheRecords.has(record.id)) emitSilentCacheTask(io, record);
-        pumpSilentCacheQueue(io);
+        if (!runToken.detached) silentCacheActive = Math.max(0, silentCacheActive - 1);
+        if (record.runToken === runToken) {
+          record.runToken = null;
+          silentCacheTasks.delete(record.id);
+          if (silentCacheRecords.has(record.id)) emitSilentCacheTask(io, record);
+          pumpSilentCacheQueue(io);
+        }
       });
     silentCacheTasks.set(record.id, promise);
   }
 }
 
-async function runSilentCacheTask(record, io = realtimeIo) {
+async function runSilentCacheTask(record, io = realtimeIo, runToken = null) {
   if (await fs.pathExists(record.filePath)) {
     const stat = await fs.stat(record.filePath).catch(() => null);
     if (stat) {
@@ -1386,6 +1405,8 @@ async function runSilentCacheTask(record, io = realtimeIo) {
   const partStat = await fs.stat(record.partPath).catch(() => null);
   const existingDownloaded = Math.max(0, Number(partStat?.size || 0));
   if (existingDownloaded) record.downloaded = existingDownloaded;
+  record.lastObservedPartSize = existingDownloaded;
+  record.lastObservedAt = new Date().toISOString();
   let lastBytes = existingDownloaded;
   let lastTick = Date.now();
   let lastThrottleBytes = existingDownloaded;
@@ -1415,8 +1436,11 @@ async function runSilentCacheTask(record, io = realtimeIo) {
     const now = Date.now();
     if (now - lastTick >= 1000 || downloaded >= fullSize) {
       record.speedBps = Math.max(0, Math.round((downloaded - lastBytes) / Math.max(0.001, (now - lastTick) / 1000)));
-      record.lastProgressAt = new Date().toISOString();
-      record.updatedAt = new Date().toISOString();
+      const progressAt = new Date().toISOString();
+      record.lastProgressAt = progressAt;
+      record.lastObservedPartSize = downloaded;
+      record.lastObservedAt = progressAt;
+      record.updatedAt = progressAt;
       lastTick = now;
       lastBytes = downloaded;
       emitSilentCacheTask(io, record);
@@ -1457,7 +1481,7 @@ async function runSilentCacheTask(record, io = realtimeIo) {
     record.updatedAt = new Date().toISOString();
     emitSilentCacheTask(io, record);
   } finally {
-    record.cancelToken = null;
+    if (!runToken || record.runToken === runToken) record.cancelToken = null;
   }
 }
 
@@ -1494,6 +1518,7 @@ function listSilentCacheTasks(userId) {
 }
 
 async function silentCacheSpeedDiagnostics(userId, payload = {}) {
+  monitorSilentCacheTasks(realtimeIo);
   const maxSampleBytes = 32 * 1024 * 1024;
   const forceProbe = Boolean(payload.forceProbe);
   const sampleBytes = Math.max(512 * 1024, Math.min(maxSampleBytes, Number(payload.sampleBytes || 1024 * 1024)));
@@ -1682,16 +1707,33 @@ function monitorSilentCacheTasks(io = realtimeIo) {
       emitSilentCacheTask(io, task);
       continue;
     }
+    const partStat = task.partPath && fs.existsSync(task.partPath) ? fs.statSync(task.partPath) : null;
+    const partSize = Math.max(0, Number(partStat?.size || 0));
+    if (partSize > Number(task.downloaded || 0)) {
+      task.downloaded = partSize;
+      task.lastProgressAt = new Date(now).toISOString();
+      task.lastObservedPartSize = partSize;
+      task.lastObservedAt = task.lastProgressAt;
+      task.updatedAt = task.lastProgressAt;
+      emitSilentCacheTask(io, task);
+      continue;
+    }
+    if (partSize !== Number(task.lastObservedPartSize || 0)) {
+      task.lastObservedPartSize = partSize;
+      task.lastObservedAt = new Date(now).toISOString();
+    }
     const lastProgress = Date.parse(task.lastProgressAt || task.updatedAt || task.createdAt || 0) || 0;
     const stale = task.status === "running" && lastProgress && now - lastProgress > STALE_TASK_MS;
+    const idle = task.status === "running" && lastProgress && now - lastProgress > IDLE_SPEED_RESET_MS;
+    if (idle && task.speedBps) {
+      task.speedBps = 0;
+      task.updatedAt = new Date().toISOString();
+      emitSilentCacheTask(io, task);
+    }
     if (["error", "paused", "queued"].includes(task.status) || stale) {
-      if (stale && task.cancelToken) task.cancelToken.cancelled = true;
-      if (stale) {
-        silentCacheTasks.delete(task.id);
-        silentCacheActive = Math.max(0, silentCacheActive - 1);
-      }
+      if (stale) detachSilentRun(task);
       task.status = "queued";
-      task.error = stale ? "缓存停滞，已重新排队" : task.error || "";
+      task.error = stale ? "真实写盘停滞，已重新排队" : task.error || "";
       task.speedBps = 0;
       task.updatedAt = new Date().toISOString();
       enqueueSilentTask(task);

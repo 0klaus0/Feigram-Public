@@ -349,7 +349,7 @@ ensureStore()
       } catch (error) {
         console.warn("Silent cache monitor failed:", error.message);
       }
-    }, 10 * 60 * 1000).unref?.();
+    }, 30 * 1000).unref?.();
     server.listen(port, "0.0.0.0", () => {
       console.log(`Feigram Public is listening on http://0.0.0.0:${port}`);
     });
