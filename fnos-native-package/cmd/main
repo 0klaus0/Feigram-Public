@@ -17,8 +17,8 @@ export DATA_DIR="${DATA_HOME}/data"
 export DOWNLOAD_DIR="${DATA_HOME}/data/downloads"
 export LOG_FILE="$LOG_FILE"
 export APP_EDITION="Feigram 2.0 fnOS Client Edition"
-export APP_VERSION="2.0.22"
-export APP_CHANGELOG="修复后台缓存 iterDownload 文档定位类型错误。"
+export APP_VERSION="2.0.23"
+export APP_CHANGELOG="修复后台缓存 AUTH_KEY_DUPLICATED 和会话空界面提示。"
 export NODE_ENV="production"
 
 is_running() {

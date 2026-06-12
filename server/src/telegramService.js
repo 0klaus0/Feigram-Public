@@ -48,7 +48,7 @@ function sleep(ms) {
 
 function isTransientDownloadError(error) {
   const message = String(error?.message || error || "");
-  return /FILE_REFERENCE_EXPIRED|File reference expired|Request was unsuccessful|TIMEOUT|timeout|ECONN|ETIMEDOUT|EPIPE|socket|network|disconnect|CONNECTION_NOT_INITED|AUTH_KEY_UNREGISTERED|Not connected/i.test(message);
+  return /FILE_REFERENCE_EXPIRED|File reference expired|Request was unsuccessful|TIMEOUT|timeout|ECONN|ETIMEDOUT|EPIPE|socket|network|disconnect|CONNECTION_NOT_INITED|AUTH_KEY_UNREGISTERED|AUTH_KEY_DUPLICATED|Not connected/i.test(message);
 }
 
 function isFileReferenceExpired(error) {
@@ -604,29 +604,24 @@ async function listAccounts(userId) {
 
 async function getClient(userId, accountId) {
   const existing = clients.get(accountId);
-  if (existing) return existing;
-  const account = (await readAccounts()).find((item) => item.id === accountId && item.userId === userId);
-  if (!account) throw Object.assign(new Error("账号不存在"), { status: 404 });
-  const client = await createClient(await decryptText(account.session));
-  if (!(await client.checkAuthorization())) throw Object.assign(new Error("账号登录已失效"), { status: 401 });
-  clients.set(accountId, client);
-  return client;
-}
-
-async function getCacheClient(userId, accountId) {
-  const existing = cacheClients.get(accountId);
   if (existing) {
     try {
-      if (existing.connected !== false && await existing.checkAuthorization()) return existing;
+      if (existing.connected === false) await existing.connect();
+      if (await existing.checkAuthorization()) return existing;
     } catch {}
-    await resetCacheClient(accountId);
+    await resetTelegramClient(accountId);
   }
   const account = (await readAccounts()).find((item) => item.id === accountId && item.userId === userId);
   if (!account) throw Object.assign(new Error("账号不存在"), { status: 404 });
   const client = await createClient(await decryptText(account.session));
   if (!(await client.checkAuthorization())) throw Object.assign(new Error("账号登录已失效"), { status: 401 });
-  cacheClients.set(accountId, client);
+  clients.set(accountId, client);
+  if (realtimeIo) registerUpdates(realtimeIo, accountId, client);
   return client;
+}
+
+async function getCacheClient(userId, accountId) {
+  return getClient(userId, accountId);
 }
 
 async function resetCacheClient(accountId) {
@@ -637,6 +632,17 @@ async function resetCacheClient(accountId) {
     } catch {}
   }
   cacheClients.delete(accountId);
+}
+
+async function resetTelegramClient(accountId) {
+  await resetCacheClient(accountId);
+  const client = clients.get(accountId);
+  if (client) {
+    try {
+      await client.disconnect();
+    } catch {}
+  }
+  clients.delete(accountId);
 }
 
 async function startLogin(userId, { label, phoneNumber }) {
@@ -1335,10 +1341,10 @@ function pumpSilentCacheQueue(io = realtimeIo) {
       .catch((error) => {
         if (isTransientDownloadError(error) && silentCacheRecords.has(record.id)) {
           const fileReferenceExpired = isFileReferenceExpired(error);
-          resetCacheClient(record.accountId).catch(() => {});
+          resetTelegramClient(record.accountId).catch(() => {});
           record.retryCount = Number(record.retryCount || 0) + 1;
           record.status = "queued";
-          record.error = fileReferenceExpired ? "文件引用过期，已刷新后重试" : "Telegram 连接波动，已重置缓存连接并等待续传";
+          record.error = fileReferenceExpired ? "文件引用过期，已刷新后重试" : "Telegram 连接波动，已重置账号连接并等待续传";
           record.speedBps = 0;
           record.updatedAt = new Date().toISOString();
           emitSilentCacheTask(io, record);
@@ -1728,8 +1734,8 @@ function monitorSilentCacheTasks(io = realtimeIo) {
       if (stale && task.status === "running" && task.cancelToken) {
         task.cancelToken.paused = true;
         task.cancelToken.requeue = true;
-        resetCacheClient(task.accountId).catch(() => {});
-        task.error = "真实写盘停滞，已重置缓存连接并等待续传";
+        resetTelegramClient(task.accountId).catch(() => {});
+        task.error = "真实写盘停滞，已重置账号连接并等待续传";
         task.speedBps = 0;
         task.updatedAt = new Date().toISOString();
         emitSilentCacheTask(io, task);

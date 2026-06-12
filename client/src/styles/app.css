@@ -225,6 +225,32 @@ textarea {
   margin: 12px 18px 0;
 }
 
+.sidebar-error {
+  background: rgba(226, 75, 75, 0.12);
+  border: 1px solid rgba(226, 75, 75, 0.28);
+  border-radius: 8px;
+  color: #ff8c8c;
+  display: grid;
+  gap: 8px;
+  margin: 4px 6px 12px;
+  padding: 10px;
+}
+
+.sidebar-error span {
+  color: inherit;
+  font-size: 0.86rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.sidebar-error button {
+  background: rgba(226, 75, 75, 0.16);
+  border: 1px solid rgba(226, 75, 75, 0.28);
+  border-radius: 8px;
+  color: inherit;
+  min-height: 34px;
+}
+
 .toast-banner {
   background: rgba(226, 75, 75, 0.94);
   border: 1px solid rgba(255, 255, 255, 0.24);

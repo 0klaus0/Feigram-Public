@@ -1662,12 +1662,20 @@ function App() {
               <button title="搜索"><RefreshCw size={16} /></button>
             </form>
             <div className="chat-list">
+              {error && !activeChat && <div className="sidebar-error">
+                <strong>加载失败</strong>
+                <span>{error}</span>
+                <button type="button" onClick={() => {
+                  refreshAccounts(true);
+                  if (accountId) loadChats(query);
+                }}>重新加载</button>
+              </div>}
               {visibleChats.map((chat) => <button key={chat.id} className={cx("chat-item", activeChat?.id === chat.id && "active")} onClick={() => selectChat(chat)}>
                 <Avatar accountId={accountId} peerId={chat.id} label={chat.title} />
                 <span className="chat-copy"><strong>{chat.title}</strong><small>{chat.lastMessage?.text || chat.type}</small></span>
                 {chat.unreadCount > 0 && <span className="badge">{chat.unreadCount}</span>}
               </button>)}
-              {!visibleChats.length && <div className="empty">暂无会话</div>}
+              {!visibleChats.length && !error && <div className="empty">暂无会话</div>}
             </div>
           </div>
         </div>
@@ -1716,7 +1724,15 @@ function App() {
               sendMessage(event);
             }
           }} placeholder="输入消息" rows={1} /><button className="primary" title="发送"><Send size={18} /></button></form>
-        </> : <div className="blank-state"><MessageSquare size={40} /><h2>选择或添加一个 Telegram 账号</h2></div>}
+        </> : <div className="blank-state">
+          <MessageSquare size={40} />
+          <h2>选择或添加一个 Telegram 账号</h2>
+          {error && <p className="error inline">{error}</p>}
+          {error && <button className="secondary action-button" type="button" onClick={() => {
+            refreshAccounts(true);
+            if (accountId) loadChats(query);
+          }}><RefreshCw size={16} />重新加载</button>}
+        </div>}
       </section>
       <ChatInfoPanel
         open={chatInfoOpen}

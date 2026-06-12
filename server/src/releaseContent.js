@@ -14,6 +14,18 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.23",
+    title: "Feigram 2.0.23 更新",
+    version: "2.0.23",
+    level: "success",
+    createdAt: "2026-06-12T17:55:00.000Z",
+    body: [
+      "修复后台缓存 406 AUTH_KEY_DUPLICATED 导致 Telegram 连接被判定重复的问题。",
+      "后台缓存不再创建独立 Telegram 连接，改为复用账号唯一连接，避免同一 session/auth key 被并发登录。",
+      "会话列表加载失败时会在前端直接展示错误和重新加载按钮，不再只显示空白或暂无会话。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.22",
     title: "Feigram 2.0.22 更新",
     version: "2.0.22",
