@@ -1,7 +1,7 @@
 appname=feigrampub
-version=2.0.13
+version=2.0.14
 display_name=Feigram
-desc="""<p><strong>Feigram 2.0 fnOS Client Edition</strong> 是第三方开发的非官方 Telegram 客户端，支持管理员后台、飞牛账户隔离、加密 Telegram session、Telegram 文件夹、媒体预览、后台任务恢复、系统诊断和更新检测。</p><p>仅适用于 x86_64 / amd64 飞牛 OS 设备。</p>"""
+desc="""<p><strong>Feigram 2.0 fnOS Client Edition</strong> 是第三方开发的非官方 Telegram 客户端，支持管理员后台、飞牛账户隔离、加密 Telegram session、Telegram 文件夹、媒体预览、后台任务恢复、运行诊断和更新检测。</p><p>仅适用于 x86_64 / amd64 飞牛 OS 设备。</p>"""
 platform=all
 source=thirdparty
 maintainer=g-star1024
@@ -12,4 +12,4 @@ desktop_uidir=ui
 desktop_applaunchname=feigrampub.proxy.Application
 service_port=3088
 checkport=true
-changelog=移除 HLS/hls.js 播放器引用，后台缓存继续使用内置 GramJS 可续传下载链路。
+changelog=优化后台群视频缓存下载链路，新增运行诊断中的缓存速度诊断。

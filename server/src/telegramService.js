@@ -30,6 +30,8 @@ let silentRateWindowBytes = 0;
 let silentRateChain = Promise.resolve();
 const VIDEO_CACHE_THRESHOLD = 100 * 1024 * 1024;
 const MAX_SILENT_CACHE_CONCURRENCY = 10;
+const TELEGRAM_MIN_CHUNK_SIZE = 4096;
+const MAX_TELEGRAM_CHUNK_SIZE = 512 * 1024;
 const DOWNLOAD_RETRY_LIMIT = 3;
 const SILENT_RETRY_DELAY_MS = 60 * 1000;
 const STALE_TASK_MS = 10 * 60 * 1000;
@@ -1022,45 +1024,82 @@ function silentPartSizeKb() {
   return 64;
 }
 
+async function readTelegramDocumentChunks(client, doc, offset, bytesToRead, onChunk) {
+  const location = new Api.InputDocumentFileLocation({
+    id: doc.id,
+    accessHash: doc.accessHash,
+    fileReference: doc.fileReference,
+    thumbSize: ""
+  });
+  let currentOffset = Math.max(0, Number(offset || 0));
+  let remaining = Math.max(0, Number(bytesToRead || 0));
+  let currentDcId = doc.dcId;
+  let sender = await client.getSender(currentDcId);
+  let timedOut = false;
+  while (remaining > 0) {
+    const limit = Math.min(MAX_TELEGRAM_CHUNK_SIZE, remaining);
+    const request = new Api.upload.GetFile({
+      location,
+      offset: bigInt(currentOffset),
+      limit
+    });
+    try {
+      const result = await client.invokeWithSender(request, sender);
+      if (result instanceof Api.upload.FileCdnRedirect) {
+        throw new Error("Telegram CDN 文件暂不支持后台缓存");
+      }
+      const chunk = result.bytes || Buffer.alloc(0);
+      if (!chunk.length) break;
+      await onChunk(chunk, currentOffset);
+      currentOffset += chunk.length;
+      remaining -= chunk.length;
+      timedOut = false;
+      if (chunk.length < limit) break;
+    } catch (error) {
+      if (error?.errorMessage === "TIMEOUT" && !timedOut) {
+        timedOut = true;
+        await sleep(1000);
+        continue;
+      }
+      if (error?.newDc) {
+        currentDcId = error.newDc;
+        sender = await client.getSender(currentDcId);
+        continue;
+      }
+      throw error;
+    }
+  }
+  return currentOffset - Math.max(0, Number(offset || 0));
+}
+
 async function downloadSilentMedia(client, entity, message, outputFile, progressCallback) {
   if (message.document) {
     const doc = message.document;
     const total = Number(doc.size?.toString?.() || doc.size || message.file?.size || 0);
-    const partSizeBytes = silentPartSizeKb() * 1024;
     const stat = await fs.stat(outputFile).catch(() => null);
     let downloaded = Math.max(0, Number(stat?.size || 0));
     if (total && downloaded > total) {
       await fs.remove(outputFile).catch(() => {});
       downloaded = 0;
     }
+    if (downloaded % TELEGRAM_MIN_CHUNK_SIZE !== 0) {
+      downloaded -= downloaded % TELEGRAM_MIN_CHUNK_SIZE;
+      await fs.truncate(outputFile, downloaded).catch(() => {});
+    }
     if (total && downloaded >= total) {
       await progressCallback(bigInt(downloaded), bigInt(total));
       return;
     }
-    const location = new Api.InputDocumentFileLocation({
-      id: doc.id,
-      accessHash: doc.accessHash,
-      fileReference: doc.fileReference,
-      thumbSize: ""
-    });
     const writer = fs.createWriteStream(outputFile, { flags: downloaded > 0 ? "a" : "w" });
     try {
-      for await (const chunk of client.iterDownload({
-        file: location,
-        offset: bigInt(downloaded),
-        requestSize: partSizeBytes,
-        chunkSize: partSizeBytes,
-        fileSize: total ? bigInt(total) : undefined,
-        dcId: doc.dcId,
-        msgData: [entity, Number(message.id)]
-      })) {
-        if (!chunk?.length) continue;
+      const bytesToRead = total ? total - downloaded : Number.MAX_SAFE_INTEGER;
+      await readTelegramDocumentChunks(client, doc, downloaded, bytesToRead, async (chunk) => {
         await new Promise((resolve, reject) => {
           writer.write(chunk, (error) => error ? reject(error) : resolve());
         });
         downloaded += chunk.length;
         await progressCallback(bigInt(downloaded), bigInt(total || downloaded));
-      }
+      });
     } finally {
       await new Promise((resolve) => writer.end(resolve));
     }
@@ -1427,6 +1466,73 @@ function listSilentCacheTasks(userId) {
       return String(b.createdAt || b.updatedAt).localeCompare(String(a.createdAt || a.updatedAt));
     })
     .map(serializeSilentCacheTask);
+}
+
+async function silentCacheSpeedDiagnostics(userId, payload = {}) {
+  const maxSampleBytes = 32 * 1024 * 1024;
+  const sampleBytes = Math.max(512 * 1024, Math.min(maxSampleBytes, Number(payload.sampleBytes || 8 * 1024 * 1024)));
+  const tasks = [...silentCacheRecords.values()].filter((task) => task.userId === userId);
+  const candidate = tasks.find((task) => task.status === "running") ||
+    tasks.find((task) => ["queued", "paused", "error"].includes(task.status)) ||
+    tasks[0];
+  const activeTasks = tasks
+    .filter((task) => ["running", "queued", "paused", "error"].includes(task.status))
+    .sort((a, b) => Number(a.order || 0) - Number(b.order || 0))
+    .slice(0, 20)
+    .map(serializeSilentCacheTask);
+  const base = {
+    testedAt: new Date().toISOString(),
+    enabled: silentCacheEnabled,
+    rateLimitBps: silentCacheRateLimitBps,
+    concurrency: silentConcurrencyLimit(),
+    running: silentCacheActive,
+    queued: silentCacheQueue.length,
+    partSizeKb: silentPartSizeKb(),
+    directChunkSize: MAX_TELEGRAM_CHUNK_SIZE,
+    sampleBytes,
+    activeTasks
+  };
+  if (!candidate) return { ...base, ok: false, error: "暂无后台缓存任务，先在群组信息里勾选后台缓存后再测试。" };
+  try {
+    const { client, message } = await mediaMessage(candidate.userId, candidate.accountId, candidate.peerId, candidate.messageId);
+    if (!message.document) return { ...base, ok: false, task: serializeSilentCacheTask(candidate), error: "当前任务不是 document 视频，无法执行 Telegram 分片测速。" };
+    const total = Number(message.document.size?.toString?.() || message.document.size || message.file?.size || candidate.size || 0);
+    const partStat = await fs.stat(candidate.partPath).catch(() => null);
+    const downloaded = Math.max(0, Number(partStat?.size || candidate.downloaded || 0));
+    let safeOffset = total ? Math.min(downloaded, Math.max(0, total - 512 * 1024)) : downloaded;
+    safeOffset -= safeOffset % TELEGRAM_MIN_CHUNK_SIZE;
+    const targetBytes = total ? Math.min(sampleBytes, Math.max(0, total - safeOffset)) : sampleBytes;
+    const started = Date.now();
+    let chunks = 0;
+    const bytesRead = await readTelegramDocumentChunks(client, message.document, safeOffset, targetBytes, async () => {
+      chunks += 1;
+    });
+    const durationMs = Math.max(1, Date.now() - started);
+    return {
+      ...base,
+      ok: true,
+      task: {
+        ...serializeSilentCacheTask(candidate),
+        dcId: message.document.dcId,
+        mimeType: message.document.mimeType || "",
+        savedPartBytes: downloaded,
+        testOffset: safeOffset
+      },
+      result: {
+        bytesRead,
+        chunks,
+        durationMs,
+        speedBps: Math.round((bytesRead / durationMs) * 1000)
+      }
+    };
+  } catch (error) {
+    return {
+      ...base,
+      ok: false,
+      task: serializeSilentCacheTask(candidate),
+      error: error.message || String(error)
+    };
+  }
 }
 
 function setSilentCacheControl(userId, payload = {}, io = realtimeIo) {
@@ -1841,6 +1947,7 @@ module.exports = {
   mediaThumbnail,
   listDownloadTasks,
   listSilentCacheTasks,
+  silentCacheSpeedDiagnostics,
   silentCacheState: serializeSilentCacheState,
   setSilentCacheControl,
   reorderSilentCacheTasks,

@@ -474,6 +474,8 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
   const [apiIdPlaceholder, setApiIdPlaceholder] = useState("");
   const [hashPlaceholder, setHashPlaceholder] = useState("");
   const [diagnostics, setDiagnostics] = useState(null);
+  const [cacheSpeedTest, setCacheSpeedTest] = useState(null);
+  const [cacheSpeedTesting, setCacheSpeedTesting] = useState(false);
   const [updateInfo, setUpdateInfo] = useState(null);
   const [newUser, setNewUser] = useState({ username: "", password: "", displayName: "", role: "user" });
   const [dragSilentId, setDragSilentId] = useState("");
@@ -579,6 +581,19 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
     }));
   }
 
+  async function runCacheSpeedTest() {
+    setError("");
+    setCacheSpeedTesting(true);
+    setCacheSpeedTest(await api("/api/admin/cache-speed-diagnostics", {
+      method: "POST",
+      body: JSON.stringify({ sampleBytes: 8 * 1024 * 1024 })
+    }).catch((err) => {
+      setError(err.message);
+      return null;
+    }));
+    setCacheSpeedTesting(false);
+  }
+
   if (!open) return null;
 
   return (
@@ -591,7 +606,7 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
           {canAdmin && <button className={cx(tab === "server" && "active")} onClick={() => setTab("server")}>服务端设置</button>}
           {canAdmin && <button className={cx(tab === "cache-info" && "active")} onClick={() => { setTab("cache-info"); onRefreshSilentCaches?.(); }}>缓存信息</button>}
           {canAdmin && <button className={cx(tab === "privacy" && "active")} onClick={() => setTab("privacy")}>隐私设置</button>}
-          {canAdmin && <button className={cx(tab === "diagnostics" && "active")} onClick={() => { setTab("diagnostics"); loadDiagnostics(); }}>诊断</button>}
+          {canAdmin && <button className={cx(tab === "diagnostics" && "active")} onClick={() => { setTab("diagnostics"); loadDiagnostics(); }}>运行诊断</button>}
         </div>
         {error && <p className="error">{error}</p>}
         {tab === "accounts" && <div className="account-admin">
@@ -727,7 +742,8 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
         </form>}
         {canAdmin && tab === "diagnostics" && <div className="diagnostics-panel">
           <div className="diagnostics-actions">
-            <button className="icon-button" type="button" onClick={loadDiagnostics}><RefreshCw size={16} />刷新诊断</button>
+            <button className="icon-button" type="button" onClick={loadDiagnostics}><RefreshCw size={16} />刷新运行诊断</button>
+            <button className="icon-button" type="button" onClick={runCacheSpeedTest} disabled={cacheSpeedTesting}><Play size={16} />{cacheSpeedTesting ? "测速中" : "测试缓存速度"}</button>
             <button className="icon-button" type="button" onClick={checkUpdates}><Download size={16} />检查更新</button>
           </div>
           {diagnostics ? <div className="diagnostics-grid">
@@ -742,6 +758,30 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
             <p><strong>数据目录</strong>{diagnostics.paths?.dataDir}</p>
             <p><strong>缓存目录</strong>{diagnostics.paths?.cacheBase}</p>
             <p><strong>日志文件</strong>{diagnostics.paths?.logFile || "未设置"}</p>
+          </div>}
+          {cacheSpeedTest && <div className="cache-speed-card">
+            <div className="cache-speed-head">
+              <strong>缓存速度诊断</strong>
+              <span>{cacheSpeedTest.ok ? "完成" : "异常"}</span>
+            </div>
+            <div className="diagnostics-grid compact">
+              <span><b>实测速度</b>{formatBytes(cacheSpeedTest.result?.speedBps || 0)}/s</span>
+              <span><b>读取样本</b>{formatBytes(cacheSpeedTest.result?.bytesRead || 0)}</span>
+              <span><b>耗时</b>{cacheSpeedTest.result?.durationMs ? `${cacheSpeedTest.result.durationMs} ms` : "-"}</span>
+              <span><b>读取分片</b>{cacheSpeedTest.result?.chunks || 0}</span>
+              <span><b>限速</b>{cacheSpeedTest.rateLimitBps ? `${formatBytes(cacheSpeedTest.rateLimitBps)}/s` : "不限速"}</span>
+              <span><b>并发/运行</b>{cacheSpeedTest.concurrency} / {cacheSpeedTest.running}</span>
+              <span><b>队列</b>{cacheSpeedTest.queued}</span>
+              <span><b>分片大小</b>{formatBytes(cacheSpeedTest.directChunkSize || 0)}</span>
+            </div>
+            {cacheSpeedTest.task && <div className="diagnostics-paths">
+              <p><strong>测试文件</strong>{cacheSpeedTest.task.fileName || "Telegram 视频"}</p>
+              <p><strong>任务状态</strong>{cacheSpeedTest.task.status}，已缓存 {formatBytes(cacheSpeedTest.task.downloaded)} / {formatBytes(cacheSpeedTest.task.size)}</p>
+              <p><strong>Telegram DC</strong>{cacheSpeedTest.task.dcId || "-"}</p>
+              <p><strong>测试 offset</strong>{formatBytes(cacheSpeedTest.task.testOffset || 0)}</p>
+            </div>}
+            {cacheSpeedTest.error && <p className="error">{cacheSpeedTest.error}</p>}
+            <pre className="log-tail">{JSON.stringify(cacheSpeedTest, null, 2)}</pre>
           </div>}
           {updateInfo && <div className="update-card">
             <strong>{updateInfo.updateAvailable ? "发现新版本" : "当前版本已是最新或暂未发现发布版"}</strong>

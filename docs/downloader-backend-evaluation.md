@@ -7,7 +7,7 @@ Feigram 的后台缓存不是普通 HTTP 下载。它需要处理 Telegram MTPro
 Feigram 当前使用内置 GramJS 下载链路：
 
 - 通过当前登录的 Telegram session 直接访问 MTProto。
-- document 视频使用 `iterDownload` 分片下载。
+- document 视频直接调用 Telegram `upload.getFile` 分片下载，避开大 offset 续传时的慢路径。
 - 未完成任务保留 `.silent.part`，重启或升级后继续写入。
 - `FILE_REFERENCE_EXPIRED`、网络超时和临时失败会重新排队并刷新消息引用。
 - 后台群缓存和用户主动下载分开保存，避免互相污染列表。

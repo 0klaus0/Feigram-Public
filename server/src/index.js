@@ -76,6 +76,10 @@ app.get("/api/admin/diagnostics", adminOnly, asyncRoute(async (_req, res) => {
   res.json(await diagnostics());
 }));
 
+app.post("/api/admin/cache-speed-diagnostics", adminOnly, asyncRoute(async (req, res) => {
+  res.json(await tg.silentCacheSpeedDiagnostics(req.user.id, req.body || {}));
+}));
+
 app.get("/api/admin/update-check", adminOnly, asyncRoute(async (_req, res) => {
   res.json(await checkForUpdates());
 }));

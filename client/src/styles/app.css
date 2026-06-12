@@ -1561,8 +1561,13 @@ textarea {
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
 }
 
+.diagnostics-grid.compact {
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+}
+
 .diagnostics-grid span,
 .update-card,
+.cache-speed-card,
 .diagnostics-paths,
 .log-tail {
   background: var(--soft);
@@ -1575,6 +1580,11 @@ textarea {
   gap: 4px;
   min-height: 72px;
   padding: 12px;
+}
+
+.diagnostics-grid.compact span {
+  min-height: 56px;
+  padding: 10px;
 }
 
 .diagnostics-grid b,
@@ -1599,6 +1609,22 @@ textarea {
   display: grid;
   gap: 6px;
   padding: 12px;
+}
+
+.cache-speed-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.cache-speed-head {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+
+.cache-speed-head span {
+  color: var(--muted);
 }
 
 .update-card span,

@@ -14,6 +14,19 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.14",
+    title: "Feigram 2.0.14 更新",
+    version: "2.0.14",
+    level: "success",
+    createdAt: "2026-06-12T11:30:00.000Z",
+    body: [
+      "后台群视频缓存改为直接调用 Telegram upload.getFile 顺序分片，避开大 offset 续传时的慢路径。",
+      "续传 offset 会按 4096 字节对齐，减少旧分片尾部导致的隐性失败。",
+      "管理员后台“诊断”更名为“运行诊断”。",
+      "运行诊断新增缓存速度诊断，可输出实测速度、样本大小、耗时、Telegram DC、限速、并发、运行任务和队列数量。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.13",
     title: "Feigram 2.0.13 更新",
     version: "2.0.13",
@@ -22,7 +35,7 @@ const announcements = [
     body: [
       "移除客户端内置 HLS/hls.js 播放器引用，视频播放模式仅保留原始在线播放和本地播放器。",
       "移除服务端 HLS 播放路由，旧配置中的 HLS 模式会自动回退到原始视频在线播放。",
-      "后台缓存继续使用 Feigram 内置 GramJS 可续传链路，不引入 Gopeed 作为 Telegram MTProto 下载后端。",
+      "后台缓存继续使用 Feigram 内置 Telegram 下载链路，不引入 Gopeed 作为 Telegram MTProto 下载后端。",
       "新增下载后端评估文档，说明 Gopeed、tdl/TG Downloader 与 Feigram 后台缓存的边界。"
     ].join("\n")
   },
