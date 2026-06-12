@@ -14,6 +14,19 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.17",
+    title: "Feigram 2.0.17 更新",
+    version: "2.0.17",
+    level: "success",
+    createdAt: "2026-06-12T13:30:00.000Z",
+    body: [
+      "缓存速度诊断默认改为聚合当前运行中的后台缓存任务速度，不再额外读取 Telegram 文件。",
+      "新增“抽样测速”入口，仅在需要深挖单文件或 Telegram DC 速度时读取 1MB 样本。",
+      "避免诊断读取和 5 个后台缓存任务抢同一 Telegram 账号/DC 连接，导致测速结果显著低于真实后台缓存速度。",
+      "诊断结果会标明“运行聚合”或“抽样读取”，方便判断是整体缓存速度还是单文件探针速度。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.16",
     title: "Feigram 2.0.16 更新",
     version: "2.0.16",

@@ -1495,10 +1495,12 @@ function listSilentCacheTasks(userId) {
 
 async function silentCacheSpeedDiagnostics(userId, payload = {}) {
   const maxSampleBytes = 32 * 1024 * 1024;
-  const sampleBytes = Math.max(512 * 1024, Math.min(maxSampleBytes, Number(payload.sampleBytes || 8 * 1024 * 1024)));
+  const forceProbe = Boolean(payload.forceProbe);
+  const sampleBytes = Math.max(512 * 1024, Math.min(maxSampleBytes, Number(payload.sampleBytes || 1024 * 1024)));
   const tasks = [...silentCacheRecords.values()].filter((task) => task.userId === userId);
-  const candidate = tasks.find((task) => task.status === "running") ||
-    tasks.find((task) => ["queued", "paused", "error"].includes(task.status)) ||
+  const runningTasks = tasks.filter((task) => task.status === "running");
+  const candidate = tasks.find((task) => ["queued", "paused", "error"].includes(task.status)) ||
+    runningTasks[0] ||
     tasks[0];
   const activeTasks = tasks
     .filter((task) => ["running", "queued", "paused", "error"].includes(task.status))
@@ -1518,6 +1520,27 @@ async function silentCacheSpeedDiagnostics(userId, payload = {}) {
     activeTasks
   };
   if (!candidate) return { ...base, ok: false, error: "暂无后台缓存任务，先在群组信息里勾选后台缓存后再测试。" };
+  if (runningTasks.length && !forceProbe) {
+    const aggregateSpeedBps = runningTasks.reduce((sum, task) => sum + Number(task.speedBps || 0), 0);
+    return {
+      ...base,
+      ok: true,
+      mode: "aggregate",
+      task: serializeSilentCacheTask(runningTasks[0]),
+      result: {
+        bytesRead: 0,
+        chunks: 0,
+        durationMs: 0,
+        speedBps: aggregateSpeedBps,
+        runningTasks: runningTasks.length,
+        requestedChunkSize: 0,
+        effectiveChunkSize: 0,
+        fallbackCount: 0,
+        limitInvalidCount: 0
+      },
+      note: "当前已有后台缓存任务运行，诊断使用运行任务聚合速度，未额外读取 Telegram 文件。"
+    };
+  }
   try {
     const { client, message } = await mediaMessage(candidate.userId, candidate.accountId, candidate.peerId, candidate.messageId);
     if (!message.document) return { ...base, ok: false, task: serializeSilentCacheTask(candidate), error: "当前任务不是 document 视频，无法执行 Telegram 分片测速。" };

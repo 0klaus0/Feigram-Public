@@ -581,12 +581,12 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
     }));
   }
 
-  async function runCacheSpeedTest() {
+  async function runCacheSpeedTest(forceProbe = false) {
     setError("");
     setCacheSpeedTesting(true);
     setCacheSpeedTest(await api("/api/admin/cache-speed-diagnostics", {
       method: "POST",
-      body: JSON.stringify({ sampleBytes: 8 * 1024 * 1024 })
+      body: JSON.stringify({ sampleBytes: 1024 * 1024, forceProbe })
     }).catch((err) => {
       setError(err.message);
       return null;
@@ -743,7 +743,8 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
         {canAdmin && tab === "diagnostics" && <div className="diagnostics-panel">
           <div className="diagnostics-actions">
             <button className="icon-button" type="button" onClick={loadDiagnostics}><RefreshCw size={16} />刷新运行诊断</button>
-            <button className="icon-button" type="button" onClick={runCacheSpeedTest} disabled={cacheSpeedTesting}><Play size={16} />{cacheSpeedTesting ? "测速中" : "测试缓存速度"}</button>
+            <button className="icon-button" type="button" onClick={() => runCacheSpeedTest(false)} disabled={cacheSpeedTesting}><Play size={16} />{cacheSpeedTesting ? "测速中" : "缓存速度"}</button>
+            <button className="icon-button" type="button" onClick={() => runCacheSpeedTest(true)} disabled={cacheSpeedTesting}><Play size={16} />抽样测速</button>
             <button className="icon-button" type="button" onClick={checkUpdates}><Download size={16} />检查更新</button>
           </div>
           {diagnostics ? <div className="diagnostics-grid">
@@ -766,6 +767,7 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
             </div>
             <div className="diagnostics-grid compact">
               <span><b>实测速度</b>{formatBytes(cacheSpeedTest.result?.speedBps || 0)}/s</span>
+              <span><b>诊断方式</b>{cacheSpeedTest.mode === "aggregate" ? "运行聚合" : "抽样读取"}</span>
               <span><b>读取样本</b>{formatBytes(cacheSpeedTest.result?.bytesRead || 0)}</span>
               <span><b>耗时</b>{cacheSpeedTest.result?.durationMs ? `${cacheSpeedTest.result.durationMs} ms` : "-"}</span>
               <span><b>读取分片</b>{cacheSpeedTest.result?.chunks || 0}</span>
@@ -784,6 +786,7 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
               <p><strong>测试 offset</strong>{formatBytes(cacheSpeedTest.task.testOffset || 0)}</p>
             </div>}
             {cacheSpeedTest.error && <p className="error">{cacheSpeedTest.error}</p>}
+            {cacheSpeedTest.note && <p className="hint">{cacheSpeedTest.note}</p>}
             <pre className="log-tail">{JSON.stringify(cacheSpeedTest, null, 2)}</pre>
           </div>}
           {updateInfo && <div className="update-card">
