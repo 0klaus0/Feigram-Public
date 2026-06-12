@@ -14,6 +14,19 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.12",
+    title: "Feigram 2.0.12 更新",
+    version: "2.0.12",
+    level: "success",
+    createdAt: "2026-06-12T08:40:00.000Z",
+    body: [
+      "修复后台缓存大视频时 FILE_REFERENCE_EXPIRED 反复失败的问题。",
+      "后台缓存 document 视频改为可续传下载，失败重试时保留 .silent.part 分片，不再每次从 0 开始。",
+      "遇到 Telegram 文件引用过期时会重新拉取消息刷新 fileReference，并在短时间内重新排队继续缓存。",
+      "缓存进度、速度和限速计算会从已存在分片大小继续，减少隔夜缓存白跑。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.11",
     title: "Feigram 2.0.11 更新",
     version: "2.0.11",

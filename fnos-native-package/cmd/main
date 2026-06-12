@@ -18,8 +18,8 @@ export DOWNLOAD_DIR="${DATA_HOME}/data/downloads"
 export FFMPEG_BIN="${APP_HOME}/bin/ffmpeg"
 export LOG_FILE="$LOG_FILE"
 export APP_EDITION="Feigram 2.0 fnOS Client Edition"
-export APP_VERSION="2.0.11"
-export APP_CHANGELOG="缓存信息确认支持不限速，并发数量新增 10，同时补充缓存与下载逻辑文档。"
+export APP_VERSION="2.0.12"
+export APP_CHANGELOG="修复后台缓存 FILE_REFERENCE_EXPIRED 反复失败的问题，支持保留分片并刷新引用后继续缓存。"
 export NODE_ENV="production"
 
 is_running() {

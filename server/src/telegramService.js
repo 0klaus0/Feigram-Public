@@ -47,7 +47,11 @@ function sleep(ms) {
 
 function isTransientDownloadError(error) {
   const message = String(error?.message || error || "");
-  return /Request was unsuccessful|TIMEOUT|timeout|ECONN|ETIMEDOUT|EPIPE|socket|network|disconnect/i.test(message);
+  return /FILE_REFERENCE_EXPIRED|File reference expired|Request was unsuccessful|TIMEOUT|timeout|ECONN|ETIMEDOUT|EPIPE|socket|network|disconnect/i.test(message);
+}
+
+function isFileReferenceExpired(error) {
+  return /FILE_REFERENCE_EXPIRED|File reference expired/i.test(String(error?.message || error || ""));
 }
 
 function nextSilentOrder() {
@@ -1021,21 +1025,47 @@ function silentPartSizeKb() {
 }
 
 async function downloadSilentMedia(client, entity, message, outputFile, progressCallback) {
-  if (silentCacheRateLimitBps > 0 && message.document) {
+  if (message.document) {
     const doc = message.document;
-    await client.downloadFile(new Api.InputDocumentFileLocation({
+    const total = Number(doc.size?.toString?.() || doc.size || message.file?.size || 0);
+    const partSizeBytes = silentPartSizeKb() * 1024;
+    const stat = await fs.stat(outputFile).catch(() => null);
+    let downloaded = Math.max(0, Number(stat?.size || 0));
+    if (total && downloaded > total) {
+      await fs.remove(outputFile).catch(() => {});
+      downloaded = 0;
+    }
+    if (total && downloaded >= total) {
+      await progressCallback(bigInt(downloaded), bigInt(total));
+      return;
+    }
+    const location = new Api.InputDocumentFileLocation({
       id: doc.id,
       accessHash: doc.accessHash,
       fileReference: doc.fileReference,
       thumbSize: ""
-    }), {
-      outputFile,
-      dcId: doc.dcId,
-      fileSize: doc.size,
-      partSizeKb: silentPartSizeKb(),
-      progressCallback,
-      msgData: [entity, Number(message.id)]
     });
+    const writer = fs.createWriteStream(outputFile, { flags: downloaded > 0 ? "a" : "w" });
+    try {
+      for await (const chunk of client.iterDownload({
+        file: location,
+        offset: bigInt(downloaded),
+        requestSize: partSizeBytes,
+        chunkSize: partSizeBytes,
+        fileSize: total ? bigInt(total) : undefined,
+        dcId: doc.dcId,
+        msgData: [entity, Number(message.id)]
+      })) {
+        if (!chunk?.length) continue;
+        await new Promise((resolve, reject) => {
+          writer.write(chunk, (error) => error ? reject(error) : resolve());
+        });
+        downloaded += chunk.length;
+        await progressCallback(bigInt(downloaded), bigInt(total || downloaded));
+      }
+    } finally {
+      await new Promise((resolve) => writer.end(resolve));
+    }
     return;
   }
   await client.downloadMedia(message, { outputFile, progressCallback });
@@ -1241,9 +1271,10 @@ function pumpSilentCacheQueue(io = realtimeIo) {
     const promise = runSilentCacheTask(record, io)
       .catch((error) => {
         if (isTransientDownloadError(error) && silentCacheRecords.has(record.id)) {
+          const fileReferenceExpired = isFileReferenceExpired(error);
           record.retryCount = Number(record.retryCount || 0) + 1;
           record.status = "queued";
-          record.error = "网络波动，等待自动重试";
+          record.error = fileReferenceExpired ? "文件引用过期，已刷新后重试" : "网络波动，等待自动重试";
           record.speedBps = 0;
           record.updatedAt = new Date().toISOString();
           emitSilentCacheTask(io, record);
@@ -1253,7 +1284,7 @@ function pumpSilentCacheQueue(io = realtimeIo) {
               enqueueSilentTask(current);
               pumpSilentCacheQueue(io);
             }
-          }, Math.min(10 * 60 * 1000, SILENT_RETRY_DELAY_MS * Math.min(10, record.retryCount))).unref?.();
+          }, fileReferenceExpired ? 3000 : Math.min(10 * 60 * 1000, SILENT_RETRY_DELAY_MS * Math.min(10, record.retryCount))).unref?.();
           return;
         }
         record.status = "error";
@@ -1288,12 +1319,14 @@ async function runSilentCacheTask(record, io = realtimeIo) {
   }
   const { client, entity, message } = await mediaMessage(record.userId, record.accountId, record.peerId, record.messageId);
   await fs.ensureDir(record.downloadDir);
-  await fs.remove(record.partPath).catch(() => {});
   const total = record.size || Number(message.file?.size || message.document?.size || 0);
   record.size = total;
-  let lastBytes = 0;
+  const partStat = await fs.stat(record.partPath).catch(() => null);
+  const existingDownloaded = Math.max(0, Number(partStat?.size || 0));
+  if (existingDownloaded) record.downloaded = existingDownloaded;
+  let lastBytes = existingDownloaded;
   let lastTick = Date.now();
-  let lastThrottleBytes = 0;
+  let lastThrottleBytes = existingDownloaded;
   const cancelToken = { cancelled: false, paused: false };
   record.cancelToken = cancelToken;
   const progressCallback = async (downloadedValue, totalValue) => {

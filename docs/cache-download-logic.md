@@ -28,6 +28,7 @@
 - 临时文件：`*.silent.part`
 - 完成后：移动为正式缓存文件，状态变为 `completed`
 - 列表展示：管理员后台「缓存信息」页显示标题、进度、速度、状态
+- document 视频使用可续传下载，重试时保留 `*.silent.part`
 
 ## 群后台缓存开关
 
@@ -65,8 +66,9 @@
 
 ## 下载分片
 
-- 不限速时：使用 GramJS `downloadMedia` 默认策略
-- 限速且是 document 文件时：使用 GramJS `downloadFile`，并设置动态 `partSizeKb`
+- 后台缓存 document 文件时：使用 GramJS `iterDownload`，从 `*.silent.part` 当前大小继续写入
+- 限速时：`iterDownload` 使用动态 `requestSize/chunkSize`
+- 不限速时：`iterDownload` 使用 512KB 分片
 - 动态分片规则：
   - 单任务理论速率 >= 768KB/s：512KB 分片
   - 单任务理论速率 >= 256KB/s：256KB 分片
@@ -81,6 +83,8 @@
 - 后台每 10 分钟巡检一次
 - `error`、`paused`、`queued` 或停滞的 `running` 任务会重新排队
 - 已经存在正式缓存文件的任务会直接标记为 `completed`
+- 遇到 `FILE_REFERENCE_EXPIRED` 时会短间隔重新排队，下一轮重新拉取消息刷新 `fileReference`
+- 网络波动或 Telegram 临时错误会重新排队，已下载的 `*.silent.part` 会保留
 
 ## 相关代码
 
