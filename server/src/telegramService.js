@@ -15,7 +15,6 @@ const clients = new Map();
 const peerCache = new Map();
 const pendingLogins = new Map();
 const downloadTasks = new Map();
-const hlsTasks = new Map();
 const silentCacheRecords = new Map();
 const silentCacheTasks = new Map();
 const silentCacheQueue = [];
@@ -215,7 +214,6 @@ async function cacheSettings() {
     file: settings.fileCacheDir || path.join(base, "files"),
     avatars: path.join(base, "avatars"),
     thumbs: path.join(base, "thumbs"),
-    hls: path.join(settings.videoCacheDir || path.join(base, "videos"), "hls"),
     retentionDays: Math.max(1, Number(settings.cacheRetentionDays || 30))
   };
 }
@@ -1572,25 +1570,6 @@ function cancelDownloadTask(userId, taskId, io) {
   return serializeDownloadTask(task);
 }
 
-function waitForDownload(task) {
-  if (task.status === "completed") return Promise.resolve(task);
-  return new Promise((resolve, reject) => {
-    const started = Date.now();
-    const timer = setInterval(() => {
-      if (task.status === "completed") {
-        clearInterval(timer);
-        resolve(task);
-      } else if (task.status === "error") {
-        clearInterval(timer);
-        reject(Object.assign(new Error(task.error || "视频缓存失败"), { status: 500 }));
-      } else if (Date.now() - started > 30 * 60 * 1000) {
-        clearInterval(timer);
-        reject(Object.assign(new Error("视频缓存超时"), { status: 504 }));
-      }
-    }, 800);
-  });
-}
-
 function runFfmpeg(args) {
   return new Promise((resolve, reject) => {
     const child = spawn(FFMPEG_BIN, args, { stdio: ["ignore", "ignore", "pipe"] });
@@ -1605,69 +1584,6 @@ function runFfmpeg(args) {
       else reject(Object.assign(new Error(`ffmpeg 转码失败：${stderr || `exit ${code}`}`), { status: 500 }));
     });
   });
-}
-
-async function hlsInfoForTask(task) {
-  const directories = await cacheSettings();
-  const hlsDir = path.join(directories.hls, task.userId, task.id);
-  return {
-    hlsDir,
-    playlistPath: path.join(hlsDir, "master.m3u8")
-  };
-}
-
-async function prepareHlsMedia(userId, accountId, peerId, messageId, io) {
-  const task = await ensureDownloadTask(userId, accountId, peerId, messageId);
-  if (task.kind !== "video") throw Object.assign(new Error("这条消息不是视频"), { status: 400 });
-  const { hlsDir, playlistPath } = await hlsInfoForTask(task);
-  if (await fs.pathExists(playlistPath)) return { hlsDir, playlistPath };
-  if (task.status === "error") {
-    throw Object.assign(new Error(task.error || "视频缓存失败，请在下载列表中手动重试"), { status: 500 });
-  }
-  const running = hlsTasks.get(task.id);
-  if (running) {
-    await running;
-    return { hlsDir, playlistPath };
-  }
-  const promise = (async () => {
-    await startDownloadTask(userId, accountId, peerId, messageId, io);
-    await waitForDownload(task);
-    await fs.ensureDir(hlsDir);
-    const segmentPattern = path.join(hlsDir, "segment-%05d.ts");
-    await runFfmpeg([
-      "-y",
-      "-i", task.filePath,
-      "-map", "0:v:0",
-      "-map", "0:a:0?",
-      "-c:v", "libx264",
-      "-preset", "veryfast",
-      "-crf", "23",
-      "-vf", "format=yuv420p",
-      "-c:a", "aac",
-      "-b:a", "128k",
-      "-f", "hls",
-      "-hls_time", "6",
-      "-hls_playlist_type", "vod",
-      "-hls_segment_filename", segmentPattern,
-      playlistPath
-    ]);
-  })().finally(() => hlsTasks.delete(task.id));
-  hlsTasks.set(task.id, promise);
-  await promise;
-  return { hlsDir, playlistPath };
-}
-
-async function hlsMediaFile(userId, accountId, peerId, messageId, fileName, io) {
-  const { hlsDir, playlistPath } = await prepareHlsMedia(userId, accountId, peerId, messageId, io);
-  const safeFile = path.basename(fileName || "master.m3u8");
-  const filePath = safeFile === "master.m3u8" ? playlistPath : path.join(hlsDir, safeFile);
-  if (!filePath.startsWith(hlsDir) || !(await fs.pathExists(filePath))) {
-    throw Object.assign(new Error("HLS 文件不存在"), { status: 404 });
-  }
-  return {
-    filePath,
-    contentType: safeFile.endsWith(".m3u8") ? "application/vnd.apple.mpegurl" : "video/mp2t"
-  };
 }
 
 async function mediaThumbnail(userId, accountId, peerId, messageId) {
@@ -1713,8 +1629,6 @@ async function deleteDownloadTask(userId, taskId, io) {
   if (task.cancelToken) task.cancelToken.cancelled = true;
   await fs.remove(task.partPath).catch(() => {});
   await fs.remove(task.filePath).catch(() => {});
-  const directories = await cacheSettings();
-  await fs.remove(path.join(directories.hls, userId, task.id)).catch(() => {});
   downloadTasks.delete(taskId);
   schedulePersistDownloads();
   if (io) io.to(`user:${userId}`).emit("download:delete", { id: taskId });
@@ -1891,7 +1805,7 @@ async function profilePhoto(userId, accountId, peerId = "__self") {
 async function cleanupCache() {
   const settings = await cacheSettings();
   const cutoff = Date.now() - settings.retentionDays * 24 * 60 * 60 * 1000;
-  for (const dir of [settings.image, settings.video, settings.file, settings.avatars, settings.thumbs, settings.hls]) {
+  for (const dir of [settings.image, settings.video, settings.file, settings.avatars, settings.thumbs]) {
     if (!(await fs.pathExists(dir))) continue;
     const entries = await fs.readdir(dir).catch(() => []);
     for (const entry of entries) {
@@ -1924,7 +1838,6 @@ module.exports = {
   clearDownloadTask,
   deleteDownloadTask,
   downloadMedia,
-  hlsMediaFile,
   mediaThumbnail,
   listDownloadTasks,
   listSilentCacheTasks,

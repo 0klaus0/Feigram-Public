@@ -51,7 +51,7 @@ function sanitize(input = {}) {
     foldersEnabled: bool(input.foldersEnabled, true),
     foldersShowArchived: bool(input.foldersShowArchived, false),
     foldersAutoSelectFirst: bool(input.foldersAutoSelectFirst, true),
-    playerMode: ["hls", "browser", "local"].includes(input.playerMode) ? input.playerMode : "browser"
+    playerMode: ["browser", "local"].includes(input.playerMode) ? input.playerMode : "browser"
   };
 }
 

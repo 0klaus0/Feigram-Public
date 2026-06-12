@@ -15,7 +15,7 @@ Feigram 2.0 fnOS Client Edition 是第三方开发的非官方 Telegram 客户�
 - 媒体预览：支持图片预览、视频在线播放、视频封面和时长、媒体组网格展示和群组信息侧栏。
 - 下载中心：展示用户主动缓存任务、进度、速度、状态；支持开始、取消、清除列表、删除缓存和完成后播放。
 - 群组资源：群组信息中可按图片、视频、文件浏览资源，并可静默缓存本群大于 100MB 的视频。
-- 管理员后台：管理飞牛账户、覆盖 Telegram API、缓存目录、通知、隐私、播放器和分组设置。
+- 管理员后台：管理飞牛账户、服务端设置、缓存目录、通知、隐私和分组设置。
 - fnOS 客户端能力：系统诊断、日志尾部查看、应用内更新检测、启动迁移记录、后台任务恢复。
 - 安全与合规：Telegram session 加密存储，登录限流，验证码请求限流，内置隐私政策和服务条款入口。
 
@@ -28,8 +28,7 @@ Feigram 运行在 Web 容器中，和 Telegram 官方桌面客户端不同，无
 - 视频可手动缓存到下载中心，下载完成后优先从本地缓存播放。
 - 群组信息中的后台缓存开关会静默缓存大于 100MB 的视频，不写入用户下载列表，最多同时运行 5 个后台缓存任务。
 - 用户主动下载任务和后台缓存任务会落盘保存，服务重启或版本升级后自动恢复。
-- 内置 HLS 转码播放器保留为实验兜底模式，需要 ffmpeg，首次播放可能等待缓存和转码。
-- 浏览器无法解码的视频，可以切换 HLS 转码或本地播放器模式。
+- 浏览器无法解码的视频，可以切换本地播放器模式，或先缓存后用系统播放器打开。
 
 ## 首次使用
 
@@ -85,9 +84,8 @@ Feigram 使用和打包了以下主要开源项目：
 - React、React DOM、Vite：前端界面和构建。
 - GramJS `telegram`：Telegram MTProto 客户端能力。
 - Express、Socket.IO、cors、dotenv、fs-extra、mime-types：后端服务和实时通信。
-- hls.js：浏览器侧 HLS 播放支持。
 - lucide-react：界面图标。
-- ffmpeg / ffprobe：可选的视频转码与媒体探测能力。
+- ffmpeg / ffprobe：视频封面兜底截帧与媒体探测能力。
 - Node.js：FPK 内置运行时。
 
 Telegram 名称、协议和相关商标归其各自权利人所有。Feigram 只是第三方客户端项目，不代表 Telegram 或飞牛官方。
@@ -95,6 +93,8 @@ Telegram 名称、协议和相关商标归其各自权利人所有。Feigram 只
 ## 文档
 
 - [发布说明](docs/release-notes.md)
+- [缓存与下载逻辑](docs/cache-download-logic.md)
+- [下载后端评估](docs/downloader-backend-evaluation.md)
 - [隐私政策](docs/privacy-policy.md)
 - [服务条款](docs/terms-of-service.md)
 

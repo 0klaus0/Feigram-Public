@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import Hls from "hls.js";
 import { io } from "socket.io-client";
 import {
   Bell,
@@ -171,51 +170,19 @@ function mediaUrl(accountId, chatId, messageId, inline = false) {
   return `/api/media/${accountId}/${encodeURIComponent(chatId)}/${messageId}?${params.toString()}`;
 }
 
-function hlsMediaUrl(accountId, chatId, messageId) {
-  const params = new URLSearchParams({ token: getToken() });
-  return `/api/media/${accountId}/${encodeURIComponent(chatId)}/${messageId}/hls/master.m3u8?${params.toString()}`;
-}
-
 function thumbnailMediaUrl(accountId, chatId, messageId) {
   const params = new URLSearchParams({ token: getToken() });
   return `/api/media/${accountId}/${encodeURIComponent(chatId)}/${messageId}/thumbnail?${params.toString()}`;
 }
 
-function FeigramVideo({ src, hlsSrc, mode = "browser", onError, onMode }) {
+function FeigramVideo({ src, onError }) {
   const ref = useRef(null);
   useEffect(() => {
     const video = ref.current;
     if (!video) return undefined;
-    if (mode === "browser") {
-      onMode?.("原始视频在线播放");
-      video.src = src;
-      return undefined;
-    }
-    if (video.canPlayType("application/vnd.apple.mpegurl")) {
-      onMode?.("HLS 转码播放");
-      video.src = hlsSrc;
-      return undefined;
-    }
-    if (Hls.isSupported()) {
-      onMode?.("HLS 转码准备中");
-      const hls = new Hls({ enableWorker: true, lowLatencyMode: false });
-      hls.loadSource(hlsSrc);
-      hls.attachMedia(video);
-      hls.on(Hls.Events.MANIFEST_PARSED, () => onMode?.("HLS 转码播放"));
-      hls.on(Hls.Events.ERROR, (_event, data) => {
-        if (data?.fatal) {
-          hls.destroy();
-          onMode?.("回退原始播放");
-          video.src = src;
-          video.load();
-        }
-      });
-      return () => hls.destroy();
-    }
-    onMode?.("原始视频在线播放");
     video.src = src;
     return undefined;
-  }, [src, hlsSrc, mode, onMode]);
+  }, [src]);
   return <video ref={ref} controls autoPlay preload="metadata" playsInline onError={onError} />;
 }
 
@@ -223,11 +190,9 @@ function MessageMedia({ accountId, chatId, message, compact = false, onCache, ta
   const [failed, setFailed] = useState(false);
   const [active, setActive] = useState(false);
   const [localStatus, setLocalStatus] = useState("");
-  const [playModeLabel, setPlayModeLabel] = useState("");
   const media = message.media;
   if (!media) return null;
   const previewUrl = mediaUrl(accountId, chatId, message.id, true);
-  const hlsUrl = hlsMediaUrl(accountId, chatId, message.id);
   const thumbUrl = thumbnailMediaUrl(accountId, chatId, message.id);
   const downloadUrl = mediaUrl(accountId, chatId, message.id);
   const label = media.fileName || media.mimeType || "下载媒体";
@@ -270,10 +235,9 @@ function MessageMedia({ accountId, chatId, message, compact = false, onCache, ta
             <span><Play size={18} />点击播放视频</span>
             {!!media.duration && <b>{formatDuration(media.duration)}</b>}
           </button> : null}
-          {active && !failed && playerMode !== "local" ? <FeigramVideo src={previewUrl} hlsSrc={hlsUrl} mode={playerMode} onMode={setPlayModeLabel} onError={() => setFailed(true)} /> : null}
+          {active && !failed && playerMode !== "local" ? <FeigramVideo src={previewUrl} onError={() => setFailed(true)} /> : null}
           {playerMode === "local" ? <a className="video-load-button local-player-link" href={downloadUrl}>下载后用本地播放器打开</a> : null}
-          {playModeLabel && active && !failed ? null : null}
-          {failed ? <div className="video-fallback">当前模式无法播放这个视频，请切换播放器模式或先缓存后下载到本地播放。</div> : null}
+          {failed ? <div className="video-fallback">当前视频编码无法直接在线播放，请先缓存后下载到本地播放。</div> : null}
         </div>
       </div>
     );
@@ -684,10 +648,9 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
           <h3>播放器设置</h3>
           <label><span>视频在线播放模式</span><select value={settings.playerMode} onChange={(e) => setSettings({ ...settings, playerMode: e.target.value })}>
             <option value="browser">原始视频在线播放（推荐）</option>
-            <option value="hls">内置转码播放器（ffmpeg HLS，实验）</option>
             <option value="local">本地播放器（下载后打开）</option>
           </select></label>
-          <p className="hint">推荐优先使用原始视频在线播放；遇到浏览器不支持的编码时，再切换内置转码或本地播放器。</p>
+          <p className="hint">推荐优先使用原始视频在线播放；遇到浏览器不支持的编码时，可切换为本地播放器模式。</p>
           {saved && <p className="success">{saved}</p>}
           <button className="primary"><Settings size={18} />保存服务端设置</button>
         </form>}
@@ -891,11 +854,9 @@ function DownloadCenter({ open, downloads, onStart, onCancel, onClear, onDelete,
 }
 
 function PlaybackModal({ item, playerMode, onClose }) {
-  const [modeLabel, setModeLabel] = useState("");
   const [failed, setFailed] = useState(false);
   if (!item) return null;
   const src = mediaUrl(item.accountId, item.peerId, item.messageId, true);
-  const hlsSrc = hlsMediaUrl(item.accountId, item.peerId, item.messageId);
   const download = mediaUrl(item.accountId, item.peerId, item.messageId);
   return (
     <div className="modal-backdrop playback-backdrop">
@@ -905,9 +866,8 @@ function PlaybackModal({ item, playerMode, onClose }) {
         <div className="playback-stage">
           {playerMode === "local"
             ? <a className="video-load-button local-player-link" href={download}>下载后用本地播放器打开</a>
-            : <FeigramVideo src={src} hlsSrc={hlsSrc} mode={playerMode || "browser"} onMode={setModeLabel} onError={() => setFailed(true)} />}
-          {modeLabel && playerMode !== "local" ? null : null}
-          {failed ? <div className="video-fallback">当前模式无法播放，请切换播放器模式或下载到本地播放。</div> : null}
+            : <FeigramVideo src={src} onError={() => setFailed(true)} />}
+          {failed ? <div className="video-fallback">当前视频编码无法直接在线播放，请切换本地播放器模式或下载到本地播放。</div> : null}
         </div>
       </div>
     </div>

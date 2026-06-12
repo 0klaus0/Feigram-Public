@@ -277,19 +277,6 @@ app.delete("/api/downloads/:id", asyncRoute(async (req, res) => {
   res.json(await tg.deleteDownloadTask(req.user.id, req.params.id, io));
 }));
 
-app.get("/api/media/:account/:peer/:messageId/hls/:file", asyncRoute(async (req, res) => {
-  const media = await tg.hlsMediaFile(req.user.id, req.params.account, req.params.peer, req.params.messageId, req.params.file, io);
-  res.setHeader("Content-Type", media.contentType);
-  res.setHeader("Cache-Control", "private, max-age=86400");
-  if (media.contentType === "application/vnd.apple.mpegurl") {
-    const token = encodeURIComponent(req.query.token || "");
-    const playlist = await fs.promises.readFile(media.filePath, "utf8");
-    res.send(playlist.replace(/^(?!#)(.+\.ts)$/gm, `$1?token=${token}`));
-    return;
-  }
-  res.sendFile(media.filePath);
-}));
-
 app.use(express.static(path.join(__dirname, "..", "public")));
 app.get("*", (_req, res) => {
   res.sendFile(path.join(__dirname, "..", "public", "index.html"));
