@@ -69,6 +69,7 @@
 - 后台缓存 document 文件时：直接调用 Telegram `upload.getFile` 顺序分片，从 `*.silent.part` 当前大小继续写入
 - 分片大小：Telegram 单次请求最大 512KB
 - 续传 offset 会按 4096 字节对齐，避免旧分片尾部导致 `OFFSET_INVALID`
+- 遇到 `LIMIT_INVALID` 时，会自动按 512KB、256KB、128KB、64KB、32KB 逐级降级分片后继续请求
 - 不限速时：不执行 sleep，按 Telegram 和当前网络实际吞吐下载
 - 限速时：仍通过 `throttleSilentCache(deltaBytes)` 做全局总速率控制
 - 说明：不再使用 GramJS `iterDownload` 作为后台缓存 document 视频的续传路径，避免大 offset 续传时落入较慢的 generic 下载迭代器
@@ -78,7 +79,7 @@
 - 管理员后台「运行诊断」提供缓存速度诊断
 - 测速接口：`POST /api/admin/cache-speed-diagnostics`
 - 测速方式：选择当前后台缓存任务，读取一段 Telegram 文件但不落盘
-- 返回内容：实测速度、样本大小、耗时、分片数量、Telegram DC、当前限速、并发、运行任务和队列数量
+- 返回内容：实测速度、样本大小、耗时、分片数量、Telegram DC、当前限速、并发、运行任务、队列数量、实际分片大小和 `LIMIT_INVALID` 次数
 - 用途：区分 Telegram 网络/账号/DC 慢、Feigram 调度慢、限速配置异常或写盘缓存异常
 
 ## 恢复与巡检

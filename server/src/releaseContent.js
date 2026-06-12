@@ -14,6 +14,19 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.16",
+    title: "Feigram 2.0.16 更新",
+    version: "2.0.16",
+    level: "success",
+    createdAt: "2026-06-12T12:45:00.000Z",
+    body: [
+      "修复后台缓存直接调用 Telegram upload.getFile 时偶发 LIMIT_INVALID 的问题。",
+      "Telegram 分片请求会固定使用合法对齐分片，并在 LIMIT_INVALID 时自动降级分片继续请求。",
+      "缓存速度诊断新增请求分片、实际分片、降级次数和 LIMIT_INVALID 次数。",
+      "如果单个文件仍然低速，可通过诊断结果判断是分片降级、Telegram DC 慢，还是全局调度问题。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.15",
     title: "Feigram 2.0.15 更新",
     version: "2.0.15",

@@ -17,8 +17,8 @@ export DATA_DIR="${DATA_HOME}/data"
 export DOWNLOAD_DIR="${DATA_HOME}/data/downloads"
 export LOG_FILE="$LOG_FILE"
 export APP_EDITION="Feigram 2.0 fnOS Client Edition"
-export APP_VERSION="2.0.15"
-export APP_CHANGELOG="移除 ffmpeg/ffprobe 运行时残留，缩小 FPK 包体。"
+export APP_VERSION="2.0.16"
+export APP_CHANGELOG="修复后台缓存 upload.GetFile LIMIT_INVALID，并增强缓存速度诊断。"
 export NODE_ENV="production"
 
 is_running() {

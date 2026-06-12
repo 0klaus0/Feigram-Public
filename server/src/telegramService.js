@@ -31,6 +31,7 @@ const VIDEO_CACHE_THRESHOLD = 100 * 1024 * 1024;
 const MAX_SILENT_CACHE_CONCURRENCY = 10;
 const TELEGRAM_MIN_CHUNK_SIZE = 4096;
 const MAX_TELEGRAM_CHUNK_SIZE = 512 * 1024;
+const TELEGRAM_CHUNK_FALLBACKS = [512 * 1024, 256 * 1024, 128 * 1024, 64 * 1024, 32 * 1024];
 const DOWNLOAD_RETRY_LIMIT = 3;
 const SILENT_RETRY_DELAY_MS = 60 * 1000;
 const STALE_TASK_MS = 10 * 60 * 1000;
@@ -1022,6 +1023,10 @@ function silentPartSizeKb() {
   return 64;
 }
 
+function isLimitInvalid(error) {
+  return /LIMIT_INVALID/i.test(String(error?.message || error?.errorMessage || error || ""));
+}
+
 async function readTelegramDocumentChunks(client, doc, offset, bytesToRead, onChunk) {
   const location = new Api.InputDocumentFileLocation({
     id: doc.id,
@@ -1034,8 +1039,17 @@ async function readTelegramDocumentChunks(client, doc, offset, bytesToRead, onCh
   let currentDcId = doc.dcId;
   let sender = await client.getSender(currentDcId);
   let timedOut = false;
+  let chunkSize = MAX_TELEGRAM_CHUNK_SIZE;
+  let fallbackCount = 0;
+  const metrics = {
+    requestedChunkSize: chunkSize,
+    effectiveChunkSize: chunkSize,
+    fallbackCount,
+    limitInvalidCount: 0,
+    dcId: currentDcId
+  };
   while (remaining > 0) {
-    const limit = Math.min(MAX_TELEGRAM_CHUNK_SIZE, remaining);
+    const limit = chunkSize;
     const request = new Api.upload.GetFile({
       location,
       offset: bigInt(currentOffset),
@@ -1048,12 +1062,23 @@ async function readTelegramDocumentChunks(client, doc, offset, bytesToRead, onCh
       }
       const chunk = result.bytes || Buffer.alloc(0);
       if (!chunk.length) break;
-      await onChunk(chunk, currentOffset);
+      await onChunk(chunk, currentOffset, metrics);
       currentOffset += chunk.length;
       remaining -= chunk.length;
       timedOut = false;
       if (chunk.length < limit) break;
     } catch (error) {
+      if (isLimitInvalid(error)) {
+        metrics.limitInvalidCount += 1;
+        const nextChunkSize = TELEGRAM_CHUNK_FALLBACKS.find((size) => size < chunkSize);
+        if (nextChunkSize) {
+          chunkSize = nextChunkSize;
+          fallbackCount += 1;
+          metrics.fallbackCount = fallbackCount;
+          metrics.effectiveChunkSize = chunkSize;
+          continue;
+        }
+      }
       if (error?.errorMessage === "TIMEOUT" && !timedOut) {
         timedOut = true;
         await sleep(1000);
@@ -1062,12 +1087,14 @@ async function readTelegramDocumentChunks(client, doc, offset, bytesToRead, onCh
       if (error?.newDc) {
         currentDcId = error.newDc;
         sender = await client.getSender(currentDcId);
+        metrics.dcId = currentDcId;
         continue;
       }
       throw error;
     }
   }
-  return currentOffset - Math.max(0, Number(offset || 0));
+  metrics.bytesRead = currentOffset - Math.max(0, Number(offset || 0));
+  return metrics;
 }
 
 async function downloadSilentMedia(client, entity, message, outputFile, progressCallback) {
@@ -1502,10 +1529,11 @@ async function silentCacheSpeedDiagnostics(userId, payload = {}) {
     const targetBytes = total ? Math.min(sampleBytes, Math.max(0, total - safeOffset)) : sampleBytes;
     const started = Date.now();
     let chunks = 0;
-    const bytesRead = await readTelegramDocumentChunks(client, message.document, safeOffset, targetBytes, async () => {
+    const metrics = await readTelegramDocumentChunks(client, message.document, safeOffset, targetBytes, async () => {
       chunks += 1;
     });
     const durationMs = Math.max(1, Date.now() - started);
+    const bytesRead = metrics.bytesRead || 0;
     return {
       ...base,
       ok: true,
@@ -1520,7 +1548,11 @@ async function silentCacheSpeedDiagnostics(userId, payload = {}) {
         bytesRead,
         chunks,
         durationMs,
-        speedBps: Math.round((bytesRead / durationMs) * 1000)
+        speedBps: Math.round((bytesRead / durationMs) * 1000),
+        requestedChunkSize: metrics.requestedChunkSize,
+        effectiveChunkSize: metrics.effectiveChunkSize,
+        fallbackCount: metrics.fallbackCount,
+        limitInvalidCount: metrics.limitInvalidCount
       }
     };
   } catch (error) {

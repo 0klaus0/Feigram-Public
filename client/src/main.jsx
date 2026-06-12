@@ -772,7 +772,10 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
               <span><b>限速</b>{cacheSpeedTest.rateLimitBps ? `${formatBytes(cacheSpeedTest.rateLimitBps)}/s` : "不限速"}</span>
               <span><b>并发/运行</b>{cacheSpeedTest.concurrency} / {cacheSpeedTest.running}</span>
               <span><b>队列</b>{cacheSpeedTest.queued}</span>
-              <span><b>分片大小</b>{formatBytes(cacheSpeedTest.directChunkSize || 0)}</span>
+              <span><b>请求分片</b>{formatBytes(cacheSpeedTest.result?.requestedChunkSize || cacheSpeedTest.directChunkSize || 0)}</span>
+              <span><b>实际分片</b>{formatBytes(cacheSpeedTest.result?.effectiveChunkSize || cacheSpeedTest.directChunkSize || 0)}</span>
+              <span><b>降级次数</b>{cacheSpeedTest.result?.fallbackCount || 0}</span>
+              <span><b>LIMIT_INVALID</b>{cacheSpeedTest.result?.limitInvalidCount || 0}</span>
             </div>
             {cacheSpeedTest.task && <div className="diagnostics-paths">
               <p><strong>测试文件</strong>{cacheSpeedTest.task.fileName || "Telegram 视频"}</p>
