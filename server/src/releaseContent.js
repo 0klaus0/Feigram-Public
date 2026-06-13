@@ -14,6 +14,19 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.27",
+    title: "Feigram 2.0.27 更新",
+    version: "2.0.27",
+    level: "success",
+    createdAt: "2026-06-13T14:25:00.000Z",
+    body: [
+      "修复后台缓存 running 任务 0 B/s 后长期占用运行槽的问题。",
+      "停滞判定改为基于真实写盘时间 lastObservedAt，不再被普通状态刷新或测速刷新误重置。",
+      "高速模式新增自保护：同账号多任务连续 0 速时会自动降级为保守模式，并释放多余任务重新排队。",
+      "缓存速度诊断只统计真实运行中的后台任务，并输出 lastProgressAt / lastObservedAt 便于判断是否真实写盘。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.26",
     title: "Feigram 2.0.26 更新",
     version: "2.0.26",

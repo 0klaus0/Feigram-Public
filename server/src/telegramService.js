@@ -38,6 +38,7 @@ const MAX_TELEGRAM_CHUNK_SIZE = 512 * 1024;
 const DOWNLOAD_RETRY_LIMIT = 3;
 const SILENT_RETRY_DELAY_MS = 60 * 1000;
 const STALE_TASK_MS = 90 * 1000;
+const FAST_ZERO_SPEED_DEGRADE_MS = 45 * 1000;
 const IDLE_SPEED_RESET_MS = 20 * 1000;
 const DIALOG_FETCH_LIMIT = 500;
 
@@ -169,6 +170,46 @@ function enforceConservativeSilentCacheMode(io = realtimeIo) {
     if (detachRunningSilentTask(task, "保守模式限制同账号单任务，已重新排队", io, { resetConnection: false })) changed = true;
   }
   if (changed) pumpSilentCacheQueue(io);
+  return changed;
+}
+
+function degradeFastModeIfStalled(now = Date.now(), io = realtimeIo) {
+  if (silentCacheMode !== "fast") return false;
+  const running = [...silentCacheRecords.values()]
+    .filter((task) => task.status === "running" && silentCacheTasks.has(task.id));
+  if (running.length < 2) return false;
+  const byAccount = new Map();
+  for (const task of running) {
+    if (!byAccount.has(task.accountId)) byAccount.set(task.accountId, []);
+    byAccount.get(task.accountId).push(task);
+  }
+  let changed = false;
+  for (const tasks of byAccount.values()) {
+    if (tasks.length < 2) continue;
+    const allZeroSpeed = tasks.every((task) => Number(task.speedBps || 0) <= 0);
+    const allStalled = tasks.every((task) => {
+      const lastObserved = Date.parse(task.lastObservedAt || task.lastProgressAt || task.createdAt || 0) || 0;
+      const startedAt = Number(task.runToken?.startedAt || 0);
+      const anchor = Math.max(lastObserved, startedAt);
+      return anchor && now - anchor > FAST_ZERO_SPEED_DEGRADE_MS;
+    });
+    if (allZeroSpeed && allStalled) {
+      silentCacheMode = "conservative";
+      for (const task of tasks.slice(1)) {
+        if (detachRunningSilentTask(task, "高速模式连续 0 速，已自动降级保守并重新排队", io, { resetConnection: false })) changed = true;
+      }
+    }
+  }
+  if (changed) {
+    for (const task of silentCacheRecords.values()) {
+      if (task.status === "running") {
+        task.error = task.error || "高速模式连续 0 速，已自动降级保守";
+        emitSilentCacheTask(io, task);
+      }
+    }
+    schedulePersistSilent();
+    pumpSilentCacheQueue(io);
+  }
   return changed;
 }
 
@@ -1201,6 +1242,8 @@ function serializeSilentCacheTask(task) {
     status: task.status,
     error: task.error || "",
     createdAt: task.createdAt,
+    lastProgressAt: task.lastProgressAt || "",
+    lastObservedAt: task.lastObservedAt || "",
     updatedAt: task.updatedAt
   };
 }
@@ -1705,7 +1748,7 @@ async function silentCacheSpeedDiagnostics(userId, payload = {}) {
   const forceProbe = Boolean(payload.forceProbe);
   const sampleBytes = Math.max(512 * 1024, Math.min(maxSampleBytes, Number(payload.sampleBytes || 1024 * 1024)));
   const tasks = [...silentCacheRecords.values()].filter((task) => task.userId === userId);
-  const runningTasks = tasks.filter((task) => task.status === "running");
+  const runningTasks = tasks.filter((task) => task.status === "running" && silentCacheTasks.has(task.id));
   const candidate = tasks.find((task) => ["queued", "paused", "error"].includes(task.status)) ||
     runningTasks[0] ||
     tasks[0];
@@ -1884,8 +1927,9 @@ function reorderSilentCacheTasks(userId, orderedIds = [], io = realtimeIo) {
 
 function monitorSilentCacheTasks(io = realtimeIo) {
   if (!silentCacheEnabled) return;
-  enforceConservativeSilentCacheMode(io);
   const now = Date.now();
+  degradeFastModeIfStalled(now, io);
+  enforceConservativeSilentCacheMode(io);
   for (const task of silentCacheRecords.values()) {
     if (task.status === "completed") continue;
     if (task.filePath && fs.existsSync(task.filePath)) {
@@ -1922,7 +1966,7 @@ function monitorSilentCacheTasks(io = realtimeIo) {
       task.lastObservedPartSize = partSize;
       task.lastObservedAt = new Date(now).toISOString();
     }
-    const lastProgress = Date.parse(task.lastProgressAt || task.updatedAt || task.createdAt || 0) || 0;
+    const lastProgress = Date.parse(task.lastObservedAt || task.lastProgressAt || task.createdAt || 0) || 0;
     const stale = task.status === "running" && lastProgress && now - lastProgress > STALE_TASK_MS;
     const idle = task.status === "running" && lastProgress && now - lastProgress > IDLE_SPEED_RESET_MS;
     if (idle && task.speedBps) {

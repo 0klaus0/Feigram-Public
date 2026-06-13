@@ -18,8 +18,8 @@ export DATA_DIR="${DATA_HOME}/data"
 export DOWNLOAD_DIR="${DATA_HOME}/data/downloads"
 export LOG_FILE="$LOG_FILE"
 export APP_EDITION="Feigram 2.0 fnOS Client Edition"
-export APP_VERSION="2.0.26"
-export APP_CHANGELOG="修复保守模式同账号多后台缓存并发，减少 Telegram 连接反复重连并优化完成收口。"
+export APP_VERSION="2.0.27"
+export APP_CHANGELOG="修复后台缓存 0 B/s 卡住，基于真实写盘时间判定停滞并为高速模式增加自动降级保护。"
 export NODE_ENV="production"
 
 is_running() {
