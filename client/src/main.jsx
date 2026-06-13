@@ -722,7 +722,8 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
               {[1, 2, 3, 4, 5, 10].map((value) => <option value={String(value)} key={value}>{value}</option>)}
             </select></label>
           </div>
-          <p className="hint">这里展示群组信息页勾选后自动缓存的大于 100MB 视频，和用户主动下载列表分开；保守模式会让前台聊天优先，高速模式会尽量保持后台缓存。</p>
+          <p className="hint">这里展示群组信息页勾选后自动缓存的大于 100MB 视频，和用户主动下载列表分开；保守模式下同一 Telegram 账号只运行 1 个后台缓存任务，多个账号或高速模式才会按并发数量并行。</p>
+          <p className="hint">当前运行 {silentCacheState.running || 0} / 有效上限 {silentCacheState.effectiveConcurrency || silentCacheState.concurrency || 1}，并发设置 {silentCacheState.configuredConcurrency || silentCacheState.concurrency || 1}。</p>
           <div className="silent-cache-bulk">
             <button type="button" className="icon-button" onClick={() => setSelectedSilentIds(silentCaches.filter((task) => task.status !== "completed").map((task) => task.id))}>全选当前</button>
             <button type="button" className="icon-button" onClick={() => setSelectedSilentIds([])} disabled={!selectedSilentIds.length}>清空选择</button>
@@ -813,7 +814,8 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
               <span><b>读取分片</b>{cacheSpeedTest.result?.chunks || 0}</span>
               <span><b>限速</b>{cacheSpeedTest.rateLimitBps ? `${formatBytes(cacheSpeedTest.rateLimitBps)}/s` : "不限速"}</span>
               <span><b>缓存模式</b>{cacheSpeedTest.cacheMode === "fast" ? "高速" : "保守"}</span>
-              <span><b>并发/运行</b>{cacheSpeedTest.concurrency} / {cacheSpeedTest.running}</span>
+              <span><b>运行/有效上限</b>{cacheSpeedTest.running} / {cacheSpeedTest.effectiveConcurrency || cacheSpeedTest.concurrency}</span>
+              <span><b>并发设置</b>{cacheSpeedTest.configuredConcurrency || cacheSpeedTest.concurrency}</span>
               <span><b>队列</b>{cacheSpeedTest.queued}</span>
               <span><b>请求分片</b>{formatBytes(cacheSpeedTest.result?.requestedChunkSize || cacheSpeedTest.directChunkSize || 0)}</span>
               <span><b>实际分片</b>{formatBytes(cacheSpeedTest.result?.effectiveChunkSize || cacheSpeedTest.directChunkSize || 0)}</span>
@@ -828,6 +830,7 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
             </div>}
             {cacheSpeedTest.error && <p className="error">{cacheSpeedTest.error}</p>}
             {cacheSpeedTest.note && <p className="hint">{cacheSpeedTest.note}</p>}
+            {cacheSpeedTest.cacheMode !== "fast" && <p className="hint">保守模式会限制同一 Telegram 账号只运行 1 个后台缓存任务，用来避免账号连接被后台缓存反复抢占；需要多任务并行时可在缓存信息里切换高速模式。</p>}
             <pre className="log-tail cache-speed-json">{JSON.stringify(cacheSpeedTest, null, 2)}</pre>
           </div>}
           {updateInfo && <div className="update-card">

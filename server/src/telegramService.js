@@ -82,6 +82,28 @@ function normalizedSilentCacheMode(value) {
   return value === "fast" ? "fast" : "conservative";
 }
 
+function syncSilentCacheActive() {
+  const running = [...silentCacheRecords.values()].filter((task) => task.status === "running" && silentCacheTasks.has(task.id)).length;
+  if (silentCacheActive !== running) silentCacheActive = running;
+  return running;
+}
+
+function activeSilentAccountCount(userId = "") {
+  const accounts = new Set();
+  for (const task of silentCacheRecords.values()) {
+    if (userId && task.userId !== userId) continue;
+    if (["completed", "cancelled"].includes(task.status)) continue;
+    accounts.add(task.accountId);
+  }
+  return accounts.size;
+}
+
+function effectiveSilentConcurrency(userId = "") {
+  const configured = silentConcurrencyLimit();
+  if (normalizedSilentCacheMode(silentCacheMode) === "fast") return configured;
+  return Math.max(1, Math.min(configured, activeSilentAccountCount(userId) || 1));
+}
+
 function hasForegroundAccountOp(accountId) {
   return Number(foregroundAccountOps.get(accountId) || 0) > 0;
 }
@@ -1249,12 +1271,17 @@ function serializeSilentCacheTask(task) {
 }
 
 function serializeSilentCacheState(userId) {
+  const running = syncSilentCacheActive();
+  const configuredConcurrency = silentConcurrencyLimit();
+  const effectiveConcurrency = effectiveSilentConcurrency(userId);
   return {
     enabled: silentCacheEnabled,
     rateLimitBps: silentCacheRateLimitBps,
-    concurrency: silentConcurrencyLimit(),
+    concurrency: configuredConcurrency,
+    configuredConcurrency,
+    effectiveConcurrency,
     mode: normalizedSilentCacheMode(silentCacheMode),
-    running: silentCacheActive,
+    running,
     tasks: listSilentCacheTasks(userId)
   };
 }
@@ -1282,7 +1309,7 @@ async function mediaMessage(userId, accountId, peerId, messageId) {
 function silentPartSizeKb() {
   const rate = Number(silentCacheRateLimitBps || 0);
   if (!rate) return 512;
-  const perTaskRate = rate / silentConcurrencyLimit();
+  const perTaskRate = rate / effectiveSilentConcurrency();
   if (perTaskRate >= 768 * 1024) return 512;
   if (perTaskRate >= 256 * 1024) return 256;
   if (perTaskRate >= 128 * 1024) return 128;
@@ -1547,6 +1574,7 @@ async function cacheVideoSilently(userId, accountId, peerId, message) {
 
 function pumpSilentCacheQueue(io = realtimeIo) {
   if (!silentCacheEnabled) return;
+  syncSilentCacheActive();
   while (silentCacheActive < silentConcurrencyLimit() && silentCacheQueue.length) {
     const record = silentCacheQueue.shift();
     if (!record || silentCacheTasks.has(record.id) || ["completed", "cancelled"].includes(record.status)) continue;
@@ -1744,6 +1772,7 @@ function listSilentCacheTasks(userId) {
 
 async function silentCacheSpeedDiagnostics(userId, payload = {}) {
   monitorSilentCacheTasks(realtimeIo);
+  const running = syncSilentCacheActive();
   const maxSampleBytes = 32 * 1024 * 1024;
   const forceProbe = Boolean(payload.forceProbe);
   const sampleBytes = Math.max(512 * 1024, Math.min(maxSampleBytes, Number(payload.sampleBytes || 1024 * 1024)));
@@ -1762,8 +1791,10 @@ async function silentCacheSpeedDiagnostics(userId, payload = {}) {
     enabled: silentCacheEnabled,
     rateLimitBps: silentCacheRateLimitBps,
     concurrency: silentConcurrencyLimit(),
+    configuredConcurrency: silentConcurrencyLimit(),
+    effectiveConcurrency: effectiveSilentConcurrency(userId),
     cacheMode: normalizedSilentCacheMode(silentCacheMode),
-    running: silentCacheActive,
+    running,
     queued: silentCacheQueue.length,
     partSizeKb: silentPartSizeKb(),
     directChunkSize: MAX_TELEGRAM_CHUNK_SIZE,

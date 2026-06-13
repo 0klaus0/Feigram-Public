@@ -18,8 +18,8 @@ export DATA_DIR="${DATA_HOME}/data"
 export DOWNLOAD_DIR="${DATA_HOME}/data/downloads"
 export LOG_FILE="$LOG_FILE"
 export APP_EDITION="Feigram 2.0 fnOS Client Edition"
-export APP_VERSION="2.0.27"
-export APP_CHANGELOG="修复后台缓存 0 B/s 卡住，基于真实写盘时间判定停滞并为高速模式增加自动降级保护。"
+export APP_VERSION="2.0.28"
+export APP_CHANGELOG="修复后台缓存诊断并发口径混乱，按真实运行任务校准运行槽，并补充保守模式有效并发说明。"
 export NODE_ENV="production"
 
 is_running() {
