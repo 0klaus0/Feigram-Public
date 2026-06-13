@@ -38,6 +38,7 @@ const MAX_TELEGRAM_CHUNK_SIZE = 512 * 1024;
 const DOWNLOAD_RETRY_LIMIT = 3;
 const SILENT_RETRY_DELAY_MS = 60 * 1000;
 const STALE_TASK_MS = 90 * 1000;
+const STALE_REQUEUE_DELAY_MS = 60 * 1000;
 const FAST_ZERO_SPEED_DEGRADE_MS = 45 * 1000;
 const IDLE_SPEED_RESET_MS = 20 * 1000;
 const DIALOG_FETCH_LIMIT = 500;
@@ -104,6 +105,20 @@ function effectiveSilentConcurrency(userId = "") {
   return Math.max(1, Math.min(configured, activeSilentAccountCount(userId) || 1));
 }
 
+function fileSizeComplete(actualSize, expectedSize) {
+  const actual = Math.max(0, Number(actualSize || 0));
+  const expected = Math.max(0, Number(expectedSize || 0));
+  return actual > 0 && (!expected || actual >= expected);
+}
+
+function formatByteCount(bytes) {
+  const value = Math.max(0, Number(bytes || 0));
+  if (value >= 1024 * 1024 * 1024) return `${(value / 1024 / 1024 / 1024).toFixed(1)} GB`;
+  if (value >= 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB`;
+  if (value >= 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${value} B`;
+}
+
 function hasForegroundAccountOp(accountId) {
   return Number(foregroundAccountOps.get(accountId) || 0) > 0;
 }
@@ -143,7 +158,7 @@ function rebalanceSilentConcurrency(io = realtimeIo) {
   });
 }
 
-function detachRunningSilentTask(task, reason, io = realtimeIo, { resetConnection = false } = {}) {
+function detachRunningSilentTask(task, reason, io = realtimeIo, { resetConnection = false, retryDelayMs = 0 } = {}) {
   if (!task || task.status !== "running") return false;
   if (task.cancelToken) {
     task.cancelToken.paused = true;
@@ -160,6 +175,7 @@ function detachRunningSilentTask(task, reason, io = realtimeIo, { resetConnectio
   task.status = "queued";
   task.error = reason || "后台缓存已重新排队";
   task.speedBps = 0;
+  if (retryDelayMs) task.retryAfter = Date.now() + retryDelayMs;
   task.updatedAt = new Date().toISOString();
   enqueueSilentTask(task);
   emitSilentCacheTask(io, task);
@@ -212,13 +228,13 @@ function degradeFastModeIfStalled(now = Date.now(), io = realtimeIo) {
     const allStalled = tasks.every((task) => {
       const lastObserved = Date.parse(task.lastObservedAt || task.lastProgressAt || task.createdAt || 0) || 0;
       const startedAt = Number(task.runToken?.startedAt || 0);
-      const anchor = Math.max(lastObserved, startedAt);
+      const anchor = lastObserved || startedAt;
       return anchor && now - anchor > FAST_ZERO_SPEED_DEGRADE_MS;
     });
     if (allZeroSpeed && allStalled) {
       silentCacheMode = "conservative";
       for (const task of tasks.slice(1)) {
-        if (detachRunningSilentTask(task, "高速模式连续 0 速，已自动降级保守并重新排队", io, { resetConnection: false })) changed = true;
+        if (detachRunningSilentTask(task, "高速模式连续 0 速，已自动降级保守并重新排队", io, { resetConnection: false, retryDelayMs: STALE_REQUEUE_DELAY_MS })) changed = true;
       }
     }
   }
@@ -240,7 +256,7 @@ async function completeSilentTaskFromPart(task, io = realtimeIo) {
   const partStat = await fs.stat(task.partPath).catch(() => null);
   const partSize = Math.max(0, Number(partStat?.size || 0));
   const total = Math.max(0, Number(task.size || 0));
-  if (!partSize || (total && partSize < total)) return false;
+  if (!fileSizeComplete(partSize, total)) return false;
   if (task.cancelToken) {
     task.cancelToken.paused = true;
     task.cancelToken.detached = true;
@@ -255,6 +271,7 @@ async function completeSilentTaskFromPart(task, io = realtimeIo) {
   const stat = await fs.stat(task.filePath).catch(() => null);
   task.downloaded = Number(stat?.size || partSize);
   task.size = task.size || task.downloaded;
+  if (!fileSizeComplete(task.downloaded, task.size)) return false;
   task.status = "completed";
   task.error = "";
   task.speedBps = 0;
@@ -329,13 +346,19 @@ async function loadPersistentTasks() {
   const savedDownloads = await fs.readJson(downloadTasksPath).catch(() => ({ tasks: [] }));
   for (const task of savedDownloads.tasks || []) {
     if (!task?.id || !task.userId || !task.accountId || !task.peerId || !task.messageId) continue;
-    const completedFileExists = task.status === "completed" && task.filePath && await fs.pathExists(task.filePath);
+    const completedStat = task.status === "completed" && task.filePath ? await fs.stat(task.filePath).catch(() => null) : null;
+    const completedFileExists = completedStat && fileSizeComplete(completedStat.size, task.size);
+    if (completedStat && !completedFileExists && task.partPath) {
+      await fs.move(task.filePath, task.partPath, { overwrite: true }).catch(() => {});
+    }
     const next = {
       ...task,
       cancelToken: null,
       retryCount: Number(task.retryCount || 0),
       speedBps: 0,
+      downloaded: completedFileExists ? completedStat.size : Number(task.downloaded || 0),
       status: completedFileExists ? "completed" : "queued",
+      error: completedFileExists ? task.error || "" : "本地文件不完整，已等待续传",
       updatedAt: new Date().toISOString()
     };
     downloadTasks.set(next.id, next);
@@ -349,7 +372,11 @@ async function loadPersistentTasks() {
   for (const task of savedSilent.tasks || []) {
     if (!task?.id || !task.userId || !task.accountId || !task.peerId || !task.messageId) continue;
     if (task.status === "cancelled") continue;
-    const completedFileExists = task.status === "completed" && task.filePath && await fs.pathExists(task.filePath);
+    const completedStat = task.status === "completed" && task.filePath ? await fs.stat(task.filePath).catch(() => null) : null;
+    const completedFileExists = completedStat && fileSizeComplete(completedStat.size, task.size);
+    if (completedStat && !completedFileExists && task.partPath) {
+      await fs.move(task.filePath, task.partPath, { overwrite: true }).catch(() => {});
+    }
     const shouldResume = !["completed", "cancelled"].includes(task.status);
     const next = {
       ...task,
@@ -358,8 +385,9 @@ async function loadPersistentTasks() {
       retryCount: Number(task.retryCount || 0),
       lastProgressAt: task.lastProgressAt || task.updatedAt || new Date().toISOString(),
       speedBps: 0,
-      status: completedFileExists ? "completed" : shouldResume ? "queued" : task.status,
-      error: "",
+      downloaded: completedFileExists ? completedStat.size : Number(task.downloaded || 0),
+      status: completedFileExists ? "completed" : shouldResume || task.status === "completed" ? "queued" : task.status,
+      error: completedFileExists ? "" : task.status === "completed" ? "本地缓存文件不完整，已等待续传" : "",
       updatedAt: new Date().toISOString()
     };
     silentCacheRecords.set(next.id, next);
@@ -423,17 +451,13 @@ function withTimeout(promise, ms, message) {
 }
 
 async function foregroundTelegramOperation(accountId, operation) {
-  if (silentCacheMode !== "fast") {
-    markForegroundAccountOp(accountId, 1);
-    suspendSilentCacheForAccount(accountId, realtimeIo);
-  }
+  markForegroundAccountOp(accountId, 1);
+  suspendSilentCacheForAccount(accountId, realtimeIo);
   try {
     return await operation();
   } finally {
-    if (silentCacheMode !== "fast") {
-      markForegroundAccountOp(accountId, -1);
-      setTimeout(() => pumpSilentCacheQueue(realtimeIo), 2000).unref?.();
-    }
+    markForegroundAccountOp(accountId, -1);
+    setTimeout(() => pumpSilentCacheQueue(realtimeIo), 3000).unref?.();
   }
 }
 
@@ -1428,11 +1452,16 @@ async function startDownloadTask(userId, accountId, peerId, messageId, io) {
     const stat = await fs.stat(task.filePath);
     task.downloaded = stat.size;
     task.size = task.size || stat.size;
-    task.status = "completed";
-    task.speedBps = 0;
-    task.updatedAt = new Date().toISOString();
-    emitDownloadTask(io, task);
-    return serializeDownloadTask(task);
+    if (fileSizeComplete(stat.size, task.size)) {
+      task.status = "completed";
+      task.speedBps = 0;
+      task.updatedAt = new Date().toISOString();
+      emitDownloadTask(io, task);
+      return serializeDownloadTask(task);
+    }
+    await fs.move(task.filePath, task.partPath, { overwrite: true }).catch(() => {});
+    task.status = "queued";
+    task.error = "本地文件不完整，已转为续传";
   }
   const partStat = await fs.stat(task.partPath).catch(() => null);
   if (partStat) task.downloaded = partStat.size;
@@ -1459,10 +1488,13 @@ async function runDownloadTask(task, io) {
       const stat = await fs.stat(task.filePath);
       task.downloaded = stat.size;
       task.size = task.size || stat.size;
-      task.status = "completed";
-      task.updatedAt = new Date().toISOString();
-      emitDownloadTask(io, task);
-      return;
+      if (fileSizeComplete(stat.size, task.size)) {
+        task.status = "completed";
+        task.updatedAt = new Date().toISOString();
+        emitDownloadTask(io, task);
+        return;
+      }
+      await fs.move(task.filePath, task.partPath, { overwrite: true }).catch(() => {});
     }
     const total = task.size || Number(message.file?.size || message.document?.size || 0);
     task.size = total;
@@ -1470,7 +1502,7 @@ async function runDownloadTask(task, io) {
     let lastTick = Date.now();
     const partStat = await fs.stat(task.partPath).catch(() => null);
     task.downloaded = partStat?.size || 0;
-    await fs.remove(task.partPath).catch(() => {});
+    lastBytes = task.downloaded;
     const progressCallback = async (downloadedValue, totalValue) => {
       if (cancelToken.cancelled) {
         throw Object.assign(new Error("下载已取消"), { status: 499 });
@@ -1488,12 +1520,32 @@ async function runDownloadTask(task, io) {
         emitDownloadTask(io, task);
       }
     };
-    await client.downloadMedia(message, { outputFile: task.partPath, progressCallback });
+    await downloadSilentMedia(client, null, message, task.partPath, progressCallback);
     if (cancelToken.cancelled) return;
+    const partDone = await fs.stat(task.partPath).catch(() => null);
+    if (!fileSizeComplete(partDone?.size, task.size)) {
+      task.downloaded = Number(partDone?.size || task.downloaded || 0);
+      task.status = "queued";
+      task.error = `文件尚未完整，已保留断点等待续传（${formatByteCount(task.downloaded)} / ${formatByteCount(task.size)}）`;
+      task.speedBps = 0;
+      task.updatedAt = new Date().toISOString();
+      emitDownloadTask(io, task);
+      setTimeout(() => {
+        if (downloadTasks.get(task.id)?.status === "queued") runDownloadTask(task, io).catch(() => {});
+      }, 3000).unref?.();
+      return;
+    }
     await fs.move(task.partPath, task.filePath, { overwrite: true });
     const stat = await fs.stat(task.filePath);
     task.downloaded = stat.size;
     task.size = task.size || stat.size;
+    if (!fileSizeComplete(task.downloaded, task.size)) {
+      task.status = "queued";
+      task.error = "文件校验未完成，已等待续传";
+      task.updatedAt = new Date().toISOString();
+      emitDownloadTask(io, task);
+      return;
+    }
     task.speedBps = 0;
     task.status = "completed";
     task.updatedAt = new Date().toISOString();
@@ -1578,13 +1630,18 @@ function pumpSilentCacheQueue(io = realtimeIo) {
   while (silentCacheActive < silentConcurrencyLimit() && silentCacheQueue.length) {
     const record = silentCacheQueue.shift();
     if (!record || silentCacheTasks.has(record.id) || ["completed", "cancelled"].includes(record.status)) continue;
-    if (silentCacheMode !== "fast" && (hasForegroundAccountOp(record.accountId) || hasRunningSilentCacheForAccount(record.accountId))) {
+    if (record.retryAfter && Date.now() < Number(record.retryAfter)) {
+      enqueueSilentTask(record);
+      break;
+    }
+    if (hasForegroundAccountOp(record.accountId) || (silentCacheMode !== "fast" && hasRunningSilentCacheForAccount(record.accountId))) {
       enqueueSilentTask(record);
       break;
     }
     silentCacheActive += 1;
     const runToken = { detached: false, startedAt: Date.now() };
     record.runToken = runToken;
+    record.retryAfter = 0;
     record.status = "running";
     record.error = "";
     record.speedBps = 0;
@@ -1635,6 +1692,15 @@ async function runSilentCacheTask(record, io = realtimeIo, runToken = null) {
     if (stat) {
       record.downloaded = stat.size;
       record.size = record.size || stat.size;
+    }
+    if (!fileSizeComplete(record.downloaded, record.size)) {
+      await fs.move(record.filePath, record.partPath, { overwrite: true }).catch(() => {});
+      record.status = "queued";
+      record.error = "本地缓存文件不完整，已转为续传";
+      record.speedBps = 0;
+      record.updatedAt = new Date().toISOString();
+      emitSilentCacheTask(io, record);
+      return;
     }
     record.status = "completed";
     record.error = "";
@@ -1967,6 +2033,16 @@ function monitorSilentCacheTasks(io = realtimeIo) {
       const stat = fs.statSync(task.filePath);
       task.downloaded = stat.size;
       task.size = task.size || stat.size;
+      if (!fileSizeComplete(stat.size, task.size)) {
+        fs.moveSync(task.filePath, task.partPath, { overwrite: true });
+        task.status = "queued";
+        task.error = "本地缓存文件不完整，已等待续传";
+        task.speedBps = 0;
+        task.updatedAt = new Date().toISOString();
+        enqueueSilentTask(task);
+        emitSilentCacheTask(io, task);
+        continue;
+      }
       task.status = "completed";
       task.speedBps = 0;
       task.error = "";
@@ -2180,9 +2256,10 @@ async function streamVideoMedia(userId, accountId, peerId, messageId, rangeHeade
   const { fileName, filePath } = await mediaFileInfo(userId, accountId, message, contentType, kind);
   if (await fs.pathExists(filePath)) {
     const stat = await fs.stat(filePath);
-    return streamLocalFile(filePath, fileName, contentType || mime.lookup(filePath) || "video/mp4", stat.size, rangeHeader, res, "private, max-age=86400");
+    if (fileSizeComplete(stat.size, size)) {
+      return streamLocalFile(filePath, fileName, contentType || mime.lookup(filePath) || "video/mp4", stat.size, rangeHeader, res, "private, max-age=86400");
+    }
   }
-  return false;
   let start = 0;
   let end = size - 1;
   let statusCode = 200;
