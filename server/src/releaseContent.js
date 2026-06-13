@@ -14,6 +14,19 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.26",
+    title: "Feigram 2.0.26 更新",
+    version: "2.0.26",
+    level: "success",
+    createdAt: "2026-06-13T11:30:00.000Z",
+    body: [
+      "根据最新运行日志修复保守模式下同一 Telegram 账号仍会并发缓存多个视频的问题。",
+      "保守模式现在强制同账号最多 1 个后台缓存任务运行，减少 Telegram 连接反复断开重连。",
+      "高速模式保留多任务并发能力，由管理员手动开启。",
+      "后台缓存监控新增完成收口：part 文件达到视频大小后会直接完成并释放运行槽，避免临近完成时长时间显示 running。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.25",
     title: "Feigram 2.0.25 更新",
     version: "2.0.25",

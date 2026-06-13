@@ -85,6 +85,13 @@ function hasForegroundAccountOp(accountId) {
   return Number(foregroundAccountOps.get(accountId) || 0) > 0;
 }
 
+function hasRunningSilentCacheForAccount(accountId) {
+  for (const task of silentCacheRecords.values()) {
+    if (task.accountId === accountId && task.status === "running" && silentCacheTasks.has(task.id)) return true;
+  }
+  return false;
+}
+
 function markForegroundAccountOp(accountId, delta) {
   const next = Math.max(0, Number(foregroundAccountOps.get(accountId) || 0) + delta);
   if (next) foregroundAccountOps.set(accountId, next);
@@ -145,6 +152,56 @@ function suspendSilentCacheForAccount(accountId, io = realtimeIo, reason = "前�
   }
   if (changed) pumpSilentCacheQueue(io);
   return changed;
+}
+
+function enforceConservativeSilentCacheMode(io = realtimeIo) {
+  if (silentCacheMode === "fast") return false;
+  const seenAccounts = new Set();
+  let changed = false;
+  const running = [...silentCacheRecords.values()]
+    .filter((task) => task.status === "running" && silentCacheTasks.has(task.id))
+    .sort((a, b) => Number(a.order || 0) - Number(b.order || 0));
+  for (const task of running) {
+    if (!seenAccounts.has(task.accountId)) {
+      seenAccounts.add(task.accountId);
+      continue;
+    }
+    if (detachRunningSilentTask(task, "保守模式限制同账号单任务，已重新排队", io, { resetConnection: false })) changed = true;
+  }
+  if (changed) pumpSilentCacheQueue(io);
+  return changed;
+}
+
+async function completeSilentTaskFromPart(task, io = realtimeIo) {
+  if (!task?.partPath || !task?.filePath) return false;
+  const partStat = await fs.stat(task.partPath).catch(() => null);
+  const partSize = Math.max(0, Number(partStat?.size || 0));
+  const total = Math.max(0, Number(task.size || 0));
+  if (!partSize || (total && partSize < total)) return false;
+  if (task.cancelToken) {
+    task.cancelToken.paused = true;
+    task.cancelToken.detached = true;
+  }
+  if (task.runToken) task.runToken.detached = true;
+  if (silentCacheTasks.has(task.id)) {
+    silentCacheTasks.delete(task.id);
+    silentCacheActive = Math.max(0, silentCacheActive - 1);
+  }
+  await fs.ensureDir(path.dirname(task.filePath));
+  await fs.move(task.partPath, task.filePath, { overwrite: true });
+  const stat = await fs.stat(task.filePath).catch(() => null);
+  task.downloaded = Number(stat?.size || partSize);
+  task.size = task.size || task.downloaded;
+  task.status = "completed";
+  task.error = "";
+  task.speedBps = 0;
+  task.runToken = null;
+  task.cancelToken = null;
+  task.lastProgressAt = new Date().toISOString();
+  task.updatedAt = task.lastProgressAt;
+  emitSilentCacheTask(io, task);
+  schedulePersistSilent();
+  return true;
 }
 
 async function throttleSilentCache(deltaBytes) {
@@ -1450,7 +1507,7 @@ function pumpSilentCacheQueue(io = realtimeIo) {
   while (silentCacheActive < silentConcurrencyLimit() && silentCacheQueue.length) {
     const record = silentCacheQueue.shift();
     if (!record || silentCacheTasks.has(record.id) || ["completed", "cancelled"].includes(record.status)) continue;
-    if (silentCacheMode !== "fast" && hasForegroundAccountOp(record.accountId)) {
+    if (silentCacheMode !== "fast" && (hasForegroundAccountOp(record.accountId) || hasRunningSilentCacheForAccount(record.accountId))) {
       enqueueSilentTask(record);
       break;
     }
@@ -1759,6 +1816,8 @@ function setSilentCacheControl(userId, payload = {}, io = realtimeIo) {
     silentCacheMode = normalizedSilentCacheMode(payload.mode);
     if (silentCacheMode === "fast") {
       pumpSilentCacheQueue(io);
+    } else {
+      enforceConservativeSilentCacheMode(io);
     }
   }
   if (!silentCacheEnabled) {
@@ -1825,6 +1884,7 @@ function reorderSilentCacheTasks(userId, orderedIds = [], io = realtimeIo) {
 
 function monitorSilentCacheTasks(io = realtimeIo) {
   if (!silentCacheEnabled) return;
+  enforceConservativeSilentCacheMode(io);
   const now = Date.now();
   for (const task of silentCacheRecords.values()) {
     if (task.status === "completed") continue;
@@ -1841,6 +1901,14 @@ function monitorSilentCacheTasks(io = realtimeIo) {
     }
     const partStat = task.partPath && fs.existsSync(task.partPath) ? fs.statSync(task.partPath) : null;
     const partSize = Math.max(0, Number(partStat?.size || 0));
+    if (partSize && Number(task.size || 0) && partSize >= Number(task.size || 0)) {
+      completeSilentTaskFromPart(task, io).catch((error) => {
+        task.error = error.message || "后台缓存完成收口失败";
+        task.updatedAt = new Date().toISOString();
+        emitSilentCacheTask(io, task);
+      });
+      continue;
+    }
     if (partSize > Number(task.downloaded || 0)) {
       task.downloaded = partSize;
       task.lastProgressAt = new Date(now).toISOString();
