@@ -39,6 +39,8 @@ const DOWNLOAD_RETRY_LIMIT = 3;
 const SILENT_RETRY_DELAY_MS = 60 * 1000;
 const STALE_TASK_MS = 90 * 1000;
 const STALE_REQUEUE_DELAY_MS = 60 * 1000;
+const SLOW_TASK_MS = 3 * 60 * 1000;
+const MIN_HEALTHY_SPEED_BPS = 128 * 1024;
 const FAST_ZERO_SPEED_DEGRADE_MS = 45 * 1000;
 const IDLE_SPEED_RESET_MS = 20 * 1000;
 const DIALOG_FETCH_LIMIT = 500;
@@ -119,6 +121,12 @@ function formatByteCount(bytes) {
   return `${value} B`;
 }
 
+function lowSpeedThresholdBps() {
+  const limit = Number(silentCacheRateLimitBps || 0);
+  if (!limit) return MIN_HEALTHY_SPEED_BPS;
+  return Math.max(16 * 1024, Math.min(MIN_HEALTHY_SPEED_BPS, Math.floor(limit / Math.max(1, effectiveSilentConcurrency()))));
+}
+
 function hasForegroundAccountOp(accountId) {
   return Number(foregroundAccountOps.get(accountId) || 0) > 0;
 }
@@ -175,6 +183,7 @@ function detachRunningSilentTask(task, reason, io = realtimeIo, { resetConnectio
   task.status = "queued";
   task.error = reason || "后台缓存已重新排队";
   task.speedBps = 0;
+  task.lowSpeedSince = "";
   if (retryDelayMs) task.retryAfter = Date.now() + retryDelayMs;
   task.updatedAt = new Date().toISOString();
   enqueueSilentTask(task);
@@ -1645,6 +1654,7 @@ function pumpSilentCacheQueue(io = realtimeIo) {
     record.status = "running";
     record.error = "";
     record.speedBps = 0;
+    record.lowSpeedSince = "";
     record.updatedAt = new Date().toISOString();
     emitSilentCacheTask(io, record);
     const promise = runSilentCacheTask(record, io, runToken)
@@ -1756,6 +1766,11 @@ async function runSilentCacheTask(record, io = realtimeIo, runToken = null) {
       record.lastProgressAt = progressAt;
       record.lastObservedPartSize = downloaded;
       record.lastObservedAt = progressAt;
+      if (record.speedBps > 0 && record.speedBps < lowSpeedThresholdBps() && downloaded < fullSize) {
+        record.lowSpeedSince = record.lowSpeedSince || progressAt;
+      } else {
+        record.lowSpeedSince = "";
+      }
       record.updatedAt = progressAt;
       lastTick = now;
       lastBytes = downloaded;
@@ -1870,23 +1885,32 @@ async function silentCacheSpeedDiagnostics(userId, payload = {}) {
   if (!candidate) return { ...base, ok: false, error: "暂无后台缓存任务，先在群组信息里勾选后台缓存后再测试。" };
   if (runningTasks.length && !forceProbe) {
     const aggregateSpeedBps = runningTasks.reduce((sum, task) => sum + Number(task.speedBps || 0), 0);
+    const now = Date.now();
+    const primary = runningTasks[0];
+    const lastObservedAt = Date.parse(primary.lastObservedAt || primary.lastProgressAt || 0) || 0;
+    const lowSpeedSince = Date.parse(primary.lowSpeedSince || 0) || 0;
     return {
       ...base,
       ok: true,
       mode: "aggregate",
-      task: serializeSilentCacheTask(runningTasks[0]),
+      task: serializeSilentCacheTask(primary),
       result: {
         bytesRead: 0,
         chunks: 0,
         durationMs: 0,
         speedBps: aggregateSpeedBps,
         runningTasks: runningTasks.length,
+        lastObservedAgeMs: lastObservedAt ? now - lastObservedAt : null,
+        lowSpeedThresholdBps: lowSpeedThresholdBps(),
+        lowSpeedAgeMs: lowSpeedSince ? now - lowSpeedSince : 0,
+        suspectedStall: Boolean(lastObservedAt && now - lastObservedAt > STALE_TASK_MS),
+        suspectedSlowLink: Boolean(lowSpeedSince && now - lowSpeedSince > SLOW_TASK_MS),
         requestedChunkSize: 0,
         effectiveChunkSize: 0,
         fallbackCount: 0,
         limitInvalidCount: 0
       },
-      note: "当前已有后台缓存任务运行，诊断使用运行任务聚合速度，未额外读取 Telegram 文件。"
+      note: "当前已有后台缓存任务运行，诊断显示运行任务状态；读取样本为 0 表示未额外抢占 Telegram 连接。"
     };
   }
   try {
@@ -2067,27 +2091,30 @@ function monitorSilentCacheTasks(io = realtimeIo) {
       task.lastObservedAt = task.lastProgressAt;
       task.updatedAt = task.lastProgressAt;
       emitSilentCacheTask(io, task);
-      continue;
+      if (task.status !== "running") continue;
     }
     if (partSize !== Number(task.lastObservedPartSize || 0)) {
       task.lastObservedPartSize = partSize;
       task.lastObservedAt = new Date(now).toISOString();
     }
     const lastProgress = Date.parse(task.lastObservedAt || task.lastProgressAt || task.createdAt || 0) || 0;
+    const lowSpeedSince = Date.parse(task.lowSpeedSince || 0) || 0;
     const stale = task.status === "running" && lastProgress && now - lastProgress > STALE_TASK_MS;
+    const slow = task.status === "running" && lowSpeedSince && now - lowSpeedSince > SLOW_TASK_MS;
     const idle = task.status === "running" && lastProgress && now - lastProgress > IDLE_SPEED_RESET_MS;
     if (idle && task.speedBps) {
       task.speedBps = 0;
       task.updatedAt = new Date().toISOString();
       emitSilentCacheTask(io, task);
     }
-    if (["error", "paused", "queued"].includes(task.status) || stale) {
-      if (stale && task.status === "running") {
-        detachRunningSilentTask(task, "真实写盘停滞，已释放运行槽并等待续传", io, { resetConnection: true });
+    if (["error", "paused", "queued"].includes(task.status) || stale || slow) {
+      if ((stale || slow) && task.status === "running") {
+        const reason = slow ? "持续低速，已重置连接并等待续传" : "真实写盘停滞，已释放运行槽并等待续传";
+        detachRunningSilentTask(task, reason, io, { resetConnection: true, retryDelayMs: STALE_REQUEUE_DELAY_MS });
         continue;
       }
       task.status = "queued";
-      task.error = stale ? "真实写盘停滞，已重新排队" : task.error || "";
+      task.error = stale ? "真实写盘停滞，已重新排队" : slow ? "持续低速，已重新排队" : task.error || "";
       task.speedBps = 0;
       task.updatedAt = new Date().toISOString();
       enqueueSilentTask(task);

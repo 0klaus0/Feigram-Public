@@ -14,6 +14,20 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.30",
+    title: "Feigram 2.0.30 更新",
+    version: "2.0.30",
+    level: "success",
+    createdAt: "2026-06-13T22:05:00.000Z",
+    body: [
+      "修复后台缓存任务在 Telegram 连接持续抖动时仍长期显示 running 的问题。",
+      "后台缓存增加持续低速 watchdog：不限速时低于 128KB/s 持续 3 分钟会自动释放运行槽、重置连接并等待断点续传。",
+      "任务重新排队和重新开始时会清理旧的低速状态，避免前一次卡顿影响下一次续传。",
+      "缓存速度诊断不再把聚合速度误认为真实测速，会显示低速观察状态和是否疑似卡死。",
+      "诊断窗口在已有后台任务运行时不再额外抢占 Telegram 连接，减少前台聊天和后台缓存互相拖慢。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.29",
     title: "Feigram 2.0.29 更新",
     version: "2.0.29",
