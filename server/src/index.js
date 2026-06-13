@@ -261,6 +261,10 @@ app.post("/api/silent-cache/reorder", asyncRoute(async (req, res) => {
   res.json(tg.reorderSilentCacheTasks(req.user.id, req.body?.orderedIds || [], io));
 }));
 
+app.post("/api/silent-cache/cancel", asyncRoute(async (req, res) => {
+  res.json(tg.cancelSilentCacheTasks(req.user.id, req.body?.ids || [], io));
+}));
+
 app.delete("/api/silent-cache/:id", asyncRoute(async (req, res) => {
   res.json(tg.cancelSilentCacheTask(req.user.id, req.params.id, io));
 }));

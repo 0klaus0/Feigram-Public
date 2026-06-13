@@ -1701,7 +1701,7 @@ textarea {
   align-items: end;
   display: grid;
   gap: 10px;
-  grid-template-columns: minmax(180px, 1fr) minmax(160px, 220px) minmax(96px, 120px);
+  grid-template-columns: minmax(180px, 1fr) minmax(150px, 190px) minmax(120px, 160px) minmax(96px, 120px);
 }
 
 .silent-cache-controls label:not(.check-row) {
@@ -1726,6 +1726,13 @@ textarea {
   padding-right: 4px;
 }
 
+.silent-cache-bulk {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .silent-cache-row {
   background: var(--soft);
   border: 1px solid var(--line);
@@ -1746,7 +1753,16 @@ textarea {
   align-items: center;
   display: grid;
   gap: 8px;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
+.silent-cache-title {
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+}
+
+.silent-cache-check {
+  height: 16px;
+  margin: 0;
+  width: 16px;
 }
 
 .silent-cache-title strong {

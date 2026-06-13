@@ -479,8 +479,10 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
   const [updateInfo, setUpdateInfo] = useState(null);
   const [newUser, setNewUser] = useState({ username: "", password: "", displayName: "", role: "user" });
   const [dragSilentId, setDragSilentId] = useState("");
+  const [selectedSilentIds, setSelectedSilentIds] = useState([]);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState("");
+  const selectedSilentSet = useMemo(() => new Set(selectedSilentIds), [selectedSilentIds]);
 
   useEffect(() => {
     if (!open) return;
@@ -496,6 +498,10 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
     setTab(aliases[initialTab] || initialTab);
     refresh();
   }, [open, initialTab]);
+
+  useEffect(() => {
+    setSelectedSilentIds((ids) => ids.filter((id) => silentCaches.some((task) => task.id === id)));
+  }, [silentCaches]);
 
   async function refresh() {
     setError("");
@@ -594,6 +600,30 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
     setCacheSpeedTesting(false);
   }
 
+  function toggleSilentSelection(id, checked) {
+    setSelectedSilentIds((ids) => {
+      const set = new Set(ids);
+      if (checked) set.add(id);
+      else set.delete(id);
+      return [...set];
+    });
+  }
+
+  async function cancelSelectedSilentCaches() {
+    if (!selectedSilentIds.length) return;
+    setError("");
+    try {
+      await api("/api/silent-cache/cancel", {
+        method: "POST",
+        body: JSON.stringify({ ids: selectedSilentIds })
+      });
+      setSelectedSilentIds([]);
+      onRefreshSilentCaches?.();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
   if (!open) return null;
 
   return (
@@ -684,11 +714,20 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
               <option value={String(5 * 1024 * 1024)}>5 MB/s</option>
               <option value={String(10 * 1024 * 1024)}>10 MB/s</option>
             </select></label>
+            <label><span>缓存模式</span><select value={silentCacheState.mode || "conservative"} onChange={(e) => onSilentCacheControl?.({ mode: e.target.value })}>
+              <option value="conservative">保守模式</option>
+              <option value="fast">高速模式</option>
+            </select></label>
             <label><span>并发数量</span><select value={String(silentCacheState.concurrency || 1)} onChange={(e) => onSilentCacheControl?.({ concurrency: Number(e.target.value) })}>
               {[1, 2, 3, 4, 5, 10].map((value) => <option value={String(value)} key={value}>{value}</option>)}
             </select></label>
           </div>
-          <p className="hint">这里展示群组信息页勾选后自动缓存的大于 100MB 视频，和用户主动下载列表分开；升级或重启后未完成任务会继续。</p>
+          <p className="hint">这里展示群组信息页勾选后自动缓存的大于 100MB 视频，和用户主动下载列表分开；保守模式会让前台聊天优先，高速模式会尽量保持后台缓存。</p>
+          <div className="silent-cache-bulk">
+            <button type="button" className="icon-button" onClick={() => setSelectedSilentIds(silentCaches.filter((task) => task.status !== "completed").map((task) => task.id))}>全选当前</button>
+            <button type="button" className="icon-button" onClick={() => setSelectedSilentIds([])} disabled={!selectedSilentIds.length}>清空选择</button>
+            <button type="button" className="icon-button danger-button" onClick={cancelSelectedSilentCaches} disabled={!selectedSilentIds.length}>取消选中{selectedSilentIds.length ? ` (${selectedSilentIds.length})` : ""}</button>
+          </div>
           <div className="silent-cache-list">
             {silentCaches.map((task) => {
               const progress = task.size ? Math.min(100, Math.round((Number(task.downloaded || 0) / Number(task.size)) * 100)) : 0;
@@ -708,6 +747,7 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
                   onDragEnd={() => setDragSilentId("")}
                 >
                   <div className="silent-cache-title">
+                    <input className="silent-cache-check" type="checkbox" checked={selectedSilentSet.has(task.id)} onChange={(event) => toggleSilentSelection(task.id, event.target.checked)} onClick={(event) => event.stopPropagation()} />
                     <strong title={task.fileName}>{task.fileName || "Telegram 视频"}</strong>
                     <span>{statusText}</span>
                     {task.status !== "completed" && task.status !== "cancelled" && <button type="button" title="取消缓存" onClick={() => onCancelSilentCache?.(task)}><X size={12} /></button>}
@@ -772,6 +812,7 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
               <span><b>耗时</b>{cacheSpeedTest.result?.durationMs ? `${cacheSpeedTest.result.durationMs} ms` : "-"}</span>
               <span><b>读取分片</b>{cacheSpeedTest.result?.chunks || 0}</span>
               <span><b>限速</b>{cacheSpeedTest.rateLimitBps ? `${formatBytes(cacheSpeedTest.rateLimitBps)}/s` : "不限速"}</span>
+              <span><b>缓存模式</b>{cacheSpeedTest.cacheMode === "fast" ? "高速" : "保守"}</span>
               <span><b>并发/运行</b>{cacheSpeedTest.concurrency} / {cacheSpeedTest.running}</span>
               <span><b>队列</b>{cacheSpeedTest.queued}</span>
               <span><b>请求分片</b>{formatBytes(cacheSpeedTest.result?.requestedChunkSize || cacheSpeedTest.directChunkSize || 0)}</span>
@@ -1025,7 +1066,7 @@ function App() {
   const [announcementOpen, setAnnouncementOpen] = useState(false);
   const [downloads, setDownloads] = useState([]);
   const [silentCaches, setSilentCaches] = useState([]);
-  const [silentCacheState, setSilentCacheState] = useState({ enabled: true, rateLimitBps: 0, concurrency: 1 });
+  const [silentCacheState, setSilentCacheState] = useState({ enabled: true, rateLimitBps: 0, concurrency: 1, mode: "conservative" });
   const [downloadOpen, setDownloadOpen] = useState(false);
   const [chatInfoOpen, setChatInfoOpen] = useState(false);
   const [chatDetails, setChatDetails] = useState(null);
@@ -1506,12 +1547,13 @@ function App() {
   }
 
   async function loadSilentCaches() {
-    const result = await api("/api/silent-cache").catch(() => ({ enabled: true, rateLimitBps: 0, concurrency: 1, tasks: [] }));
+    const result = await api("/api/silent-cache").catch(() => ({ enabled: true, rateLimitBps: 0, concurrency: 1, mode: "conservative", tasks: [] }));
     const tasks = Array.isArray(result) ? result : result.tasks || [];
     setSilentCacheState({
       enabled: Array.isArray(result) ? true : result.enabled !== false,
       rateLimitBps: Array.isArray(result) ? 0 : Number(result.rateLimitBps || 0),
-      concurrency: Array.isArray(result) ? 1 : Number(result.concurrency || 1)
+      concurrency: Array.isArray(result) ? 1 : Number(result.concurrency || 1),
+      mode: Array.isArray(result) ? "conservative" : result.mode || "conservative"
     });
     setSilentCaches(sortSilentCaches(tasks));
   }
@@ -1531,12 +1573,12 @@ function App() {
           method: "POST",
           body: JSON.stringify({ orderedIds: current.map((item) => item.id) })
         });
-        setSilentCacheState({ enabled: result.enabled !== false, rateLimitBps: Number(result.rateLimitBps || 0), concurrency: Number(result.concurrency || 1) });
+        setSilentCacheState({ enabled: result.enabled !== false, rateLimitBps: Number(result.rateLimitBps || 0), concurrency: Number(result.concurrency || 1), mode: result.mode || "conservative" });
         setSilentCaches(sortSilentCaches(result.tasks || []));
         return;
       }
       const result = await api("/api/silent-cache/control", { method: "PUT", body: JSON.stringify(patch) });
-      setSilentCacheState({ enabled: result.enabled !== false, rateLimitBps: Number(result.rateLimitBps || 0), concurrency: Number(result.concurrency || 1) });
+      setSilentCacheState({ enabled: result.enabled !== false, rateLimitBps: Number(result.rateLimitBps || 0), concurrency: Number(result.concurrency || 1), mode: result.mode || "conservative" });
       setSilentCaches(sortSilentCaches(result.tasks || []));
     } catch (err) {
       notify(err.message);

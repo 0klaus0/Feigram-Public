@@ -19,6 +19,7 @@ const downloadTasks = new Map();
 const silentCacheRecords = new Map();
 const silentCacheTasks = new Map();
 const silentCacheQueue = [];
+const foregroundAccountOps = new Map();
 let silentCacheActive = 0;
 let downloadPersistTimer = null;
 let silentPersistTimer = null;
@@ -26,6 +27,7 @@ let realtimeIo = null;
 let silentCacheEnabled = true;
 let silentCacheRateLimitBps = 0;
 let silentCacheConcurrency = 1;
+let silentCacheMode = "conservative";
 let silentRateWindowStart = Date.now();
 let silentRateWindowBytes = 0;
 let silentRateChain = Promise.resolve();
@@ -75,6 +77,20 @@ function silentConcurrencyLimit() {
   return Math.max(1, Math.min(MAX_SILENT_CACHE_CONCURRENCY, Number(silentCacheConcurrency || 1)));
 }
 
+function normalizedSilentCacheMode(value) {
+  return value === "fast" ? "fast" : "conservative";
+}
+
+function hasForegroundAccountOp(accountId) {
+  return Number(foregroundAccountOps.get(accountId) || 0) > 0;
+}
+
+function markForegroundAccountOp(accountId, delta) {
+  const next = Math.max(0, Number(foregroundAccountOps.get(accountId) || 0) + delta);
+  if (next) foregroundAccountOps.set(accountId, next);
+  else foregroundAccountOps.delete(accountId);
+}
+
 function resetSilentRateWindow() {
   silentRateWindowStart = Date.now();
   silentRateWindowBytes = 0;
@@ -95,6 +111,40 @@ function rebalanceSilentConcurrency(io = realtimeIo) {
     enqueueSilentTask(task);
     emitSilentCacheTask(io, task);
   });
+}
+
+function detachRunningSilentTask(task, reason, io = realtimeIo, { resetConnection = false } = {}) {
+  if (!task || task.status !== "running") return false;
+  if (task.cancelToken) {
+    task.cancelToken.paused = true;
+    task.cancelToken.requeue = true;
+    task.cancelToken.detached = true;
+  }
+  if (task.runToken) task.runToken.detached = true;
+  if (silentCacheTasks.has(task.id)) {
+    silentCacheTasks.delete(task.id);
+    silentCacheActive = Math.max(0, silentCacheActive - 1);
+  }
+  task.runToken = null;
+  task.cancelToken = null;
+  task.status = "queued";
+  task.error = reason || "后台缓存已重新排队";
+  task.speedBps = 0;
+  task.updatedAt = new Date().toISOString();
+  enqueueSilentTask(task);
+  emitSilentCacheTask(io, task);
+  if (resetConnection) resetTelegramClient(task.accountId).catch(() => {});
+  return true;
+}
+
+function suspendSilentCacheForAccount(accountId, io = realtimeIo, reason = "前台正在读取聊天，后台缓存稍后续传") {
+  let changed = false;
+  for (const task of silentCacheRecords.values()) {
+    if (task.accountId !== accountId) continue;
+    if (detachRunningSilentTask(task, reason, io, { resetConnection: false })) changed = true;
+  }
+  if (changed) pumpSilentCacheQueue(io);
+  return changed;
 }
 
 async function throttleSilentCache(deltaBytes) {
@@ -150,6 +200,7 @@ async function persistSilentCacheTasks() {
     enabled: silentCacheEnabled,
     rateLimitBps: silentCacheRateLimitBps,
     concurrency: silentConcurrencyLimit(),
+    mode: normalizedSilentCacheMode(silentCacheMode),
     tasks
   }, { spaces: 2 });
 }
@@ -174,6 +225,7 @@ async function loadPersistentTasks() {
   silentCacheEnabled = savedSilent.enabled !== false;
   silentCacheRateLimitBps = Math.max(0, Number(savedSilent.rateLimitBps || 0));
   silentCacheConcurrency = Math.max(1, Math.min(MAX_SILENT_CACHE_CONCURRENCY, Number(savedSilent.concurrency || 1)));
+  silentCacheMode = normalizedSilentCacheMode(savedSilent.mode);
   for (const task of savedSilent.tasks || []) {
     if (!task?.id || !task.userId || !task.accountId || !task.peerId || !task.messageId) continue;
     if (task.status === "cancelled") continue;
@@ -248,6 +300,21 @@ function withTimeout(promise, ms, message) {
       timer = setTimeout(() => reject(Object.assign(new Error(message), { status: 504 })), ms);
     })
   ]);
+}
+
+async function foregroundTelegramOperation(accountId, operation) {
+  if (silentCacheMode !== "fast") {
+    markForegroundAccountOp(accountId, 1);
+    suspendSilentCacheForAccount(accountId, realtimeIo);
+  }
+  try {
+    return await operation();
+  } finally {
+    if (silentCacheMode !== "fast") {
+      markForegroundAccountOp(accountId, -1);
+      setTimeout(() => pumpSilentCacheQueue(realtimeIo), 2000).unref?.();
+    }
+  }
 }
 
 async function telegramConfig() {
@@ -760,8 +827,13 @@ async function logout(userId, accountId) {
 }
 
 async function listChats(userId, accountId, query = "") {
+  return foregroundTelegramOperation(accountId, async () => {
   const client = await getClient(userId, accountId);
-  const dialogs = await client.getDialogs({ limit: DIALOG_FETCH_LIMIT });
+  const dialogs = await withTimeout(
+    client.getDialogs({ limit: DIALOG_FETCH_LIMIT }),
+    20000,
+    "连接 Telegram 超时，请检查网络或稍后重试"
+  );
   const accountPeers = new Map();
   const normalizedQuery = query.trim().toLowerCase();
   const items = dialogs
@@ -783,13 +855,15 @@ async function listChats(userId, accountId, query = "") {
     .filter((chat) => !normalizedQuery || chat.title.toLowerCase().includes(normalizedQuery) || chat.username.toLowerCase().includes(normalizedQuery));
   peerCache.set(accountId, accountPeers);
   return items;
+  });
 }
 
 async function listFolders(userId, accountId) {
+  return foregroundTelegramOperation(accountId, async () => {
   const client = await getClient(userId, accountId);
   const [filterResult, dialogs] = await Promise.all([
-    client.invoke(new Api.messages.GetDialogFilters()).catch(() => []),
-    client.getDialogs({ limit: DIALOG_FETCH_LIMIT }).catch(() => [])
+    withTimeout(client.invoke(new Api.messages.GetDialogFilters()), 15000, "获取 Telegram 分组超时").catch(() => []),
+    withTimeout(client.getDialogs({ limit: DIALOG_FETCH_LIMIT }), 20000, "获取 Telegram 会话超时").catch(() => [])
   ]);
   const accountPeers = new Map();
   const chatsById = new Map();
@@ -834,6 +908,7 @@ async function listFolders(userId, accountId) {
     flags: {},
     chatIds: [...chatsById.values()].filter((chat) => Number(chat.folderId || 0) === id).map((chat) => chat.id)
   }));
+  });
 }
 
 async function resolvePeer(userId, accountId, peerId) {
@@ -857,6 +932,7 @@ async function resolvePeer(userId, accountId, peerId) {
 }
 
 async function listMessages(userId, accountId, peerId, limit = 50, before = 0, around = 0) {
+  return foregroundTelegramOperation(accountId, async () => {
   const client = await getClient(userId, accountId);
   const entity = await resolvePeer(userId, accountId, peerId);
   const request = { limit: Number(limit) || 50 };
@@ -866,18 +942,24 @@ async function listMessages(userId, accountId, peerId, limit = 50, before = 0, a
   } else if (Number(before) > 0) {
     request.offsetId = Number(before);
   }
-  const messages = await client.getMessages(entity, request);
+  const messages = await withTimeout(
+    client.getMessages(entity, request),
+    20000,
+    "连接 Telegram 超时，请检查网络或稍后重试"
+  );
   if (Number(around) > 0 && !messages.some((message) => Number(message.id) === Number(around))) {
-    const [target] = await client.getMessages(entity, { ids: [Number(around)] }).catch(() => []);
+    const [target] = await withTimeout(client.getMessages(entity, { ids: [Number(around)] }), 12000, "定位消息超时").catch(() => []);
     if (target) messages.push(target);
   }
   rememberMessageSenders(accountId, messages);
   return messages
     .map(serializeMessage)
     .sort((a, b) => Number(a.id) - Number(b.id));
+  });
 }
 
 async function chatDetails(userId, accountId, peerId) {
+  return foregroundTelegramOperation(accountId, async () => {
   const client = await getClient(userId, accountId);
   const entity = await resolvePeer(userId, accountId, peerId);
   const chat = serializeEntity(entity);
@@ -907,16 +989,18 @@ async function chatDetails(userId, accountId, peerId) {
     nextMediaBefore: mediaPage.nextBefore,
     hasMoreMedia: mediaPage.hasMore
   };
+  });
 }
 
 async function chatMedia(userId, accountId, peerId, { before = 0, limit = 30 } = {}) {
+  return foregroundTelegramOperation(accountId, async () => {
   const client = await getClient(userId, accountId);
   const entity = await resolvePeer(userId, accountId, peerId);
   const pageSize = Math.max(1, Math.min(60, Number(limit) || 30));
   const requestLimit = Math.min(200, pageSize * 4);
   const request = { limit: requestLimit };
   if (Number(before) > 0) request.offsetId = Number(before);
-  const messages = await client.getMessages(entity, request).catch(() => []);
+  const messages = await withTimeout(client.getMessages(entity, request), 20000, "获取媒体文件超时").catch(() => []);
   const mediaMessages = messages.filter((message) => message.media);
   const page = mediaMessages.slice(0, pageSize);
   return {
@@ -924,17 +1008,21 @@ async function chatMedia(userId, accountId, peerId, { before = 0, limit = 30 } =
     nextBefore: page.length ? Math.min(...page.map((message) => Number(message.id))) : 0,
     hasMore: messages.length >= requestLimit
   };
+  });
 }
 
 async function sendText(userId, accountId, peerId, text) {
+  return foregroundTelegramOperation(accountId, async () => {
   const client = await getClient(userId, accountId);
   const entity = await resolvePeer(userId, accountId, peerId);
-  const message = await client.sendMessage(entity, { message: text });
+  const message = await withTimeout(client.sendMessage(entity, { message: text }), 15000, "发送消息超时，请稍后再试");
   rememberMessageSenders(accountId, [message]);
   return serializeMessage(message);
+  });
 }
 
 async function clickMessageButton(userId, accountId, peerId, messageId, data) {
+  return foregroundTelegramOperation(accountId, async () => {
   if (!data) throw Object.assign(new Error("这个按钮暂不支持点击"), { status: 400 });
   const client = await getClient(userId, accountId);
   const entity = await resolvePeer(userId, accountId, peerId);
@@ -956,9 +1044,11 @@ async function clickMessageButton(userId, accountId, peerId, messageId, data) {
     url: answer.url || "",
     alert: Boolean(answer.alert)
   };
+  });
 }
 
 async function resolveTelegramLink(userId, accountId, url) {
+  return foregroundTelegramOperation(accountId, async () => {
   const domain = linkDomain(url);
   const client = await getClient(userId, accountId);
   if (!peerCache.has(accountId)) await listChats(userId, accountId);
@@ -971,9 +1061,11 @@ async function resolveTelegramLink(userId, accountId, url) {
   if (!peerCache.has(accountId)) peerCache.set(accountId, new Map());
   peerCache.get(accountId).set(chat.id, entity);
   return { ...chat, avatarKey: chat.id, messageId: linkMessageId(url) };
+  });
 }
 
 async function search(userId, accountId, query) {
+  return foregroundTelegramOperation(accountId, async () => {
   const client = await getClient(userId, accountId);
   const dialogs = await listChats(userId, accountId, query);
   const global = query
@@ -983,6 +1075,7 @@ async function search(userId, accountId, query) {
     chats: dialogs,
     messages: global.map(serializeMessage)
   };
+  });
 }
 
 async function mediaFileInfo(userId, accountId, message, contentType, kind) {
@@ -1060,6 +1153,7 @@ function serializeSilentCacheState(userId) {
     enabled: silentCacheEnabled,
     rateLimitBps: silentCacheRateLimitBps,
     concurrency: silentConcurrencyLimit(),
+    mode: normalizedSilentCacheMode(silentCacheMode),
     running: silentCacheActive,
     tasks: listSilentCacheTasks(userId)
   };
@@ -1356,6 +1450,10 @@ function pumpSilentCacheQueue(io = realtimeIo) {
   while (silentCacheActive < silentConcurrencyLimit() && silentCacheQueue.length) {
     const record = silentCacheQueue.shift();
     if (!record || silentCacheTasks.has(record.id) || ["completed", "cancelled"].includes(record.status)) continue;
+    if (silentCacheMode !== "fast" && hasForegroundAccountOp(record.accountId)) {
+      enqueueSilentTask(record);
+      break;
+    }
     silentCacheActive += 1;
     const runToken = { detached: false, startedAt: Date.now() };
     record.runToken = runToken;
@@ -1564,6 +1662,7 @@ async function silentCacheSpeedDiagnostics(userId, payload = {}) {
     enabled: silentCacheEnabled,
     rateLimitBps: silentCacheRateLimitBps,
     concurrency: silentConcurrencyLimit(),
+    cacheMode: normalizedSilentCacheMode(silentCacheMode),
     running: silentCacheActive,
     queued: silentCacheQueue.length,
     partSizeKb: silentPartSizeKb(),
@@ -1655,6 +1754,12 @@ function setSilentCacheControl(userId, payload = {}, io = realtimeIo) {
     silentCacheConcurrency = Math.max(1, Math.min(MAX_SILENT_CACHE_CONCURRENCY, Number(payload.concurrency || 1)));
     resetSilentRateWindow();
     rebalanceSilentConcurrency(io);
+  }
+  if (payload.mode !== undefined) {
+    silentCacheMode = normalizedSilentCacheMode(payload.mode);
+    if (silentCacheMode === "fast") {
+      pumpSilentCacheQueue(io);
+    }
   }
   if (!silentCacheEnabled) {
     for (const task of silentCacheRecords.values()) {
@@ -1758,14 +1863,8 @@ function monitorSilentCacheTasks(io = realtimeIo) {
       emitSilentCacheTask(io, task);
     }
     if (["error", "paused", "queued"].includes(task.status) || stale) {
-      if (stale && task.status === "running" && task.cancelToken) {
-        task.cancelToken.paused = true;
-        task.cancelToken.requeue = true;
-        resetTelegramClient(task.accountId).catch(() => {});
-        task.error = "真实写盘停滞，已重置账号连接并等待续传";
-        task.speedBps = 0;
-        task.updatedAt = new Date().toISOString();
-        emitSilentCacheTask(io, task);
+      if (stale && task.status === "running") {
+        detachRunningSilentTask(task, "真实写盘停滞，已释放运行槽并等待续传", io, { resetConnection: true });
         continue;
       }
       task.status = "queued";
@@ -1788,6 +1887,32 @@ function cancelSilentCacheTask(userId, taskId, io = realtimeIo) {
   silentCacheRecords.delete(task.id);
   emitSilentCacheDelete(io, task);
   return { ok: true, id: task.id };
+}
+
+function cancelSilentCacheTasks(userId, taskIds = [], io = realtimeIo) {
+  const ids = Array.isArray(taskIds) ? taskIds : [];
+  const cancelled = [];
+  for (const id of ids) {
+    const task = silentCacheRecords.get(id);
+    if (!task || task.userId !== userId) continue;
+    if (task.cancelToken) {
+      task.cancelToken.cancelled = true;
+      task.cancelToken.detached = true;
+    }
+    if (task.runToken) task.runToken.detached = true;
+    if (silentCacheTasks.has(task.id)) {
+      silentCacheTasks.delete(task.id);
+      silentCacheActive = Math.max(0, silentCacheActive - 1);
+    }
+    const index = silentCacheQueue.findIndex((item) => item.id === task.id);
+    if (index >= 0) silentCacheQueue.splice(index, 1);
+    silentCacheRecords.delete(task.id);
+    cancelled.push(task.id);
+    emitSilentCacheDelete(io, task);
+  }
+  pumpSilentCacheQueue(io);
+  schedulePersistSilent();
+  return { ok: true, ids: cancelled };
 }
 
 async function resumeDownloadTask(userId, taskId, io) {
@@ -2060,6 +2185,7 @@ module.exports = {
   reorderSilentCacheTasks,
   monitorSilentCacheTasks,
   cancelSilentCacheTask,
+  cancelSilentCacheTasks,
   resumeDownloadTask,
   startDownloadTask,
   streamVideoMedia,
