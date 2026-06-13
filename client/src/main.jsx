@@ -722,7 +722,7 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
               {[1, 2, 3, 4, 5, 10].map((value) => <option value={String(value)} key={value}>{value}</option>)}
             </select></label>
           </div>
-          <p className="hint">这里展示群组信息页勾选后自动缓存的大于 100MB 视频，和用户主动下载列表分开；保守模式下同一 Telegram 账号只运行 1 个后台缓存任务，多个账号或高速模式才会按并发数量并行。</p>
+          <p className="hint">这里统一展示用户主动缓存和群组信息页自动缓存的大于 100MB 视频；聊天窗口不再单独显示下载列表。</p>
           <p className="hint">当前运行 {silentCacheState.running || 0} / 有效上限 {silentCacheState.effectiveConcurrency || silentCacheState.concurrency || 1}，并发设置 {silentCacheState.configuredConcurrency || silentCacheState.concurrency || 1}。</p>
           <div className="silent-cache-bulk">
             <button type="button" className="icon-button" onClick={() => setSelectedSilentIds(silentCaches.filter((task) => task.status !== "completed").map((task) => task.id))}>全选当前</button>
@@ -732,7 +732,7 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
           <div className="silent-cache-list">
             {silentCaches.map((task) => {
               const progress = task.size ? Math.min(100, Math.round((Number(task.downloaded || 0) / Number(task.size)) * 100)) : 0;
-              const statusText = task.status === "running" ? "缓存中" : task.status === "queued" ? "排队中" : task.status === "paused" ? "已暂停" : task.status === "completed" ? "已完成" : task.status === "cancelled" ? "已取消" : "失败";
+              const statusText = task.status === "running" || task.status === "downloading" ? "下载中" : task.status === "queued" ? "排队中" : task.status === "paused" ? "已暂停" : task.status === "completed" ? "已完成" : task.status === "cancelled" ? "已取消" : "失败";
               return (
                 <div
                   className="silent-cache-row"
@@ -1070,7 +1070,6 @@ function App() {
   const [downloads, setDownloads] = useState([]);
   const [silentCaches, setSilentCaches] = useState([]);
   const [silentCacheState, setSilentCacheState] = useState({ enabled: true, rateLimitBps: 0, concurrency: 1, mode: "conservative" });
-  const [downloadOpen, setDownloadOpen] = useState(false);
   const [chatInfoOpen, setChatInfoOpen] = useState(false);
   const [chatDetails, setChatDetails] = useState(null);
   const [chatDetailsLoading, setChatDetailsLoading] = useState(false);
@@ -1088,7 +1087,6 @@ function App() {
   const newestAnnouncementId = announcements[0]?.id || "";
   const unreadAnnouncement = newestAnnouncementId && localStorage.getItem("feigrame.lastAnnouncement") !== newestAnnouncementId;
   const messageItems = useMemo(() => buildMessageItems(messages), [messages]);
-  const activeDownloadCount = downloads.filter((item) => ["queued", "downloading"].includes(item.status)).length;
   const visibleChats = useMemo(() => {
     const folder = folders.find((item) => String(item.id) === String(activeFolder));
     if (!folder) return chats;
@@ -1353,7 +1351,6 @@ function App() {
   function playDownload(item) {
     if (!item || item.kind !== "video") return;
     setPlayback(item);
-    setDownloadOpen(false);
   }
 
   function openInfoMedia(file) {
@@ -1503,7 +1500,7 @@ function App() {
     try {
       const result = await api(`/api/media/${accountId}/${encodeURIComponent(activeChat.id)}/${message.id}/cache`, { method: "POST" });
       setDownloads((current) => mergeDownloads([result, ...current.filter((item) => item.id !== result.id)]));
-      notify(`${result.fileName || "视频"} 已加入下载列表`);
+      notify(`${result.fileName || "视频"} 已加入管理后台缓存信息`);
       return result;
     } catch (err) {
       notify(err.message);
@@ -1694,10 +1691,6 @@ function App() {
             <button onClick={() => { setAdminInitialTab("folders"); setAdminOpen(true); }}>
               <SlidersHorizontal size={24} /><span>编辑</span>
             </button>
-            <button className={cx(downloadOpen && "active")} onClick={() => setDownloadOpen(true)}>
-              <Download size={24} /><span>下载</span>
-              {!!activeDownloadCount && <b>{activeDownloadCount}</b>}
-            </button>
           </nav>}
           <div className="chat-pane">
             <form className="search" onSubmit={(event) => { event.preventDefault(); loadChats(query); }}>
@@ -1818,16 +1811,6 @@ function App() {
         onCancelSilentCache={cancelSilentCache}
       />
       <InfoModal announcements={announcements} about={about} open={announcementOpen} onClose={() => setAnnouncementOpen(false)} />
-      <DownloadCenter
-        open={downloadOpen}
-        downloads={downloads}
-        onStart={startDownload}
-        onCancel={cancelDownload}
-        onClear={clearDownload}
-        onDelete={deleteDownload}
-        onPlay={playDownload}
-        onClose={() => setDownloadOpen(false)}
-      />
       <PlaybackModal item={playback} playerMode={appSettings.playerMode} onClose={() => setPlayback(null)} />
     </main>
   );

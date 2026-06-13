@@ -18,8 +18,8 @@ export DATA_DIR="${DATA_HOME}/data"
 export DOWNLOAD_DIR="${DATA_HOME}/data/downloads"
 export LOG_FILE="$LOG_FILE"
 export APP_EDITION="Feigram 2.0 fnOS Client Edition"
-export APP_VERSION="2.0.30"
-export APP_CHANGELOG="修复后台缓存低速假运行，持续低速会自动释放运行槽、重置连接并断点续传。"
+export APP_VERSION="2.0.31"
+export APP_CHANGELOG="重构后台群视频缓存，统一进入下载队列并在管理后台集中管理。"
 export NODE_ENV="production"
 
 is_running() {
