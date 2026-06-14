@@ -715,14 +715,15 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
               <option value={String(10 * 1024 * 1024)}>10 MB/s</option>
             </select></label>
             <label><span>缓存模式</span><select value={silentCacheState.mode || "conservative"} onChange={(e) => onSilentCacheControl?.({ mode: e.target.value })}>
-              <option value="conservative">保守模式</option>
-              <option value="fast">高速模式</option>
+              <option value="conservative">保守模式（同账号单任务）</option>
+              <option value="fast">跨账号高速模式</option>
             </select></label>
             <label><span>并发数量</span><select value={String(silentCacheState.concurrency || 1)} onChange={(e) => onSilentCacheControl?.({ concurrency: Number(e.target.value) })}>
               {[1, 2, 3, 4, 5, 10].map((value) => <option value={String(value)} key={value}>{value}</option>)}
             </select></label>
           </div>
           <p className="hint">这里统一展示用户主动缓存和群组信息页自动缓存的大于 100MB 视频；聊天窗口不再单独显示下载列表。</p>
+          <p className="hint">为避免 Telegram 连接反复重连，同一个 Telegram 账号始终只运行 1 个大文件任务；并发数量用于多个 Telegram 账号之间并行。</p>
           <p className="hint">当前运行 {silentCacheState.running || 0} / 有效上限 {silentCacheState.effectiveConcurrency || silentCacheState.concurrency || 1}，并发设置 {silentCacheState.configuredConcurrency || silentCacheState.concurrency || 1}。</p>
           <div className="silent-cache-bulk">
             <button type="button" className="icon-button" onClick={() => setSelectedSilentIds(silentCaches.filter((task) => task.status !== "completed").map((task) => task.id))}>全选当前</button>
@@ -830,7 +831,7 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
             </div>}
             {cacheSpeedTest.error && <p className="error">{cacheSpeedTest.error}</p>}
             {cacheSpeedTest.note && <p className="hint">{cacheSpeedTest.note}</p>}
-            {cacheSpeedTest.cacheMode !== "fast" && <p className="hint">保守模式会限制同一 Telegram 账号只运行 1 个后台缓存任务，用来避免账号连接被后台缓存反复抢占；需要多任务并行时可在缓存信息里切换高速模式。</p>}
+            <p className="hint">为避免 Telegram 连接反复重连，同一个 Telegram 账号始终只运行 1 个大文件任务；高速模式用于多个 Telegram 账号之间并行。</p>
             <pre className="log-tail cache-speed-json">{JSON.stringify(cacheSpeedTest, null, 2)}</pre>
           </div>}
           {updateInfo && <div className="update-card">

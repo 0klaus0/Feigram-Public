@@ -14,6 +14,20 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.32",
+    title: "Feigram 2.0.32 更新",
+    version: "2.0.32",
+    level: "success",
+    createdAt: "2026-06-14T09:30:00.000Z",
+    body: [
+      "修复群视频统一缓存队列在同一 Telegram 账号下并发多个大文件时导致 GramJS 反复重连、TIMEOUT 和 hanging states 的问题。",
+      "后台缓存并发改为跨 Telegram 账号并行：同一 Telegram 账号始终只运行 1 个大文件任务，多个账号会按设置并发执行。",
+      "新增统一下载队列停滞监控：任务长期没有真实文件增长时会自动打断并回到队列，继续从 .part 断点续传。",
+      "FILE_REFERENCE_EXPIRED、TIMEOUT、Not connected 等可恢复错误会按冷却时间自动重新排队，避免任务长期停在失败状态。",
+      "缓存信息和诊断页补充说明，明确并发数量、有效上限和跨账号高速模式的关系。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.31",
     title: "Feigram 2.0.31 更新",
     version: "2.0.31",

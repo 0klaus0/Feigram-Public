@@ -93,7 +93,7 @@ function syncSilentCacheActive() {
 
 function activeSilentAccountCount(userId = "") {
   const accounts = new Set();
-  for (const task of silentCacheRecords.values()) {
+  for (const task of downloadTasks.values()) {
     if (userId && task.userId !== userId) continue;
     if (["completed", "cancelled"].includes(task.status)) continue;
     accounts.add(task.accountId);
@@ -103,7 +103,6 @@ function activeSilentAccountCount(userId = "") {
 
 function effectiveSilentConcurrency(userId = "") {
   const configured = silentConcurrencyLimit();
-  if (normalizedSilentCacheMode(silentCacheMode) === "fast") return configured;
   return Math.max(1, Math.min(configured, activeSilentAccountCount(userId) || 1));
 }
 
@@ -368,6 +367,10 @@ async function loadPersistentTasks() {
       order: Number(task.order || 0) || nextDownloadOrder(),
       speedBps: 0,
       downloaded: completedFileExists ? completedStat.size : Number(task.downloaded || 0),
+      lastProgressAt: task.lastProgressAt || task.updatedAt || new Date().toISOString(),
+      lastObservedAt: task.lastObservedAt || task.lastProgressAt || task.updatedAt || new Date().toISOString(),
+      lastObservedPartSize: Number(task.lastObservedPartSize || task.downloaded || 0),
+      retryAfter: 0,
       status: completedFileExists ? "completed" : "queued",
       error: completedFileExists ? task.error || "" : "本地文件不完整，已等待续传",
       updatedAt: new Date().toISOString()
@@ -405,6 +408,9 @@ async function loadPersistentTasks() {
       kind: task.kind || "video",
       retryCount: Number(task.retryCount || 0),
       lastProgressAt: task.lastProgressAt || task.updatedAt || new Date().toISOString(),
+      lastObservedAt: task.lastObservedAt || task.lastProgressAt || task.updatedAt || new Date().toISOString(),
+      lastObservedPartSize: Number(task.lastObservedPartSize || task.downloaded || 0),
+      retryAfter: 0,
       speedBps: 0,
       downloaded: completedFileExists ? completedStat.size : Number(task.downloaded || 0),
       status: completedFileExists ? "completed" : shouldResume || task.status === "completed" ? "queued" : task.status,
@@ -1287,14 +1293,22 @@ function activeUnifiedDownloads(userId = "") {
 function canRunUnifiedTask(task, running) {
   if (!task || task.status !== "queued") return false;
   if (isAutoDownloadTask(task) && !silentCacheEnabled) return false;
-  if (normalizedSilentCacheMode(silentCacheMode) === "fast") return true;
+  if (task.retryAfter && Date.now() < Number(task.retryAfter)) return false;
+  const sameAccountRequeueing = [...downloadTasks.values()].some((item) => (
+    item.id !== task.id &&
+    item.userId === task.userId &&
+    item.accountId === task.accountId &&
+    item.cancelToken?.requeue
+  ));
+  if (sameAccountRequeueing) return false;
   return !running.some((item) => item.userId === task.userId && item.accountId === task.accountId);
 }
 
 function pumpUnifiedDownloadQueue(io = realtimeIo, userId = "") {
-  const limit = silentConcurrencyLimit();
+  monitorDownloadCompletions(io);
+  const limit = effectiveSilentConcurrency(userId);
   const sorted = [...downloadTasks.values()]
-    .filter((task) => task.status === "queued" && (!userId || task.userId === userId))
+    .filter((task) => task.status === "queued" && (!userId || task.userId === userId) && (!task.retryAfter || Date.now() >= Number(task.retryAfter)))
     .sort((a, b) => {
       const orderDiff = Number(a.order || 0) - Number(b.order || 0);
       if (orderDiff) return orderDiff;
@@ -1360,8 +1374,8 @@ function serializeSilentCacheTask(task) {
       error: task.error || "",
       source: task.source || "manual",
       createdAt: task.createdAt,
-      lastProgressAt: task.updatedAt || "",
-      lastObservedAt: task.updatedAt || "",
+      lastProgressAt: task.lastProgressAt || task.updatedAt || "",
+      lastObservedAt: task.lastObservedAt || task.updatedAt || "",
       updatedAt: task.updatedAt
     };
   }
@@ -1541,6 +1555,11 @@ async function ensureDownloadTask(userId, accountId, peerId, messageId, options 
     order: Number(options.order || 0) || nextDownloadOrder(),
     downloaded: 0,
     speedBps: 0,
+    retryCount: 0,
+    retryAfter: 0,
+    lastProgressAt: "",
+    lastObservedAt: "",
+    lastObservedPartSize: 0,
     status: "queued",
     error: "",
     cancelToken: null,
@@ -1583,10 +1602,11 @@ async function startDownloadTask(userId, accountId, peerId, messageId, io, optio
 
 async function runDownloadTask(task, io) {
   if (task.status === "downloading") return;
-  const cancelToken = { cancelled: false, paused: false };
+  const cancelToken = { cancelled: false, paused: false, requeue: false };
   task.cancelToken = cancelToken;
   task.status = "downloading";
   task.error = "";
+  task.retryAfter = 0;
   task.updatedAt = new Date().toISOString();
   emitDownloadTask(io, task);
   try {
@@ -1610,10 +1630,12 @@ async function runDownloadTask(task, io) {
     let lastTick = Date.now();
     const partStat = await fs.stat(task.partPath).catch(() => null);
     task.downloaded = partStat?.size || 0;
+    task.lastObservedPartSize = task.downloaded;
+    task.lastObservedAt = new Date().toISOString();
     lastBytes = task.downloaded;
     const progressCallback = async (downloadedValue, totalValue) => {
       if (cancelToken.cancelled) {
-        throw Object.assign(new Error("下载已取消"), { status: 499 });
+        throw Object.assign(new Error(cancelToken.requeue ? "下载连接已重排" : "下载已取消"), { status: 499, requeue: Boolean(cancelToken.requeue) });
       }
       const downloaded = Number(downloadedValue?.toString?.() || downloadedValue || 0);
       const fullSize = Number(totalValue?.toString?.() || totalValue || total || 0);
@@ -1622,7 +1644,15 @@ async function runDownloadTask(task, io) {
       const now = Date.now();
       if (now - lastTick >= 800 || downloaded >= fullSize) {
         task.speedBps = Math.max(0, Math.round((downloaded - lastBytes) / Math.max(0.001, (now - lastTick) / 1000)));
-        task.updatedAt = new Date().toISOString();
+        const progressAt = new Date().toISOString();
+        task.updatedAt = progressAt;
+        task.lastProgressAt = progressAt;
+        if (downloaded > lastBytes) {
+          task.lastObservedAt = progressAt;
+          task.lastObservedPartSize = downloaded;
+          task.retryCount = 0;
+          task.retryAfter = 0;
+        }
         lastTick = now;
         lastBytes = downloaded;
         emitDownloadTask(io, task);
@@ -1659,11 +1689,21 @@ async function runDownloadTask(task, io) {
     task.updatedAt = new Date().toISOString();
     emitDownloadTask(io, task);
   } catch (error) {
+    if (error.status === 499 && error.requeue) {
+      task.status = "queued";
+      task.error = "下载连接停滞，已重新排队续传";
+      task.speedBps = 0;
+      task.retryAfter = Date.now() + 3000;
+      task.updatedAt = new Date().toISOString();
+      emitDownloadTask(io, task);
+      return;
+    }
     if (error.status !== 499 && isTransientDownloadError(error) && Number(task.retryCount || 0) < DOWNLOAD_RETRY_LIMIT) {
       task.retryCount = Number(task.retryCount || 0) + 1;
       task.status = "queued";
       task.error = `网络波动，自动重试 ${task.retryCount}/${DOWNLOAD_RETRY_LIMIT}`;
       task.speedBps = 0;
+      task.retryAfter = Date.now() + Math.min(30000, 3000 * task.retryCount);
       task.updatedAt = new Date().toISOString();
       emitDownloadTask(io, task);
       setTimeout(() => {
@@ -1674,6 +1714,7 @@ async function runDownloadTask(task, io) {
     task.status = error.status === 499 ? "cancelled" : "error";
     task.error = error.status === 499 ? "" : error.message || "下载失败";
     task.speedBps = 0;
+    task.retryAfter = isTransientDownloadError(error) ? Date.now() + SILENT_RETRY_DELAY_MS : 0;
     task.updatedAt = new Date().toISOString();
     emitDownloadTask(io, task);
   } finally {
@@ -2065,6 +2106,7 @@ function setSilentCacheControl(userId, payload = {}, io = realtimeIo) {
       if (!isAutoDownloadTask(task)) continue;
       if (task.cancelToken) {
         task.cancelToken.cancelled = true;
+        task.cancelToken.requeue = false;
       }
       if (["queued", "downloading", "error"].includes(task.status)) {
         task.status = "cancelled";
@@ -2113,7 +2155,7 @@ function reorderSilentCacheTasks(userId, orderedIds = [], io = realtimeIo) {
   return serializeSilentCacheState(userId);
 }
 
-function monitorSilentCacheTasks(io = realtimeIo) {
+function monitorDownloadCompletions(io = realtimeIo) {
   const now = Date.now();
   for (const task of downloadTasks.values()) {
     if (task.status === "completed" || task.status === "cancelled") continue;
@@ -2122,6 +2164,8 @@ function monitorSilentCacheTasks(io = realtimeIo) {
     const observed = Math.max(Number(partStat?.size || 0), Number(fileStat?.size || 0), Number(task.downloaded || 0));
     if (observed > Number(task.downloaded || 0)) {
       task.downloaded = observed;
+      task.lastObservedPartSize = observed;
+      task.lastObservedAt = new Date(now).toISOString();
       task.updatedAt = new Date(now).toISOString();
       emitDownloadTask(io, task);
     }
@@ -2149,6 +2193,47 @@ function monitorSilentCacheTasks(io = realtimeIo) {
       });
     }
   }
+}
+
+function monitorSilentCacheTasks(io = realtimeIo) {
+  monitorDownloadCompletions(io);
+  const now = Date.now();
+  let shouldPump = false;
+  for (const task of downloadTasks.values()) {
+    if (task.status === "completed" || task.status === "cancelled") continue;
+    if (task.status === "downloading") {
+      const lastObservedAt = Date.parse(task.lastObservedAt || task.lastProgressAt || task.updatedAt || task.createdAt || 0) || 0;
+      const stale = lastObservedAt && now - lastObservedAt > STALE_TASK_MS;
+      if (stale) {
+        if (task.cancelToken) {
+          task.cancelToken.cancelled = true;
+          task.cancelToken.requeue = true;
+        }
+        task.status = "queued";
+        task.speedBps = 0;
+        task.error = "下载连接停滞，已重新排队续传";
+        task.retryAfter = now + 3000;
+        task.updatedAt = new Date(now).toISOString();
+        emitDownloadTask(io, task);
+        shouldPump = true;
+      }
+      continue;
+    }
+    if (task.status === "error" && isTransientDownloadError(task.error || "")) {
+      const retryAfter = Number(task.retryAfter || 0);
+      if (!retryAfter || now >= retryAfter) {
+        task.status = "queued";
+        task.speedBps = 0;
+        task.error = "Telegram 连接波动，已重新排队续传";
+        task.retryCount = 0;
+        task.retryAfter = 0;
+        task.updatedAt = new Date(now).toISOString();
+        emitDownloadTask(io, task);
+        shouldPump = true;
+      }
+    }
+  }
+  if (shouldPump) pumpUnifiedDownloadQueue(io);
 }
 
 function cancelSilentCacheTask(userId, taskId, io = realtimeIo) {
@@ -2182,7 +2267,10 @@ async function resumeDownloadTask(userId, taskId, io) {
 function cancelDownloadTask(userId, taskId, io) {
   const task = downloadTasks.get(taskId);
   if (!task || task.userId !== userId) throw Object.assign(new Error("找不到下载任务"), { status: 404 });
-  if (task.cancelToken) task.cancelToken.cancelled = true;
+  if (task.cancelToken) {
+    task.cancelToken.cancelled = true;
+    task.cancelToken.requeue = false;
+  }
   if (task.status !== "completed") task.status = "cancelled";
   task.speedBps = 0;
   task.updatedAt = new Date().toISOString();
