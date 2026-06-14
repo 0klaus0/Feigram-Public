@@ -14,6 +14,22 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.35",
+    title: "Feigram 2.0.35 更新",
+    version: "2.0.35",
+    level: "success",
+    createdAt: "2026-06-14T21:30:00.000Z",
+    body: [
+      "修复启动阶段 Telegram 账号恢复或旧下载任务迁移失败时，Node 后端直接退出导致飞牛客户端显示“拒绝连接”的问题。",
+      "Feigram 现在会先启动 HTTP 服务，再在后台恢复 Telegram 账号和下载任务；恢复失败只写入日志，不再拖垮整个 App。",
+      "Go 下载服务开始接管大文件下载队列：任务排序、并发、限速、断点 .part 文件和完成校验都由 Go sidecar 维护。",
+      "Node 下载管线不再直接执行大文件下载，只保留本机受保护的 Telegram 媒体流桥接，避免双状态管线互相打架。",
+      "手动缓存和群后台自动缓存统一进入管理后台的缓存信息列表，聊天窗口不再显示独立下载状态。",
+      "升级时会尝试把旧 Node 未完成下载任务迁移到 Go 队列，继续从原来的文件位置续传。",
+      "运行诊断的缓存速度现在显示 Go 队列聚合速度，不再额外抢占 Telegram 连接做测速。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.33",
     title: "Feigram 2.0.33 更新",
     version: "2.0.33",

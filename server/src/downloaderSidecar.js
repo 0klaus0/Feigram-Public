@@ -6,7 +6,7 @@ function baseUrl() {
 
 async function request(path, options = {}) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), options.timeoutMs || 2500);
+  const timer = setTimeout(() => controller.abort(), options.timeoutMs || 5000);
   try {
     const response = await fetch(`${baseUrl()}${path}`, {
       ...options,
@@ -61,10 +61,41 @@ function enqueueTask(task) {
   });
 }
 
+function listTasks() {
+  return request("/api/tasks");
+}
+
+function getTask(id) {
+  return request(`/api/tasks/${encodeURIComponent(id)}`);
+}
+
+function queueTask(id) {
+  return request(`/api/tasks/${encodeURIComponent(id)}/queue`, {
+    method: "POST"
+  });
+}
+
+function cancelTask(id) {
+  return request(`/api/tasks/${encodeURIComponent(id)}/cancel`, {
+    method: "POST"
+  });
+}
+
+function deleteTask(id) {
+  return request(`/api/tasks/${encodeURIComponent(id)}`, {
+    method: "DELETE"
+  });
+}
+
 module.exports = {
   baseUrl,
+  cancelTask,
+  deleteTask,
   enqueueTask,
+  getTask,
   health,
+  listTasks,
+  queueTask,
   state,
   updateConfig
 };

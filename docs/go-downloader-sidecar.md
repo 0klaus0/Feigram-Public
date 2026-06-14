@@ -1,8 +1,9 @@
 # Feigram Go Downloader Sidecar
 
-Feigram 2.0.33 starts an embedded Go downloader sidecar with the FPK service.
-The service is designed as the replacement foundation for large Telegram media
-downloads, especially group video background caching.
+Feigram 2.0.34 runs an embedded Go downloader sidecar with the FPK service.
+The service now owns the large-file download queue, resumable `.part` files,
+rate limits, concurrency and completion validation for manual video caching and
+group video background caching.
 
 ## Why this exists
 
@@ -32,10 +33,11 @@ the same broad architectural ideas that are useful for Telegram downloads:
 - resumable queue state
 - retry and flood-wait aware transport layer
 
-The current sidecar phase only includes the service shell, task API and admin
-integration. The actual Telegram transport bridge will be implemented in a
-later version with a clear license review before adding gotd or any tdl-derived
-component.
+The current sidecar phase does not copy or embed tdl. Go owns orchestration and
+file writing, while Node exposes a localhost-only authenticated Telegram media
+stream bridge because the logged-in Telegram session still lives in GramJS.
+A later native gotd/tdl-style transport can replace this bridge after a clear
+license and session-migration review.
 
 ## Runtime
 
@@ -62,9 +64,10 @@ Environment variables:
 - `POST /api/tasks/:id/queue`
 - `DELETE /api/tasks/:id`
 
-## Current limitation
+## Current boundary
 
-Feigram 2.0.33 keeps Node as the default active Telegram download engine. The
-Go sidecar is embedded, configurable and observable, but it does not yet own the
-Telegram media transfer. This avoids another risky rewrite of the live Telegram
-session path while giving the project a cleaner migration target.
+Feigram 2.0.34 no longer uses the old Node task state machine for large-file
+download scheduling. Node still owns Telegram authentication and provides the
+internal `/api/internal/media/...` byte stream consumed by the Go sidecar. This
+avoids duplicating Telegram auth keys while removing the fragile Node download
+queue from the user-visible task flow.

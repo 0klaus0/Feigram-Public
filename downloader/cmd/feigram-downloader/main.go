@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -17,7 +18,7 @@ import (
 )
 
 const (
-	version         = "0.1.0"
+	version         = "0.2.0"
 	defaultPartSize = 1024 * 1024
 )
 
@@ -39,11 +40,17 @@ type Task struct {
 	MessageID   int64  `json:"messageId"`
 	FileName    string `json:"fileName"`
 	ContentType string `json:"contentType"`
+	Kind        string `json:"kind"`
 	Size        int64  `json:"size"`
 	Downloaded  int64  `json:"downloaded"`
 	SpeedBps    int64  `json:"speedBps"`
 	Status      string `json:"status"`
 	Source      string `json:"source"`
+	AutoCache   bool   `json:"autoCache"`
+	SourceURL   string `json:"sourceUrl"`
+	FilePath    string `json:"filePath"`
+	PartPath    string `json:"partPath"`
+	InlineURL   string `json:"inlineUrl"`
 	Error       string `json:"error"`
 	Order       int64  `json:"order"`
 	CreatedAt   string `json:"createdAt"`
@@ -69,6 +76,8 @@ type App struct {
 	startedAt time.Time
 	config    Config
 	tasks     map[string]*Task
+	running   map[string]chan struct{}
+	client    *http.Client
 }
 
 func main() {
@@ -87,11 +96,22 @@ func main() {
 			Backend:      "go-sidecar",
 			UpdatedAt:    now(),
 		},
-		tasks: map[string]*Task{},
+		tasks:   map[string]*Task{},
+		running: map[string]chan struct{}{},
+		client: &http.Client{
+			Timeout: 0,
+			Transport: &http.Transport{
+				Proxy:               http.ProxyFromEnvironment,
+				MaxIdleConns:        32,
+				MaxIdleConnsPerHost: 16,
+				IdleConnTimeout:     90 * time.Second,
+			},
+		},
 	}
 	if err := app.load(); err != nil {
 		log.Printf("load store: %v", err)
 	}
+	go app.pump()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", app.handleHealth)
@@ -137,7 +157,7 @@ func (a *App) load() error {
 		if task.Status == "downloading" || task.Status == "running" {
 			task.Status = "queued"
 			task.SpeedBps = 0
-			task.Error = "服务重启，已等待续传"
+			task.Error = "Go 下载服务重启，已等待续传"
 		}
 		a.tasks[task.ID] = &task
 	}
@@ -166,6 +186,262 @@ func (a *App) saveLocked() error {
 	return os.Rename(tmp, a.storePath)
 }
 
+func (a *App) pump() {
+	for {
+		started := a.pumpOnce()
+		if !started {
+			time.Sleep(800 * time.Millisecond)
+		}
+	}
+}
+
+func (a *App) pumpOnce() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.config.Enabled {
+		return false
+	}
+	limit := a.config.Concurrency
+	if a.config.Mode != "fast" {
+		limit = 1
+	}
+	if limit < 1 {
+		limit = 1
+	}
+	started := false
+	for _, task := range a.listTasksLocked() {
+		if len(a.running) >= limit {
+			break
+		}
+		if task.Status != "queued" && task.Status != "error" {
+			continue
+		}
+		if task.SourceURL == "" || task.FilePath == "" {
+			continue
+		}
+		if _, ok := a.running[task.ID]; ok {
+			continue
+		}
+		cancel := make(chan struct{})
+		a.running[task.ID] = cancel
+		task.Status = "downloading"
+		task.Error = ""
+		task.UpdatedAt = now()
+		started = true
+		go a.runTask(task.ID, cancel)
+	}
+	if started {
+		_ = a.saveLocked()
+	}
+	return started
+}
+
+func (a *App) runTask(id string, cancel <-chan struct{}) {
+	defer func() {
+		a.mu.Lock()
+		delete(a.running, id)
+		_ = a.saveLocked()
+		a.mu.Unlock()
+	}()
+
+	for {
+		task := a.taskSnapshot(id)
+		if task == nil {
+			return
+		}
+		if err := a.download(task, cancel); err != nil {
+			if errors.Is(err, errCancelled) {
+				a.updateTask(id, func(t *Task) {
+					t.Status = "cancelled"
+					t.SpeedBps = 0
+					t.Error = ""
+					t.UpdatedAt = now()
+				})
+				return
+			}
+			a.updateTask(id, func(t *Task) {
+				t.Status = "error"
+				t.SpeedBps = 0
+				t.Error = err.Error()
+				t.UpdatedAt = now()
+			})
+			log.Printf("task %s failed: %v", id, err)
+			return
+		}
+		a.updateTask(id, func(t *Task) {
+			t.Status = "completed"
+			t.Downloaded = t.Size
+			if t.Size <= 0 {
+				if stat, err := os.Stat(t.FilePath); err == nil {
+					t.Downloaded = stat.Size()
+					t.Size = stat.Size()
+				}
+			}
+			t.SpeedBps = 0
+			t.Error = ""
+			t.UpdatedAt = now()
+		})
+		return
+	}
+}
+
+var errCancelled = errors.New("cancelled")
+
+func (a *App) download(task *Task, cancel <-chan struct{}) error {
+	if err := os.MkdirAll(filepath.Dir(task.FilePath), 0o755); err != nil {
+		return err
+	}
+	if task.PartPath == "" {
+		task.PartPath = task.FilePath + ".part"
+	}
+	if stat, err := os.Stat(task.FilePath); err == nil && complete(stat.Size(), task.Size) {
+		return nil
+	}
+	downloaded := int64(0)
+	if stat, err := os.Stat(task.PartPath); err == nil {
+		downloaded = stat.Size()
+	}
+	if task.Size > 0 && downloaded > task.Size {
+		_ = os.Remove(task.PartPath)
+		downloaded = 0
+	}
+
+	req, err := http.NewRequest(http.MethodGet, task.SourceURL, nil)
+	if err != nil {
+		return err
+	}
+	if downloaded > 0 {
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", downloaded))
+	}
+	resp, err := a.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusOK && downloaded > 0 {
+		_ = os.Remove(task.PartPath)
+		downloaded = 0
+	}
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return fmt.Errorf("source returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	if task.Size <= 0 && resp.ContentLength > 0 {
+		task.Size = downloaded + resp.ContentLength
+	}
+	file, err := os.OpenFile(task.PartPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	buffer := make([]byte, 128*1024)
+	lastBytes := downloaded
+	lastTick := time.Now()
+	windowStart := time.Now()
+	var windowBytes int64
+	a.updateTask(task.ID, func(t *Task) {
+		t.Downloaded = downloaded
+		t.Size = max64(t.Size, task.Size)
+		t.UpdatedAt = now()
+	})
+	for {
+		select {
+		case <-cancel:
+			return errCancelled
+		default:
+		}
+		n, readErr := resp.Body.Read(buffer)
+		if n > 0 {
+			if _, err := file.Write(buffer[:n]); err != nil {
+				return err
+			}
+			downloaded += int64(n)
+			windowBytes += int64(n)
+			if err := a.throttle(windowBytes, windowStart, cancel); err != nil {
+				return err
+			}
+			if a.config.RateLimitBps > 0 && time.Since(windowStart) >= time.Second {
+				windowStart = time.Now()
+				windowBytes = 0
+			}
+			if time.Since(lastTick) >= time.Second {
+				elapsed := time.Since(lastTick).Seconds()
+				speed := int64(float64(downloaded-lastBytes) / maxFloat(elapsed, 0.001))
+				lastBytes = downloaded
+				lastTick = time.Now()
+				a.updateTask(task.ID, func(t *Task) {
+					t.Downloaded = downloaded
+					t.SpeedBps = speed
+					t.Size = max64(t.Size, task.Size)
+					t.UpdatedAt = now()
+				})
+			}
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
+			return readErr
+		}
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	stat, err := os.Stat(task.PartPath)
+	if err != nil {
+		return err
+	}
+	size := max64(task.Size, stat.Size())
+	if !complete(stat.Size(), size) {
+		return fmt.Errorf("file incomplete: %d / %d", stat.Size(), size)
+	}
+	if err := os.Rename(task.PartPath, task.FilePath); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (a *App) throttle(windowBytes int64, windowStart time.Time, cancel <-chan struct{}) error {
+	limit := a.config.RateLimitBps
+	if limit <= 0 {
+		return nil
+	}
+	expected := time.Duration(float64(windowBytes) / float64(limit) * float64(time.Second))
+	sleepFor := expected - time.Since(windowStart)
+	if sleepFor <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(sleepFor)
+	defer timer.Stop()
+	select {
+	case <-cancel:
+		return errCancelled
+	case <-timer.C:
+		return nil
+	}
+}
+
+func (a *App) taskSnapshot(id string) *Task {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	task := a.tasks[id]
+	if task == nil {
+		return nil
+	}
+	copy := *task
+	return &copy
+}
+
+func (a *App) updateTask(id string, update func(*Task)) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if task := a.tasks[id]; task != nil {
+		update(task)
+		_ = a.saveLocked()
+	}
+}
+
 func (a *App) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -175,6 +451,7 @@ func (a *App) handleHealth(w http.ResponseWriter, _ *http.Request) {
 		"pid":       os.Getpid(),
 		"uptime":    int(time.Since(a.startedAt).Seconds()),
 		"taskCount": len(a.tasks),
+		"running":   len(a.running),
 		"config":    a.config,
 	})
 }
@@ -196,14 +473,16 @@ func (a *App) handleConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	a.config = sanitizeConfig(applyConfigPatch(a.config, patch))
 	a.config.UpdatedAt = now()
-	if err := a.saveLocked(); err != nil {
+	err := a.saveLocked()
+	a.mu.Unlock()
+	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, a.stateLocked())
+	go a.pumpOnce()
+	writeJSON(w, http.StatusOK, a.snapshot())
 }
 
 func (a *App) handleTasks(w http.ResponseWriter, r *http.Request) {
@@ -219,12 +498,14 @@ func (a *App) handleTasks(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		a.mu.Lock()
-		defer a.mu.Unlock()
 		task := a.upsertTaskLocked(input)
-		if err := a.saveLocked(); err != nil {
+		err := a.saveLocked()
+		a.mu.Unlock()
+		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
+		go a.pumpOnce()
 		writeJSON(w, http.StatusOK, task)
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -239,16 +520,25 @@ func (a *App) handleTask(w http.ResponseWriter, r *http.Request) {
 		id, action = parts[0], parts[1]
 	}
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	task, ok := a.tasks[id]
 	if !ok {
+		a.mu.Unlock()
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "task not found"})
 		return
 	}
 	switch {
+	case r.Method == http.MethodGet:
 	case r.Method == http.MethodDelete:
+		if cancel := a.running[id]; cancel != nil {
+			close(cancel)
+			delete(a.running, id)
+		}
 		delete(a.tasks, id)
 	case r.Method == http.MethodPost && action == "cancel":
+		if cancel := a.running[id]; cancel != nil {
+			close(cancel)
+			delete(a.running, id)
+		}
 		task.Status = "cancelled"
 		task.SpeedBps = 0
 		task.Error = ""
@@ -259,21 +549,34 @@ func (a *App) handleTask(w http.ResponseWriter, r *http.Request) {
 		task.Error = ""
 		task.UpdatedAt = now()
 	default:
+		a.mu.Unlock()
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	if err := a.saveLocked(); err != nil {
+	err := a.saveLocked()
+	result := *task
+	a.mu.Unlock()
+	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, task)
+	go a.pumpOnce()
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (a *App) snapshot() map[string]any {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.stateLocked()
 }
 
 func (a *App) stateLocked() map[string]any {
 	tasks := a.listTasksLocked()
 	counts := map[string]int{}
+	var speed int64
 	for _, task := range tasks {
 		counts[task.Status]++
+		speed += task.SpeedBps
 	}
 	return map[string]any{
 		"ok":       true,
@@ -283,8 +586,10 @@ func (a *App) stateLocked() map[string]any {
 		"dataDir":  a.dataDir,
 		"config":   a.config,
 		"counts":   counts,
+		"running":  len(a.running),
+		"speedBps": speed,
 		"tasks":    tasks,
-		"strategy": "tdl-style sidecar: DC-aware queue, 1MB part metadata, resumable task state, Node bridge pending",
+		"strategy": "go-sidecar active: HTTP source bridge, resumable .part files, Go-owned queue/rate/concurrency",
 	}
 }
 
@@ -314,6 +619,9 @@ func (a *App) upsertTaskLocked(input Task) Task {
 		input.Status = coalesce(input.Status, "queued")
 		input.Source = coalesce(input.Source, "manual")
 		input.Order = input.OrderOrDefault(int64(len(a.tasks) + 1))
+		if input.PartPath == "" && input.FilePath != "" {
+			input.PartPath = input.FilePath + ".part"
+		}
 		a.tasks[input.ID] = &input
 		return input
 	}
@@ -326,11 +634,32 @@ func (a *App) upsertTaskLocked(input Task) Task {
 	if input.ContentType != "" {
 		existing.ContentType = input.ContentType
 	}
+	if input.Kind != "" {
+		existing.Kind = input.Kind
+	}
 	if input.Source != "" {
 		existing.Source = input.Source
 	}
+	existing.AutoCache = existing.AutoCache || input.AutoCache
+	if input.SourceURL != "" {
+		existing.SourceURL = input.SourceURL
+	}
+	if input.FilePath != "" {
+		existing.FilePath = input.FilePath
+	}
+	if input.PartPath != "" {
+		existing.PartPath = input.PartPath
+	} else if existing.PartPath == "" && existing.FilePath != "" {
+		existing.PartPath = existing.FilePath + ".part"
+	}
+	if input.InlineURL != "" {
+		existing.InlineURL = input.InlineURL
+	}
 	if input.Order > 0 {
 		existing.Order = input.Order
+	}
+	if existing.Status == "cancelled" || existing.Status == "error" {
+		existing.Status = "queued"
 	}
 	existing.UpdatedAt = now()
 	return *existing
@@ -469,4 +798,22 @@ func coalesce(value, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func complete(actualSize, expectedSize int64) bool {
+	return actualSize > 0 && (expectedSize <= 0 || actualSize >= expectedSize)
+}
+
+func max64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func maxFloat(a, b float64) float64 {
+	if a > b {
+		return a
+	}
+	return b
 }

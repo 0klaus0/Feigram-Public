@@ -53,6 +53,19 @@ app.post("/api/login", rateLimit({ windowMs: 60000, max: 12 }), asyncRoute(login
 app.get("/api/policies", asyncRoute(async (_req, res) => res.json(await readPolicies())));
 app.get("/api/about", asyncRoute(async (_req, res) => res.json(readAbout())));
 
+app.get("/api/internal/media/:user/:account/:peer/:messageId", asyncRoute(async (req, res) => {
+  const expected = process.env.FEIGRAM_INTERNAL_TOKEN || "";
+  const provided = req.query.token || req.get("x-feigram-internal-token") || "";
+  if (!expected || provided !== expected) {
+    res.status(403).json({ error: "forbidden" });
+    return;
+  }
+  const streamed = await tg.streamVideoMedia(req.params.user, req.params.account, req.params.peer, req.params.messageId, req.headers.range, res);
+  if (!streamed && !res.headersSent) {
+    res.status(404).json({ error: "media is not streamable" });
+  }
+}));
+
 app.use("/api", authMiddleware());
 
 app.get("/api/me", asyncRoute(async (req, res) => {
@@ -255,27 +268,27 @@ app.post("/api/media/:account/:peer/:messageId/cache", asyncRoute(async (req, re
 }));
 
 app.get("/api/downloads", asyncRoute(async (req, res) => {
-  res.json(tg.listDownloadTasks(req.user.id));
+  res.json(await tg.listDownloadTasks(req.user.id));
 }));
 
 app.get("/api/silent-cache", asyncRoute(async (req, res) => {
-  res.json(tg.silentCacheState(req.user.id));
+  res.json(await tg.silentCacheState(req.user.id));
 }));
 
 app.put("/api/silent-cache/control", asyncRoute(async (req, res) => {
-  res.json(tg.setSilentCacheControl(req.user.id, req.body || {}, io));
+  res.json(await tg.setSilentCacheControl(req.user.id, req.body || {}, io));
 }));
 
 app.post("/api/silent-cache/reorder", asyncRoute(async (req, res) => {
-  res.json(tg.reorderSilentCacheTasks(req.user.id, req.body?.orderedIds || [], io));
+  res.json(await tg.reorderSilentCacheTasks(req.user.id, req.body?.orderedIds || [], io));
 }));
 
 app.post("/api/silent-cache/cancel", asyncRoute(async (req, res) => {
-  res.json(tg.cancelSilentCacheTasks(req.user.id, req.body?.ids || [], io));
+  res.json(await tg.cancelSilentCacheTasks(req.user.id, req.body?.ids || [], io));
 }));
 
 app.delete("/api/silent-cache/:id", asyncRoute(async (req, res) => {
-  res.json(tg.cancelSilentCacheTask(req.user.id, req.params.id, io));
+  res.json(await tg.cancelSilentCacheTask(req.user.id, req.params.id, io));
 }));
 
 app.post("/api/downloads/:id/start", asyncRoute(async (req, res) => {
@@ -283,11 +296,11 @@ app.post("/api/downloads/:id/start", asyncRoute(async (req, res) => {
 }));
 
 app.post("/api/downloads/:id/cancel", asyncRoute(async (req, res) => {
-  res.json(tg.cancelDownloadTask(req.user.id, req.params.id, io));
+  res.json(await tg.cancelDownloadTask(req.user.id, req.params.id, io));
 }));
 
 app.post("/api/downloads/:id/clear", asyncRoute(async (req, res) => {
-  res.json(tg.clearDownloadTask(req.user.id, req.params.id, io));
+  res.json(await tg.clearDownloadTask(req.user.id, req.params.id, io));
 }));
 
 app.delete("/api/downloads/:id", asyncRoute(async (req, res) => {
@@ -349,9 +362,6 @@ app.use((error, _req, res, _next) => {
 
 ensureStore()
   .then(() => migrateStore())
-  .then(() => tg.loadSavedClients(io))
-  .then(() => tg.restoreBackgroundTasks(io))
-  .then(() => tg.cleanupCache().catch((error) => console.warn("Cache cleanup failed:", error.message)))
   .then(() => {
     setInterval(() => {
       tg.cleanupCache().catch((error) => console.warn("Cache cleanup failed:", error.message));
@@ -365,6 +375,10 @@ ensureStore()
     }, 30 * 1000).unref?.();
     server.listen(port, "0.0.0.0", () => {
       console.log(`Feigram Public is listening on http://0.0.0.0:${port}`);
+      tg.loadSavedClients(io)
+        .catch((error) => console.warn("Telegram account restore failed:", error.message))
+        .then(() => tg.restoreBackgroundTasks(io).catch((error) => console.warn("Download task restore failed:", error.message)))
+        .then(() => tg.cleanupCache().catch((error) => console.warn("Cache cleanup failed:", error.message)));
     });
   })
   .catch((error) => {

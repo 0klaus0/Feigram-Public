@@ -9,6 +9,7 @@ const { NewMessage } = require("telegram/events");
 const { dataDir, downloadTasksPath, readAccounts, removeAccount, safeId, silentCachePath, upsertAccount } = require("./store");
 const { readSettings } = require("./settings");
 const { decryptText, encryptText } = require("./cryptoBox");
+const downloaderSidecar = require("./downloaderSidecar");
 
 const clients = new Map();
 const cacheClients = new Map();
@@ -2496,6 +2497,295 @@ async function profilePhoto(userId, accountId, peerId = "__self") {
   };
 }
 
+function goDownloaderTaskId(userId, accountId, peerId, messageId) {
+  return downloadTaskId(userId, accountId, peerId, messageId);
+}
+
+function internalMediaSourceUrl(userId, accountId, peerId, messageId) {
+  const token = process.env.FEIGRAM_INTERNAL_TOKEN || "";
+  if (!token) throw Object.assign(new Error("内部下载令牌未初始化，请重启 Feigram"), { status: 500 });
+  const port = Number(process.env.APP_PORT || 3088);
+  return `http://127.0.0.1:${port}/api/internal/media/${encodeURIComponent(userId)}/${encodeURIComponent(accountId)}/${encodeURIComponent(peerId)}/${encodeURIComponent(messageId)}?token=${encodeURIComponent(token)}`;
+}
+
+function normalizeGoDownloadTask(task) {
+  const next = {
+    id: task.id,
+    accountId: task.accountId,
+    peerId: task.peerId,
+    messageId: task.messageId,
+    fileName: task.fileName,
+    kind: task.kind,
+    contentType: task.contentType,
+    status: task.status === "running" ? "downloading" : task.status,
+    size: Number(task.size || 0),
+    downloaded: Number(task.downloaded || 0),
+    speedBps: Number(task.speedBps || 0),
+    source: task.source || "manual",
+    autoCache: Boolean(task.autoCache || task.source === "auto"),
+    order: Number(task.order || 0),
+    error: task.error || "",
+    createdAt: task.createdAt,
+    updatedAt: task.updatedAt,
+    inlineUrl: task.inlineUrl || ""
+  };
+  if (!next.inlineUrl && next.status === "completed") {
+    next.inlineUrl = `/api/media/${next.accountId}/${encodeURIComponent(next.peerId)}/${next.messageId}?inline=1`;
+  }
+  return next;
+}
+
+function normalizeGoSilentTask(task) {
+  const next = normalizeGoDownloadTask(task);
+  return {
+    ...next,
+    status: next.status === "downloading" ? "running" : next.status,
+    lastProgressAt: task.lastProgressAt || task.updatedAt || "",
+    lastObservedAt: task.lastObservedAt || task.updatedAt || ""
+  };
+}
+
+async function goAllTasks() {
+  const tasks = await downloaderSidecar.listTasks();
+  return Array.isArray(tasks) ? tasks : [];
+}
+
+async function ensureGoDownloadTask(userId, accountId, peerId, messageId, options = {}) {
+  const { message } = await mediaMessage(userId, accountId, peerId, messageId);
+  const contentType = message.photo ? "image/jpeg" : message.document?.mimeType || "";
+  const kind = mediaKind(message, contentType);
+  const size = Number(message.file?.size || message.document?.size || 0);
+  const { fileName, filePath, downloadDir } = await mediaFileInfo(userId, accountId, message, contentType, kind);
+  await fs.ensureDir(downloadDir);
+  const id = goDownloaderTaskId(userId, accountId, peerId, messageId);
+  const source = options.source || "manual";
+  const task = await downloaderSidecar.enqueueTask({
+    id,
+    userId,
+    accountId,
+    peerId,
+    messageId: Number(messageId),
+    fileName,
+    filePath,
+    partPath: `${filePath}.part`,
+    kind,
+    contentType: contentType || mime.lookup(fileName) || "application/octet-stream",
+    size,
+    source,
+    autoCache: Boolean(options.autoCache || source === "auto"),
+    sourceUrl: internalMediaSourceUrl(userId, accountId, peerId, messageId),
+    inlineUrl: `/api/media/${accountId}/${encodeURIComponent(peerId)}/${messageId}?inline=1`,
+    order: Number(options.order || 0) || Date.now(),
+    dedupKey: options.dedupKey || ""
+  });
+  return normalizeGoDownloadTask(task);
+}
+
+async function startGoDownloadTask(userId, accountId, peerId, messageId, _io, options = {}) {
+  return ensureGoDownloadTask(userId, accountId, peerId, messageId, options);
+}
+
+async function listGoDownloadTasks(userId) {
+  const tasks = await goAllTasks().catch(() => []);
+  return tasks
+    .filter((task) => task.userId === userId && !task.autoCache && task.source !== "auto")
+    .sort((a, b) => String(b.createdAt || b.updatedAt).localeCompare(String(a.createdAt || a.updatedAt)))
+    .map(normalizeGoDownloadTask);
+}
+
+async function listGoSilentCacheTasks(userId) {
+  const tasks = await goAllTasks().catch(() => []);
+  return tasks
+    .filter((task) => task.userId === userId && task.status !== "cancelled" && (task.autoCache || task.source === "auto"))
+    .sort((a, b) => {
+      const orderDiff = Number(a.order || 0) - Number(b.order || 0);
+      if (orderDiff) return orderDiff;
+      return String(b.createdAt || b.updatedAt).localeCompare(String(a.createdAt || a.updatedAt));
+    })
+    .map(normalizeGoSilentTask);
+}
+
+async function goSilentCacheState(userId) {
+  const state = await downloaderSidecar.state();
+  const config = state?.config || {};
+  const tasks = (Array.isArray(state?.tasks) ? state.tasks : [])
+    .filter((task) => task.userId === userId && task.status !== "cancelled" && (task.autoCache || task.source === "auto"))
+    .sort((a, b) => Number(a.order || 0) - Number(b.order || 0))
+    .map(normalizeGoSilentTask);
+  return {
+    enabled: config.enabled !== false,
+    rateLimitBps: Number(config.rateLimitBps || 0),
+    concurrency: Math.max(1, Number(config.concurrency || 1)),
+    configuredConcurrency: Math.max(1, Number(config.concurrency || 1)),
+    effectiveConcurrency: Number(state?.running || 0),
+    mode: config.mode || "conservative",
+    running: tasks.filter((task) => task.status === "running").length,
+    tasks,
+    engine: "go-sidecar"
+  };
+}
+
+async function setGoSilentCacheControl(userId, payload = {}) {
+  const patch = {};
+  if (payload.enabled !== undefined) patch.enabled = Boolean(payload.enabled);
+  if (payload.rateLimitBps !== undefined) patch.rateLimitBps = Math.max(0, Math.min(1024 * 1024 * 1024, Number(payload.rateLimitBps || 0)));
+  if (payload.concurrency !== undefined) patch.concurrency = Math.max(1, Math.min(10, Number(payload.concurrency || 1)));
+  if (payload.mode !== undefined) patch.mode = normalizedSilentCacheMode(payload.mode);
+  await downloaderSidecar.updateConfig(patch);
+  return goSilentCacheState(userId);
+}
+
+async function reorderGoSilentCacheTasks(userId, orderedIds = []) {
+  const ids = Array.isArray(orderedIds) ? orderedIds : [];
+  const tasks = await goAllTasks();
+  const byId = new Map(tasks.map((task) => [task.id, task]));
+  for (const [index, id] of ids.entries()) {
+    const task = byId.get(id);
+    if (task && task.userId === userId) {
+      await downloaderSidecar.enqueueTask({ ...task, order: index + 1 });
+    }
+  }
+  return goSilentCacheState(userId);
+}
+
+async function cancelGoSilentCacheTask(userId, taskId) {
+  const task = await downloaderSidecar.getTask(taskId);
+  if (!task || task.userId !== userId) throw Object.assign(new Error("找不到后台缓存任务"), { status: 404 });
+  await downloaderSidecar.cancelTask(taskId);
+  return { ok: true, id: taskId };
+}
+
+async function cancelGoSilentCacheTasks(userId, taskIds = []) {
+  const ids = Array.isArray(taskIds) ? taskIds : [];
+  const cancelled = [];
+  for (const id of ids) {
+    const task = await downloaderSidecar.getTask(id).catch(() => null);
+    if (!task || task.userId !== userId) continue;
+    await downloaderSidecar.cancelTask(id).catch(() => {});
+    cancelled.push(id);
+  }
+  return { ok: true, ids: cancelled };
+}
+
+async function resumeGoDownloadTask(userId, taskId) {
+  const task = await downloaderSidecar.getTask(taskId);
+  if (!task || task.userId !== userId) throw Object.assign(new Error("找不到下载任务"), { status: 404 });
+  return normalizeGoDownloadTask(await downloaderSidecar.queueTask(taskId));
+}
+
+async function cancelGoDownloadTask(userId, taskId) {
+  const task = await downloaderSidecar.getTask(taskId);
+  if (!task || task.userId !== userId) throw Object.assign(new Error("找不到下载任务"), { status: 404 });
+  return normalizeGoDownloadTask(await downloaderSidecar.cancelTask(taskId));
+}
+
+async function clearGoDownloadTask(userId, taskId) {
+  const task = await downloaderSidecar.getTask(taskId);
+  if (!task || task.userId !== userId) throw Object.assign(new Error("找不到下载任务"), { status: 404 });
+  await downloaderSidecar.deleteTask(taskId);
+  return { ok: true };
+}
+
+async function deleteGoDownloadTask(userId, taskId) {
+  const task = await downloaderSidecar.getTask(taskId);
+  if (!task || task.userId !== userId) throw Object.assign(new Error("找不到下载任务"), { status: 404 });
+  await downloaderSidecar.deleteTask(taskId);
+  await fs.remove(task.partPath || `${task.filePath}.part`).catch(() => {});
+  await fs.remove(task.filePath).catch(() => {});
+  return { ok: true };
+}
+
+async function cacheVideoSilentlyGo(userId, accountId, peerId, message) {
+  const contentType = message.document?.mimeType || "";
+  const kind = mediaKind(message, contentType);
+  const size = Number(message.file?.size || message.document?.size || 0);
+  if (kind !== "video" || size <= VIDEO_CACHE_THRESHOLD) return false;
+  const mediaInfo = await mediaFileInfo(userId, accountId, message, contentType, kind);
+  const dedupKey = silentDedupKey(userId, accountId, peerId, mediaInfo.fileName, size);
+  const tasks = await goAllTasks().catch(() => []);
+  const duplicate = tasks.find((task) => (
+    task.userId === userId &&
+    task.accountId === accountId &&
+    task.peerId === peerId &&
+    task.status !== "cancelled" &&
+    (task.id === goDownloaderTaskId(userId, accountId, peerId, message.id) ||
+      silentDedupKey(task.userId, task.accountId, task.peerId, task.fileName, task.size) === dedupKey)
+  ));
+  if (duplicate) return false;
+  await ensureGoDownloadTask(userId, accountId, peerId, message.id, {
+    source: "auto",
+    autoCache: true,
+    dedupKey,
+    order: Date.now()
+  });
+  return true;
+}
+
+async function cacheLargeVideosInChatGo(userId, accountId, peerId, io = realtimeIo) {
+  realtimeIo = io || realtimeIo;
+  const client = await getClient(userId, accountId);
+  const entity = await resolvePeer(userId, accountId, peerId);
+  const recent = await client.getMessages(entity, { limit: 120 }).catch(() => []);
+  let queued = 0;
+  for (const message of recent) {
+    if (!message?.media) continue;
+    if (await cacheVideoSilentlyGo(userId, accountId, peerId, message)) queued += 1;
+  }
+  return { queued };
+}
+
+async function goSilentCacheSpeedDiagnostics(userId) {
+  const state = await downloaderSidecar.state();
+  const tasks = (Array.isArray(state?.tasks) ? state.tasks : []).filter((task) => task.userId === userId && (task.autoCache || task.source === "auto"));
+  const running = tasks.filter((task) => ["downloading", "running"].includes(task.status));
+  const primary = running[0] || tasks.find((task) => task.status === "queued") || tasks[0];
+  return {
+    testedAt: new Date().toISOString(),
+    ok: Boolean(state?.ok),
+    enabled: state?.config?.enabled !== false,
+    rateLimitBps: Number(state?.config?.rateLimitBps || 0),
+    concurrency: Number(state?.config?.concurrency || 1),
+    configuredConcurrency: Number(state?.config?.concurrency || 1),
+    effectiveConcurrency: Number(state?.running || 0),
+    cacheMode: state?.config?.mode || "conservative",
+    mode: "go-sidecar",
+    running: running.length,
+    queued: tasks.filter((task) => task.status === "queued").length,
+    partSizeKb: Math.round(Number(state?.config?.partSize || (1024 * 1024)) / 1024),
+    result: {
+      bytesRead: 0,
+      chunks: 0,
+      durationMs: 0,
+      speedBps: Number(state?.speedBps || 0),
+      runningTasks: running.length,
+      requestedChunkSize: Number(state?.config?.partSize || (1024 * 1024)),
+      effectiveChunkSize: Number(state?.config?.partSize || (1024 * 1024)),
+      fallbackCount: 0,
+      limitInvalidCount: 0
+    },
+    task: primary ? normalizeGoSilentTask(primary) : null,
+    activeTasks: tasks.slice(0, 20).map(normalizeGoSilentTask),
+    note: "Go 下载服务已接管队列与文件写入；诊断显示 Go 任务聚合速度，不再额外占用 Telegram 连接。"
+  };
+}
+
+async function restoreGoBackgroundTasks(io) {
+  realtimeIo = io;
+  await loadPersistentTasks();
+  for (const task of downloadTasks.values()) {
+    if (!task.userId || !task.accountId || !task.peerId || !task.messageId) continue;
+    if (task.status === "completed") continue;
+    await ensureGoDownloadTask(task.userId, task.accountId, task.peerId, task.messageId, {
+      source: task.source || (task.autoCache ? "auto" : "manual"),
+      autoCache: Boolean(task.autoCache || task.source === "auto"),
+      dedupKey: task.dedupKey || "",
+      order: Number(task.order || Date.parse(task.createdAt || "") || Date.now())
+    }).catch((error) => {
+      console.warn("Failed to migrate legacy download task:", error.message);
+    });
+  }
+}
+
 async function cleanupCache() {
   const settings = await cacheSettings();
   const cutoff = Date.now() - settings.retentionDays * 24 * 60 * 60 * 1000;
@@ -2525,25 +2815,25 @@ module.exports = {
   completeCode,
   completePassword,
   cacheMedia,
-  cacheLargeVideosInChat,
-  cancelDownloadTask,
+  cacheLargeVideosInChat: cacheLargeVideosInChatGo,
+  cancelDownloadTask: cancelGoDownloadTask,
   chatDetails,
   chatMedia,
-  clearDownloadTask,
-  deleteDownloadTask,
+  clearDownloadTask: clearGoDownloadTask,
+  deleteDownloadTask: deleteGoDownloadTask,
   downloadMedia,
   mediaThumbnail,
-  listDownloadTasks,
-  listSilentCacheTasks,
-  silentCacheSpeedDiagnostics,
-  silentCacheState: serializeSilentCacheState,
-  setSilentCacheControl,
-  reorderSilentCacheTasks,
-  monitorSilentCacheTasks,
-  cancelSilentCacheTask,
-  cancelSilentCacheTasks,
-  resumeDownloadTask,
-  startDownloadTask,
+  listDownloadTasks: listGoDownloadTasks,
+  listSilentCacheTasks: listGoSilentCacheTasks,
+  silentCacheSpeedDiagnostics: goSilentCacheSpeedDiagnostics,
+  silentCacheState: goSilentCacheState,
+  setSilentCacheControl: setGoSilentCacheControl,
+  reorderSilentCacheTasks: reorderGoSilentCacheTasks,
+  monitorSilentCacheTasks: () => {},
+  cancelSilentCacheTask: cancelGoSilentCacheTask,
+  cancelSilentCacheTasks: cancelGoSilentCacheTasks,
+  resumeDownloadTask: resumeGoDownloadTask,
+  startDownloadTask: startGoDownloadTask,
   streamVideoMedia,
   listAccounts,
   listChats,
@@ -2554,7 +2844,7 @@ module.exports = {
   cleanupCache,
   profilePhoto,
   resolveTelegramLink,
-  restoreBackgroundTasks,
+  restoreBackgroundTasks: restoreGoBackgroundTasks,
   search,
   sendText,
   startLogin,

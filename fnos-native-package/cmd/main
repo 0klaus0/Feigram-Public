@@ -26,8 +26,8 @@ export FEIGRAM_DOWNLOADER_DATA="${DATA_HOME}/data/downloader"
 export FEIGRAM_DOWNLOADER_URL="http://127.0.0.1:${DOWNLOADER_PORT}"
 export FEIGRAM_DOWNLOADER_LOG="$DOWNLOADER_LOG_FILE"
 export APP_EDITION="Feigram 2.0 fnOS Client Edition"
-export APP_VERSION="2.0.33"
-export APP_CHANGELOG="新增内嵌 Go 下载 sidecar，管理后台可查看服务状态、配置下载引擎，为后续替换 Telegram 大文件下载链路打基础。"
+export APP_VERSION="2.0.35"
+export APP_CHANGELOG="修复 Telegram 账号恢复或下载任务迁移失败时后端直接退出导致拒绝连接的问题；Go 下载服务接管大文件下载队列，Node 仅保留内部媒体流桥接。"
 export NODE_ENV="production"
 
 is_running() {
@@ -91,6 +91,18 @@ stop_running() {
 case "$1" in
 start)
     mkdir -p "$DATA_HOME" "$DATA_DIR" "$DOWNLOAD_DIR" "$FEIGRAM_DOWNLOADER_DATA"
+    INTERNAL_TOKEN_FILE="${DATA_HOME}/feigram-internal-token"
+    if [ ! -f "$INTERNAL_TOKEN_FILE" ]; then
+        if command -v od >/dev/null 2>&1; then
+            od -An -N32 -tx1 /dev/urandom | tr -d ' \n' > "$INTERNAL_TOKEN_FILE"
+        elif command -v sha256sum >/dev/null 2>&1; then
+            date +%s%N | sha256sum | awk '{print $1}' > "$INTERNAL_TOKEN_FILE"
+        else
+            date +%s%N > "$INTERNAL_TOKEN_FILE"
+        fi
+        chmod 600 "$INTERNAL_TOKEN_FILE" >/dev/null 2>&1 || true
+    fi
+    export FEIGRAM_INTERNAL_TOKEN="$(cat "$INTERNAL_TOKEN_FILE" 2>/dev/null)"
     chmod +x "$NODE_BIN"
     if is_running; then
         running_version=""

@@ -470,7 +470,7 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
     foldersShowArchived: false,
     foldersAutoSelectFirst: true,
     playerMode: "browser",
-    downloaderEngine: "node",
+    downloaderEngine: "go-sidecar",
     downloaderSidecarUrl: "http://127.0.0.1:3090"
   });
   const [apiIdPlaceholder, setApiIdPlaceholder] = useState("");
@@ -529,7 +529,7 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
         foldersShowArchived: Boolean(nextSettings.foldersShowArchived),
         foldersAutoSelectFirst: nextSettings.foldersAutoSelectFirst !== false,
         playerMode: nextSettings.playerMode || "browser",
-        downloaderEngine: nextSettings.downloaderEngine || "node",
+        downloaderEngine: nextSettings.downloaderEngine || "go-sidecar",
         downloaderSidecarUrl: nextSettings.downloaderSidecarUrl || "http://127.0.0.1:3090"
       });
       setApiIdPlaceholder(nextSettings.telegramApiIdSet ? "已保存，留空则不修改" : "请输入 Telegram API ID");
@@ -716,8 +716,8 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
           <p className="hint">推荐优先使用原始视频在线播放；遇到浏览器不支持的编码时，可切换为本地播放器模式。</p>
           <h3>下载引擎</h3>
           <label><span>大文件下载引擎</span><select value={settings.downloaderEngine} onChange={(e) => setSettings({ ...settings, downloaderEngine: e.target.value })}>
-            <option value="node">Node 内置下载（当前稳定）</option>
-            <option value="go-sidecar">Go 下载服务（实验）</option>
+            <option value="go-sidecar">Go 下载服务（当前接管）</option>
+            <option value="node">Node 内置下载（旧版兼容）</option>
           </select></label>
           <label><span>Go 下载服务地址</span><input value={settings.downloaderSidecarUrl} onChange={(e) => setSettings({ ...settings, downloaderSidecarUrl: e.target.value })} placeholder="http://127.0.0.1:3090" /></label>
           <p className="hint">Go 下载服务已随 FPK 内嵌启动；当前版本先提供独立服务、持久化队列和后台诊断，Telegram 大文件传输仍默认使用 Node 管线。</p>
@@ -1254,6 +1254,15 @@ function App() {
       socket.off("silent-cache:delete", remove);
     };
   }, [socket]);
+
+  useEffect(() => {
+    if (!token) return;
+    const timer = window.setInterval(() => {
+      loadDownloads();
+      loadSilentCaches();
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [token]);
 
   useEffect(() => {
     const element = messagesRef.current;
