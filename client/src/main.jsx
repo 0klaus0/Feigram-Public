@@ -599,6 +599,45 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
     }
   }
 
+  async function reloginNativeAccount(item) {
+    setError("");
+    const phone = prompt("输入用于 Go 原生 MTProto 登录的手机号", item.phone || "");
+    if (!phone) return;
+    try {
+      const started = await api(`/api/admin/native-accounts/${item.accountId}/login/start`, {
+        method: "POST",
+        body: JSON.stringify({ phone })
+      });
+      const loginId = started.loginId;
+      if (started.done) {
+        setNativeAccounts((items) => items.map((entry) => entry.accountId === started.account.accountId ? started.account : entry));
+        setDownloaderState(await api("/api/admin/downloader").catch(() => downloaderState));
+        return;
+      }
+      const code = prompt("输入 Telegram 验证码");
+      if (!code) return;
+      const coded = await api(`/api/admin/native-accounts/${item.accountId}/login/code`, {
+        method: "POST",
+        body: JSON.stringify({ loginId, code })
+      });
+      let result = coded;
+      if (coded.passwordRequired) {
+        const password = prompt("该账号启用了两步验证，请输入 Telegram 云密码");
+        if (!password) return;
+        result = await api(`/api/admin/native-accounts/${item.accountId}/login/password`, {
+          method: "POST",
+          body: JSON.stringify({ loginId, password })
+        });
+      }
+      if (result.account) {
+        setNativeAccounts((items) => items.map((entry) => entry.accountId === result.account.accountId ? result.account : entry));
+      }
+      setDownloaderState(await api("/api/admin/downloader").catch(() => downloaderState));
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
   async function saveDownloaderConfig(patch) {
     setError("");
     const result = await api("/api/admin/downloader/config", {
@@ -872,7 +911,7 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
               </select></label>
               <label><span>媒体源传输层</span><select value={downloaderState.config?.transport || "http-bridge"} onChange={(e) => saveDownloaderConfig({ transport: e.target.value })}>
                 <option value="http-bridge">HTTP 桥接（稳定）</option>
-                <option value="native-mtproto" disabled={!downloaderState.nativeMTProto?.ready}>Go 原生 MTProto（待 session 迁移）</option>
+                <option value="native-mtproto" disabled={!downloaderState.nativeMTProto?.ready}>Go 原生 MTProto（健康后可选）</option>
               </select></label>
             </div>
             {downloaderState.nativeMTProto && <p className="hint">{downloaderState.nativeMTProto.note}</p>}
@@ -892,6 +931,7 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
                     <p>{item.ready ? "Go MTProto session 健康" : item.error || "等待 Go 重新登录生成原生 session"}</p>
                   </div>
                   <span>{item.sessionSet ? item.status : "未迁移"}</span>
+                  <button className="icon-button" type="button" onClick={() => reloginNativeAccount(item)}>Go 重新登录</button>
                   <button className="icon-button" type="button" onClick={() => checkNativeAccount(item.accountId)}>健康检查</button>
                 </div>
               ))}

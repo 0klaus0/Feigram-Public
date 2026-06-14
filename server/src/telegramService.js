@@ -853,11 +853,14 @@ async function listAccounts(userId) {
 
 async function syncGoNativeAccount(account) {
   if (!account?.userId || !account?.id) return null;
+  const { apiId, apiHash } = await telegramConfig();
   return downloaderSidecar.upsertNativeAccount({
     userId: account.userId,
     accountId: account.id,
     phone: account.phone || "",
     displayName: account.label || account.username || account.phone || account.id,
+    apiId,
+    apiHash,
     status: "needs-relogin"
   });
 }
@@ -2827,6 +2830,32 @@ async function goNativeAccountHealth(userId, accountId) {
   return downloaderSidecar.checkNativeAccount(userId, accountId);
 }
 
+async function goNativeAccountLoginStart(userId, accountId, payload = {}) {
+  const account = (await readAccounts()).find((item) => item.userId === userId && item.id === accountId);
+  if (!account) throw Object.assign(new Error("账号不存在"), { status: 404 });
+  const { apiId, apiHash } = await telegramConfig();
+  await syncGoNativeAccount(account).catch(() => null);
+  return downloaderSidecar.startNativeLogin(userId, accountId, {
+    phone: payload.phone || account.phone || "",
+    apiId,
+    apiHash
+  });
+}
+
+async function goNativeAccountLoginCode(userId, accountId, payload = {}) {
+  return downloaderSidecar.submitNativeLoginCode(userId, accountId, {
+    loginId: payload.loginId,
+    code: payload.code
+  });
+}
+
+async function goNativeAccountLoginPassword(userId, accountId, payload = {}) {
+  return downloaderSidecar.submitNativeLoginPassword(userId, accountId, {
+    loginId: payload.loginId,
+    password: payload.password
+  });
+}
+
 async function restoreGoBackgroundTasks(io) {
   realtimeIo = io;
   await loadPersistentTasks();
@@ -2890,6 +2919,9 @@ module.exports = {
   monitorSilentCacheTasks: () => {},
   nativeAccounts: goNativeAccounts,
   nativeAccountHealth: goNativeAccountHealth,
+  nativeAccountLoginStart: goNativeAccountLoginStart,
+  nativeAccountLoginCode: goNativeAccountLoginCode,
+  nativeAccountLoginPassword: goNativeAccountLoginPassword,
   cancelSilentCacheTask: cancelGoSilentCacheTask,
   cancelSilentCacheTasks: cancelGoSilentCacheTasks,
   resumeDownloadTask: resumeGoDownloadTask,

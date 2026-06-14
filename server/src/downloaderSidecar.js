@@ -71,6 +71,30 @@ function checkNativeAccount(userId, accountId) {
   }));
 }
 
+function startNativeLogin(userId, accountId, payload) {
+  return request(`/api/native/accounts/${encodeURIComponent(userId)}/${encodeURIComponent(accountId)}/login/start`, {
+    method: "POST",
+    timeoutMs: 45000,
+    body: JSON.stringify(payload || {})
+  });
+}
+
+function submitNativeLoginCode(userId, accountId, payload) {
+  return request(`/api/native/accounts/${encodeURIComponent(userId)}/${encodeURIComponent(accountId)}/login/code`, {
+    method: "POST",
+    timeoutMs: 65000,
+    body: JSON.stringify(payload || {})
+  });
+}
+
+function submitNativeLoginPassword(userId, accountId, payload) {
+  return request(`/api/native/accounts/${encodeURIComponent(userId)}/${encodeURIComponent(accountId)}/login/password`, {
+    method: "POST",
+    timeoutMs: 65000,
+    body: JSON.stringify(payload || {})
+  });
+}
+
 function enqueueTask(task) {
   return request("/api/tasks", {
     method: "POST",
@@ -117,5 +141,8 @@ module.exports = {
   state,
   updateConfig,
   upsertNativeAccount,
-  checkNativeAccount
+  checkNativeAccount,
+  startNativeLogin,
+  submitNativeLoginCode,
+  submitNativeLoginPassword
 };

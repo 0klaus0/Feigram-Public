@@ -27,8 +27,8 @@ export FEIGRAM_DOWNLOADER_URL="http://127.0.0.1:${DOWNLOADER_PORT}"
 export FEIGRAM_DOWNLOADER_LOG="$DOWNLOADER_LOG_FILE"
 export FEIGRAM_DOWNLOADER_SECRET_FILE="${DATA_HOME}/data/app-secret"
 export APP_EDITION="Feigram 2.0 fnOS Client Edition"
-export APP_VERSION="2.0.38"
-export APP_CHANGELOG="新增 Go 原生 Telegram session 加密存储、native 账号健康检查闸门和原生 file location 任务元数据，为下一版 gotd upload.getFile 真正接管媒体源做准备。"
+export APP_VERSION="2.0.39"
+export APP_CHANGELOG="新增 Go 侧 Telegram 重新登录流程、gotd session 健康检查和 upload.getFile 原生分片读取实验通道；默认仍保留 HTTP 桥接，原生通道健康后再灰度切换。"
 export NODE_ENV="production"
 
 is_running() {

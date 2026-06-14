@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -18,13 +19,19 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/gotd/td/session"
+	"github.com/gotd/td/telegram"
+	"github.com/gotd/td/telegram/auth"
+	"github.com/gotd/td/tg"
 )
 
 const (
-	version         = "0.4.0"
+	version         = "0.5.0"
 	defaultPartSize = 1024 * 1024
 )
 
@@ -87,6 +94,8 @@ type NativeAccount struct {
 	AccountID   string `json:"accountId"`
 	Phone       string `json:"phone"`
 	DisplayName string `json:"displayName"`
+	APIID       int    `json:"apiId"`
+	APIHash     string `json:"apiHash"`
 	Status      string `json:"status"`
 	Ready       bool   `json:"ready"`
 	Session     string `json:"session"`
@@ -94,6 +103,34 @@ type NativeAccount struct {
 	CreatedAt   string `json:"createdAt"`
 	UpdatedAt   string `json:"updatedAt"`
 	CheckedAt   string `json:"checkedAt"`
+}
+
+type NativeLogin struct {
+	ID            string
+	UserID        string
+	AccountID     string
+	Phone         string
+	APIID         int
+	APIHash       string
+	CodeHash      string
+	Status        string
+	NeedsPassword bool
+	Code          chan string
+	Password      chan string
+	Result        chan nativeLoginResult
+	StartResult   chan nativeLoginResult
+	Cancel        context.CancelFunc
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+}
+
+type nativeLoginResult struct {
+	Account          NativeAccount
+	Error            error
+	LoginID          string
+	PhoneCodeHash    string
+	PasswordRequired bool
+	Done             bool
 }
 
 type Store struct {
@@ -121,6 +158,7 @@ type App struct {
 	config     Config
 	tasks      map[string]*Task
 	native     map[string]*NativeAccount
+	logins     map[string]*NativeLogin
 	running    map[string]chan struct{}
 	client     *http.Client
 }
@@ -145,6 +183,7 @@ func main() {
 		},
 		tasks:   map[string]*Task{},
 		native:  map[string]*NativeAccount{},
+		logins:  map[string]*NativeLogin{},
 		running: map[string]chan struct{}{},
 		client: &http.Client{
 			Timeout: 0,
@@ -546,10 +585,164 @@ func (a *App) downloadNativeMTProto(task *Task, cancel <-chan struct{}) error {
 		return errCancelled
 	default:
 	}
-	if task.SourceURL != "" {
-		return fmt.Errorf("Go 原生 MTProto 传输层尚未完成账号 session 迁移，已拒绝继续走 Node HTTP 桥接；请切回 HTTP 桥接或等待下一版原生 session 迁移")
+	if task.PartPath == "" {
+		task.PartPath = task.FilePath + ".part"
 	}
-	return fmt.Errorf("Go 原生 MTProto 传输层需要 gotd/tdl session 与 file location 元数据，本任务尚未携带原生媒体源")
+	if task.NativeFile.FileID == "" || task.NativeFile.AccessHash == "" || task.NativeFile.FileReference == "" {
+		return fmt.Errorf("Go 原生 MTProto 缺少 file location 元数据，无法调用 upload.getFile")
+	}
+	account, err := a.nativeAccountSnapshot(task.UserID, task.AccountID)
+	if err != nil {
+		return err
+	}
+	if !account.Ready || account.Session == "" {
+		return fmt.Errorf("Go 原生 MTProto session 未就绪，请先在管理后台完成 Go 重新登录和健康检查")
+	}
+	apiHash, err := a.nativeAPIHash(account)
+	if err != nil {
+		return err
+	}
+	if account.APIID <= 0 || apiHash == "" {
+		return fmt.Errorf("Go 原生 MTProto 缺少 API ID/Hash，请重新同步服务端设置")
+	}
+	if err := os.MkdirAll(filepath.Dir(task.FilePath), 0o755); err != nil {
+		return err
+	}
+	if stat, err := os.Stat(task.FilePath); err == nil && complete(stat.Size(), task.Size) {
+		return nil
+	}
+	downloaded := int64(0)
+	if stat, err := os.Stat(task.PartPath); err == nil {
+		downloaded = stat.Size()
+	}
+	if task.Size > 0 && downloaded > task.Size {
+		_ = os.Remove(task.PartPath)
+		downloaded = 0
+	}
+	file, err := os.OpenFile(task.PartPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	fileID, err := strconv.ParseInt(task.NativeFile.FileID, 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid native file id: %w", err)
+	}
+	accessHash, err := strconv.ParseInt(task.NativeFile.AccessHash, 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid native access hash: %w", err)
+	}
+	fileReference, err := base64.StdEncoding.DecodeString(task.NativeFile.FileReference)
+	if err != nil {
+		return fmt.Errorf("invalid native file reference: %w", err)
+	}
+	if task.NativeFile.DCID > 0 {
+		account.Status = "healthy"
+	}
+
+	client, err := a.newTelegramClient(account, apiHash)
+	if err != nil {
+		return err
+	}
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	go func() {
+		select {
+		case <-cancel:
+			stop()
+		case <-ctx.Done():
+		}
+	}()
+	runErr := client.Run(ctx, func(ctx context.Context) error {
+		api := client.API()
+		lastBytes := downloaded
+		lastTick := time.Now()
+		windowStart := time.Now()
+		var windowBytes int64
+		a.updateTask(task.ID, func(t *Task) {
+			t.Downloaded = downloaded
+			t.Size = max64(t.Size, task.Size)
+			t.UpdatedAt = now()
+		})
+		for {
+			select {
+			case <-ctx.Done():
+				return errCancelled
+			default:
+			}
+			if task.Size > 0 && downloaded >= task.Size {
+				break
+			}
+			limit := int(a.currentPartSize())
+			if limit <= 0 {
+				limit = defaultPartSize
+			}
+			if task.Size > 0 && downloaded+int64(limit) > task.Size {
+				limit = int(task.Size - downloaded)
+			}
+			location := &tg.InputDocumentFileLocation{
+				ID:            fileID,
+				AccessHash:    accessHash,
+				FileReference: fileReference,
+			}
+			resp, err := api.UploadGetFile(ctx, &tg.UploadGetFileRequest{
+				Location: location,
+				Offset:   downloaded,
+				Limit:    limit,
+			})
+			if err != nil {
+				return classifyNativeReadError(err)
+			}
+			chunk, ok := resp.(*tg.UploadFile)
+			if !ok {
+				return fmt.Errorf("Go 原生 MTProto 暂不支持 CDN redirect 响应：%T", resp)
+			}
+			if len(chunk.Bytes) == 0 {
+				break
+			}
+			if _, err := file.Write(chunk.Bytes); err != nil {
+				return err
+			}
+			downloaded += int64(len(chunk.Bytes))
+			windowBytes += int64(len(chunk.Bytes))
+			if err := a.throttle(windowBytes, windowStart, cancel); err != nil {
+				return err
+			}
+			if a.config.RateLimitBps > 0 && time.Since(windowStart) >= time.Second {
+				windowStart = time.Now()
+				windowBytes = 0
+			}
+			if time.Since(lastTick) >= time.Second {
+				elapsed := time.Since(lastTick).Seconds()
+				speed := int64(float64(downloaded-lastBytes) / maxFloat(elapsed, 0.001))
+				lastBytes = downloaded
+				lastTick = time.Now()
+				a.updateTask(task.ID, func(t *Task) {
+					t.Downloaded = downloaded
+					t.SpeedBps = speed
+					t.Size = max64(t.Size, task.Size)
+					t.UpdatedAt = now()
+				})
+			}
+		}
+		return nil
+	})
+	if runErr != nil {
+		return runErr
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	stat, err := os.Stat(task.PartPath)
+	if err != nil {
+		return err
+	}
+	size := max64(task.Size, stat.Size())
+	if !complete(stat.Size(), size) {
+		return fmt.Errorf("file incomplete: %d / %d", stat.Size(), size)
+	}
+	return os.Rename(task.PartPath, task.FilePath)
 }
 
 func (a *App) taskTransport(task Task) string {
@@ -726,33 +919,71 @@ func (a *App) handleNativeAccount(w http.ResponseWriter, r *http.Request) {
 		action = parts[2]
 	}
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	account := a.native[nativeAccountKey(userID, accountID)]
 	if account == nil {
+		a.mu.Unlock()
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "native account is not prepared"})
 		return
 	}
 	switch {
 	case r.Method == http.MethodGet && action == "":
+		defer a.mu.Unlock()
 		writeJSON(w, http.StatusOK, publicNativeAccount(*account))
 	case r.Method == http.MethodPost && action == "health":
-		account.CheckedAt = now()
-		if account.Session == "" {
-			account.Ready = false
-			account.Status = "needs-relogin"
-			account.Error = "Go 原生 MTProto session 尚未创建，请在下一版完成 Go 重新登录后再启用"
-		} else {
-			account.Ready = true
-			account.Status = "healthy"
-			account.Error = ""
-		}
-		account.UpdatedAt = now()
-		if err := a.saveNativeLocked(); err != nil {
+		snapshot := *account
+		a.mu.Unlock()
+		checked, err := a.nativeHealthCheck(snapshot)
+		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
-		writeJSON(w, http.StatusOK, publicNativeAccount(*account))
+		writeJSON(w, http.StatusOK, publicNativeAccount(checked))
+	case r.Method == http.MethodPost && action == "login" && len(parts) >= 4 && parts[3] == "start":
+		a.mu.Unlock()
+		var input struct {
+			Phone   string `json:"phone"`
+			APIID   int    `json:"apiId"`
+			APIHash string `json:"apiHash"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		result, err := a.startNativeLogin(userID, accountID, input.Phone, input.APIID, input.APIHash)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"loginId":          result.LoginID,
+			"passwordRequired": result.PasswordRequired,
+			"done":             result.Done,
+			"account":          publicNativeAccount(result.Account),
+		})
+	case r.Method == http.MethodPost && action == "login" && len(parts) >= 4 && (parts[3] == "code" || parts[3] == "password"):
+		a.mu.Unlock()
+		var input struct {
+			LoginID  string `json:"loginId"`
+			Code     string `json:"code"`
+			Password string `json:"password"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		result, err := a.continueNativeLogin(input.LoginID, parts[3], input.Code, input.Password)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"loginId":          result.LoginID,
+			"passwordRequired": result.PasswordRequired,
+			"done":             result.Done,
+			"account":          publicNativeAccount(result.Account),
+		})
 	default:
+		a.mu.Unlock()
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 	}
 }
@@ -960,6 +1191,16 @@ func (a *App) upsertNativeAccountLocked(input NativeAccount) (NativeAccount, err
 	if input.DisplayName != "" {
 		existing.DisplayName = input.DisplayName
 	}
+	if input.APIID > 0 {
+		existing.APIID = input.APIID
+	}
+	if input.APIHash != "" {
+		encrypted, err := a.encryptNativeSession([]byte(input.APIHash))
+		if err != nil {
+			return NativeAccount{}, err
+		}
+		existing.APIHash = encrypted
+	}
 	if input.Session != "" {
 		encrypted, err := a.encryptNativeSession([]byte(input.Session))
 		if err != nil {
@@ -997,7 +1238,7 @@ func (a *App) publicNativeAccountsLocked() []map[string]any {
 
 func (a *App) nativeReadyLocked() bool {
 	for _, account := range a.native {
-		if account.Ready && account.Session != "" {
+		if account.Ready && account.Session != "" && account.APIID > 0 && account.APIHash != "" {
 			return true
 		}
 	}
@@ -1074,8 +1315,10 @@ func publicNativeAccount(account NativeAccount) map[string]any {
 		"accountId":   account.AccountID,
 		"phone":       account.Phone,
 		"displayName": account.DisplayName,
+		"apiId":       account.APIID,
+		"apiSet":      account.APIID > 0 && account.APIHash != "",
 		"status":      normalizeNativeStatus(account.Status, account.Ready),
-		"ready":       account.Ready && account.Session != "",
+		"ready":       account.Ready && account.Session != "" && account.APIID > 0 && account.APIHash != "",
 		"sessionSet":  account.Session != "",
 		"error":       account.Error,
 		"createdAt":   account.CreatedAt,
@@ -1089,7 +1332,7 @@ func normalizeNativeStatus(status string, ready bool) string {
 		return "healthy"
 	}
 	switch strings.TrimSpace(status) {
-	case "healthy", "session-imported", "needs-relogin", "failed":
+	case "healthy", "session-imported", "needs-relogin", "code-sent", "password-needed", "checking", "failed":
 		return status
 	default:
 		return "needs-relogin"
@@ -1119,6 +1362,426 @@ func (a *App) encryptNativeSession(plain []byte) (string, error) {
 	}
 	cipherText := gcm.Seal(nil, nonce, plain, nil)
 	return "v1:" + base64.StdEncoding.EncodeToString(nonce) + ":" + base64.StdEncoding.EncodeToString(cipherText), nil
+}
+
+func (a *App) decryptNativeSession(encoded string) ([]byte, error) {
+	if strings.TrimSpace(encoded) == "" {
+		return nil, session.ErrNotFound
+	}
+	parts := strings.Split(encoded, ":")
+	if len(parts) != 3 || parts[0] != "v1" {
+		return nil, errors.New("unsupported encrypted native payload")
+	}
+	key, err := a.nativeSecretKey()
+	if err != nil {
+		return nil, err
+	}
+	nonce, err := base64.StdEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil, err
+	}
+	cipherText, err := base64.StdEncoding.DecodeString(parts[2])
+	if err != nil {
+		return nil, err
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	return gcm.Open(nil, nonce, cipherText, nil)
+}
+
+func (a *App) nativeAPIHash(account NativeAccount) (string, error) {
+	if account.APIHash == "" {
+		return "", nil
+	}
+	plain, err := a.decryptNativeSession(account.APIHash)
+	if err != nil {
+		return "", err
+	}
+	return string(plain), nil
+}
+
+type nativeSessionStorage struct {
+	app       *App
+	userID    string
+	accountID string
+}
+
+func (s nativeSessionStorage) LoadSession(ctx context.Context) ([]byte, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+	s.app.mu.Lock()
+	account := s.app.native[nativeAccountKey(s.userID, s.accountID)]
+	encoded := ""
+	if account != nil {
+		encoded = account.Session
+	}
+	s.app.mu.Unlock()
+	if encoded == "" {
+		return nil, session.ErrNotFound
+	}
+	return s.app.decryptNativeSession(encoded)
+}
+
+func (s nativeSessionStorage) StoreSession(ctx context.Context, data []byte) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	encrypted, err := s.app.encryptNativeSession(data)
+	if err != nil {
+		return err
+	}
+	s.app.mu.Lock()
+	defer s.app.mu.Unlock()
+	account := s.app.native[nativeAccountKey(s.userID, s.accountID)]
+	if account == nil {
+		account = &NativeAccount{
+			UserID:    s.userID,
+			AccountID: s.accountID,
+			Status:    "session-imported",
+			CreatedAt: now(),
+		}
+		s.app.native[nativeAccountKey(s.userID, s.accountID)] = account
+	}
+	account.Session = encrypted
+	account.UpdatedAt = now()
+	if account.Status == "" || account.Status == "needs-relogin" {
+		account.Status = "session-imported"
+	}
+	return s.app.saveNativeLocked()
+}
+
+func (a *App) nativeAccountSnapshot(userID, accountID string) (NativeAccount, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	account := a.native[nativeAccountKey(userID, accountID)]
+	if account == nil {
+		return NativeAccount{}, fmt.Errorf("Go 原生 MTProto 账号未准备好")
+	}
+	return *account, nil
+}
+
+func (a *App) newTelegramClient(account NativeAccount, apiHash string) (*telegram.Client, error) {
+	if account.APIID <= 0 || apiHash == "" {
+		return nil, errors.New("Go 原生 MTProto 缺少 API ID/Hash")
+	}
+	options := telegram.Options{
+		SessionStorage:   nativeSessionStorage{app: a, userID: account.UserID, accountID: account.AccountID},
+		NoUpdates:        true,
+		MigrationTimeout: 30 * time.Second,
+		RetryInterval:    time.Second,
+		MaxRetries:       5,
+	}
+	if account.Session == "" {
+		options.SessionStorage = nativeSessionStorage{app: a, userID: account.UserID, accountID: account.AccountID}
+	}
+	return telegram.NewClient(account.APIID, apiHash, options), nil
+}
+
+func (a *App) nativeHealthCheck(account NativeAccount) (NativeAccount, error) {
+	account.CheckedAt = now()
+	if account.Session == "" {
+		account.Ready = false
+		account.Status = "needs-relogin"
+		account.Error = "Go 原生 MTProto session 尚未创建，请先执行 Go 重新登录"
+		return a.saveNativeAccount(account)
+	}
+	apiHash, err := a.nativeAPIHash(account)
+	if err != nil {
+		account.Ready = false
+		account.Status = "failed"
+		account.Error = err.Error()
+		_, _ = a.saveNativeAccount(account)
+		return account, err
+	}
+	client, err := a.newTelegramClient(account, apiHash)
+	if err != nil {
+		account.Ready = false
+		account.Status = "failed"
+		account.Error = err.Error()
+		return a.saveNativeAccount(account)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	err = client.Run(ctx, func(ctx context.Context) error {
+		status, err := client.Auth().Status(ctx)
+		if err != nil {
+			return err
+		}
+		if !status.Authorized {
+			return errors.New("gotd session 未授权，请重新登录")
+		}
+		return nil
+	})
+	if err != nil {
+		account.Ready = false
+		account.Status = "needs-relogin"
+		account.Error = compactError(err)
+		return a.saveNativeAccount(account)
+	}
+	account.Ready = true
+	account.Status = "healthy"
+	account.Error = ""
+	return a.saveNativeAccount(account)
+}
+
+func (a *App) saveNativeAccount(account NativeAccount) (NativeAccount, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	key := nativeAccountKey(account.UserID, account.AccountID)
+	existing := a.native[key]
+	if existing == nil {
+		existing = &NativeAccount{UserID: account.UserID, AccountID: account.AccountID, CreatedAt: coalesce(account.CreatedAt, now())}
+		a.native[key] = existing
+	}
+	existing.Phone = account.Phone
+	existing.DisplayName = account.DisplayName
+	existing.APIID = account.APIID
+	existing.APIHash = account.APIHash
+	existing.Status = normalizeNativeStatus(account.Status, account.Ready)
+	existing.Ready = account.Ready
+	existing.Session = account.Session
+	existing.Error = account.Error
+	existing.CheckedAt = account.CheckedAt
+	existing.UpdatedAt = now()
+	if err := a.saveNativeLocked(); err != nil {
+		return *existing, err
+	}
+	return *existing, nil
+}
+
+func (a *App) startNativeLogin(userID, accountID, phone string, apiID int, apiHash string) (nativeLoginResult, error) {
+	if phone == "" {
+		return nativeLoginResult{}, errors.New("phone is required")
+	}
+	a.mu.Lock()
+	account := a.native[nativeAccountKey(userID, accountID)]
+	if account == nil {
+		a.mu.Unlock()
+		return nativeLoginResult{}, errors.New("native account is not prepared")
+	}
+	if apiID <= 0 {
+		apiID = account.APIID
+	}
+	if apiHash == "" && account.APIHash != "" {
+		var err error
+		copy := *account
+		a.mu.Unlock()
+		apiHash, err = a.nativeAPIHash(copy)
+		if err != nil {
+			return nativeLoginResult{}, err
+		}
+		a.mu.Lock()
+	}
+	if apiID <= 0 || apiHash == "" {
+		a.mu.Unlock()
+		return nativeLoginResult{}, errors.New("apiId/apiHash is required")
+	}
+	if account.APIID != apiID {
+		account.APIID = apiID
+	}
+	if apiHash != "" {
+		encrypted, err := a.encryptNativeSession([]byte(apiHash))
+		if err != nil {
+			a.mu.Unlock()
+			return nativeLoginResult{}, err
+		}
+		account.APIHash = encrypted
+	}
+	account.Phone = phone
+	account.Ready = false
+	account.Status = "needs-relogin"
+	account.Error = ""
+	account.UpdatedAt = now()
+	_ = a.saveNativeLocked()
+	loginID := taskID("native-login", userID, accountID, phone, time.Now().UnixNano())
+	ctx, cancel := context.WithCancel(context.Background())
+	login := &NativeLogin{
+		ID:          loginID,
+		UserID:      userID,
+		AccountID:   accountID,
+		Phone:       phone,
+		APIID:       apiID,
+		APIHash:     apiHash,
+		Status:      "starting",
+		Code:        make(chan string, 1),
+		Password:    make(chan string, 1),
+		Result:      make(chan nativeLoginResult, 2),
+		StartResult: make(chan nativeLoginResult, 1),
+		Cancel:      cancel,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}
+	a.logins[loginID] = login
+	a.mu.Unlock()
+
+	go a.runNativeLogin(ctx, login)
+	select {
+	case result := <-login.StartResult:
+		return result, result.Error
+	case <-time.After(40 * time.Second):
+		return nativeLoginResult{}, errors.New("发送 Telegram 验证码超时")
+	}
+}
+
+func (a *App) continueNativeLogin(loginID, step, code, password string) (nativeLoginResult, error) {
+	a.mu.Lock()
+	login := a.logins[loginID]
+	a.mu.Unlock()
+	if login == nil {
+		return nativeLoginResult{}, errors.New("Go 登录流程不存在或已过期")
+	}
+	switch step {
+	case "code":
+		if code == "" {
+			return nativeLoginResult{}, errors.New("code is required")
+		}
+		login.Code <- code
+	case "password":
+		if password == "" {
+			return nativeLoginResult{}, errors.New("password is required")
+		}
+		login.Password <- password
+	default:
+		return nativeLoginResult{}, errors.New("unknown login step")
+	}
+	select {
+	case result := <-login.Result:
+		if result.Done || result.Error != nil {
+			a.mu.Lock()
+			delete(a.logins, loginID)
+			a.mu.Unlock()
+		}
+		return result, result.Error
+	case <-time.After(60 * time.Second):
+		return nativeLoginResult{}, errors.New("等待 Telegram 登录结果超时")
+	}
+}
+
+func (a *App) runNativeLogin(ctx context.Context, login *NativeLogin) {
+	account, err := a.nativeAccountSnapshot(login.UserID, login.AccountID)
+	if err != nil {
+		login.StartResult <- nativeLoginResult{Error: err, LoginID: login.ID}
+		return
+	}
+	account.APIID = login.APIID
+	client, err := a.newTelegramClient(account, login.APIHash)
+	if err != nil {
+		login.StartResult <- nativeLoginResult{Error: err, LoginID: login.ID}
+		return
+	}
+	err = client.Run(ctx, func(ctx context.Context) error {
+		status, err := client.Auth().Status(ctx)
+		if err == nil && status.Authorized {
+			account.Ready = true
+			account.Status = "healthy"
+			account.Error = ""
+			account, _ = a.saveNativeAccount(account)
+			login.StartResult <- nativeLoginResult{Account: account, LoginID: login.ID, Done: true}
+			return nil
+		}
+		sent, err := client.Auth().SendCode(ctx, login.Phone, auth.SendCodeOptions{AllowAppHash: true})
+		if err != nil {
+			return err
+		}
+		codeHash, err := sentCodeHash(sent)
+		if err != nil {
+			return err
+		}
+		login.CodeHash = codeHash
+		account.Phone = login.Phone
+		account.Ready = false
+		account.Status = "code-sent"
+		account.Error = ""
+		account, _ = a.saveNativeAccount(account)
+		login.StartResult <- nativeLoginResult{Account: account, LoginID: login.ID, PhoneCodeHash: codeHash}
+		code := ""
+		select {
+		case code = <-login.Code:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		_, err = client.Auth().SignIn(ctx, login.Phone, code, codeHash)
+		if errors.Is(err, auth.ErrPasswordAuthNeeded) {
+			account.Status = "password-needed"
+			account.Error = ""
+			account, _ = a.saveNativeAccount(account)
+			login.Result <- nativeLoginResult{Account: account, LoginID: login.ID, PasswordRequired: true}
+			password := ""
+			select {
+			case password = <-login.Password:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			_, err = client.Auth().Password(ctx, password)
+		}
+		if err != nil {
+			return err
+		}
+		account.Ready = true
+		account.Status = "healthy"
+		account.Error = ""
+		account, _ = a.saveNativeAccount(account)
+		login.Result <- nativeLoginResult{Account: account, LoginID: login.ID, Done: true}
+		return nil
+	})
+	if err != nil {
+		account.Error = compactError(err)
+		account.Ready = false
+		account.Status = "failed"
+		account, _ = a.saveNativeAccount(account)
+		result := nativeLoginResult{Account: account, LoginID: login.ID, Error: err}
+		select {
+		case login.StartResult <- result:
+		default:
+		}
+		select {
+		case login.Result <- result:
+		default:
+		}
+	}
+}
+
+func sentCodeHash(sent tg.AuthSentCodeClass) (string, error) {
+	if value, ok := sent.(interface{ GetPhoneCodeHash() string }); ok {
+		if hash := value.GetPhoneCodeHash(); hash != "" {
+			return hash, nil
+		}
+	}
+	if value, ok := sent.(*tg.AuthSentCode); ok {
+		return value.PhoneCodeHash, nil
+	}
+	return "", fmt.Errorf("Telegram 未返回 phone code hash：%T", sent)
+}
+
+func classifyNativeReadError(err error) error {
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "FILE_REFERENCE_EXPIRED"):
+		return fmt.Errorf("FILE_REFERENCE_EXPIRED: 原生 fileReference 已过期，需要刷新消息元数据后自动续传")
+	case strings.Contains(msg, "FLOOD_WAIT"):
+		return fmt.Errorf("FLOOD_WAIT: Telegram 要求等待后重试：%w", err)
+	case strings.Contains(msg, "_MIGRATE_"):
+		return fmt.Errorf("DC_MIGRATE: Telegram 要求切换 DC 后重试：%w", err)
+	default:
+		return err
+	}
+}
+
+func (a *App) currentPartSize() int64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.config.PartSize
 }
 
 func (a *App) nativeSecretKey() ([]byte, error) {
@@ -1266,6 +1929,10 @@ func transientSourceError(err error) bool {
 		"source returned 502",
 		"source returned 503",
 		"source returned 504",
+		"file_reference_expired",
+		"flood_wait",
+		"dc_migrate",
+		"_migrate",
 	}
 	for _, marker := range markers {
 		if strings.Contains(text, marker) {

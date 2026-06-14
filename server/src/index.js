@@ -106,6 +106,18 @@ app.post("/api/admin/native-accounts/:account/health", adminOnly, asyncRoute(asy
   res.json(await tg.nativeAccountHealth(req.user.id, req.params.account));
 }));
 
+app.post("/api/admin/native-accounts/:account/login/start", adminOnly, asyncRoute(async (req, res) => {
+  res.json(await tg.nativeAccountLoginStart(req.user.id, req.params.account, req.body || {}));
+}));
+
+app.post("/api/admin/native-accounts/:account/login/code", adminOnly, asyncRoute(async (req, res) => {
+  res.json(await tg.nativeAccountLoginCode(req.user.id, req.params.account, req.body || {}));
+}));
+
+app.post("/api/admin/native-accounts/:account/login/password", adminOnly, asyncRoute(async (req, res) => {
+  res.json(await tg.nativeAccountLoginPassword(req.user.id, req.params.account, req.body || {}));
+}));
+
 app.post("/api/admin/cache-speed-diagnostics", adminOnly, asyncRoute(async (req, res) => {
   res.json(await tg.silentCacheSpeedDiagnostics(req.user.id, req.body || {}));
 }));

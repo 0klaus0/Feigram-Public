@@ -14,6 +14,20 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.39",
+    title: "Feigram 2.0.39 更新",
+    version: "2.0.39",
+    level: "success",
+    createdAt: "2026-06-14T23:30:00.000Z",
+    body: [
+      "Go 下载服务新增 Telegram 重新登录流程，可在管理后台为 Go 侧生成独立 MTProto auth key。",
+      "新增 gotd session 加密存储与真实授权健康检查，健康后才允许切换 native-mtproto。",
+      "Go 原生传输层新增 upload.getFile 分片读取实验通道，支持断点续传、限速、连接重试和基础错误分类。",
+      "原生读取会识别 FILE_REFERENCE_EXPIRED、FLOOD_WAIT 和 DC_MIGRATE，并给出明确诊断，后续继续补齐无感刷新。",
+      "默认仍保留 HTTP 桥接；native 通过长时间测试后，再让大文件完全走 Go 原生并删除 Node 媒体桥接。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.38",
     title: "Feigram 2.0.38 更新",
     version: "2.0.38",
