@@ -98,6 +98,14 @@ app.put("/api/admin/downloader/config", adminOnly, asyncRoute(async (req, res) =
   res.json(await downloaderSidecar.updateConfig(req.body || {}));
 }));
 
+app.get("/api/admin/native-accounts", adminOnly, asyncRoute(async (_req, res) => {
+  res.json(await tg.nativeAccounts());
+}));
+
+app.post("/api/admin/native-accounts/:account/health", adminOnly, asyncRoute(async (req, res) => {
+  res.json(await tg.nativeAccountHealth(req.user.id, req.params.account));
+}));
+
 app.post("/api/admin/cache-speed-diagnostics", adminOnly, asyncRoute(async (req, res) => {
   res.json(await tg.silentCacheSpeedDiagnostics(req.user.id, req.body || {}));
 }));

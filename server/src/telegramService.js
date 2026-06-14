@@ -843,10 +843,23 @@ function registerUpdates(io, accountId, client) {
 
 async function listAccounts(userId) {
   const accounts = await readAccounts();
-  return accounts.filter((account) => account.userId === userId).map(({ session, ...safe }) => ({
+  const owned = accounts.filter((account) => account.userId === userId);
+  await Promise.all(owned.map((account) => syncGoNativeAccount(account).catch(() => null)));
+  return owned.map(({ session, ...safe }) => ({
     ...safe,
     connected: clients.has(safe.id)
   }));
+}
+
+async function syncGoNativeAccount(account) {
+  if (!account?.userId || !account?.id) return null;
+  return downloaderSidecar.upsertNativeAccount({
+    userId: account.userId,
+    accountId: account.id,
+    phone: account.phone || "",
+    displayName: account.label || account.username || account.phone || account.id,
+    status: "needs-relogin"
+  });
 }
 
 async function getClient(userId, accountId) {
@@ -2508,6 +2521,32 @@ function internalMediaSourceUrl(userId, accountId, peerId, messageId) {
   return `http://127.0.0.1:${port}/api/internal/media/${encodeURIComponent(userId)}/${encodeURIComponent(accountId)}/${encodeURIComponent(peerId)}/${encodeURIComponent(messageId)}?token=${encodeURIComponent(token)}`;
 }
 
+function base64Buffer(value) {
+  if (!value) return "";
+  if (Buffer.isBuffer(value)) return value.toString("base64");
+  if (value instanceof Uint8Array) return Buffer.from(value).toString("base64");
+  if (Array.isArray(value)) return Buffer.from(value).toString("base64");
+  return "";
+}
+
+function nativeFileLocation(peerId, message, contentType, fileName, kind) {
+  const document = message.document || null;
+  const file = message.file || {};
+  return {
+    peerId,
+    messageId: Number(message.id || 0),
+    kind,
+    fileId: document?.id ? toText(document.id) : "",
+    accessHash: document?.accessHash ? toText(document.accessHash) : "",
+    fileReference: base64Buffer(document?.fileReference),
+    dcId: Number(document?.dcId || file.dcId || 0),
+    size: Number(file.size || document?.size || 0),
+    mimeType: contentType || document?.mimeType || "",
+    fileName: fileName || file.name || "",
+    updatedAt: new Date().toISOString()
+  };
+}
+
 function normalizeGoDownloadTask(task) {
   const next = {
     id: task.id,
@@ -2578,6 +2617,7 @@ async function ensureGoDownloadTask(userId, accountId, peerId, messageId, option
     transport,
     sourceUrl: internalMediaSourceUrl(userId, accountId, peerId, messageId),
     inlineUrl: `/api/media/${accountId}/${encodeURIComponent(peerId)}/${messageId}?inline=1`,
+    nativeFile: nativeFileLocation(peerId, message, contentType, fileName, kind),
     order: Number(options.order || 0) || Date.now(),
     dedupKey: options.dedupKey || ""
   });
@@ -2775,6 +2815,18 @@ async function goSilentCacheSpeedDiagnostics(userId) {
   };
 }
 
+async function goNativeAccounts() {
+  const accounts = await downloaderSidecar.nativeAccounts();
+  return Array.isArray(accounts) ? accounts : [];
+}
+
+async function goNativeAccountHealth(userId, accountId) {
+  const account = (await readAccounts()).find((item) => item.userId === userId && item.id === accountId);
+  if (!account) throw Object.assign(new Error("账号不存在"), { status: 404 });
+  await syncGoNativeAccount(account).catch(() => null);
+  return downloaderSidecar.checkNativeAccount(userId, accountId);
+}
+
 async function restoreGoBackgroundTasks(io) {
   realtimeIo = io;
   await loadPersistentTasks();
@@ -2836,6 +2888,8 @@ module.exports = {
   setSilentCacheControl: setGoSilentCacheControl,
   reorderSilentCacheTasks: reorderGoSilentCacheTasks,
   monitorSilentCacheTasks: () => {},
+  nativeAccounts: goNativeAccounts,
+  nativeAccountHealth: goNativeAccountHealth,
   cancelSilentCacheTask: cancelGoSilentCacheTask,
   cancelSilentCacheTasks: cancelGoSilentCacheTasks,
   resumeDownloadTask: resumeGoDownloadTask,

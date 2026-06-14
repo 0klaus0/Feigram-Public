@@ -1,6 +1,6 @@
 # Feigram Go Downloader Sidecar
 
-Feigram 2.0.37 runs an embedded Go downloader sidecar with the FPK service.
+Feigram 2.0.38 runs an embedded Go downloader sidecar with the FPK service.
 The service now owns the large-file download queue, resumable `.part` files,
 rate limits, concurrency and completion validation for manual video caching and
 group video background caching.
@@ -41,8 +41,10 @@ layer:
   Telegram media stream because the logged-in Telegram session still lives in
   GramJS.
 - `native-mtproto`: experimental boundary for the next gotd/tdl-style native
-  transport. It is visible in diagnostics but not ready for production until
-  GramJS sessions and Telegram file locations are migrated to Go.
+  transport. It is visible in diagnostics and now has encrypted Go session
+  storage plus task-level file location metadata, but it is still guarded until
+  the account can create its own Go MTProto auth key and pass a small-file
+  health check.
 
 ## Runtime
 
@@ -57,12 +59,16 @@ Environment variables:
 - `FEIGRAM_DOWNLOADER_PORT`
 - `FEIGRAM_DOWNLOADER_DATA`
 - `FEIGRAM_DOWNLOADER_LOG`
+- `FEIGRAM_DOWNLOADER_SECRET_FILE`
 
 ## API
 
 - `GET /health`
 - `GET /api/state`
 - `PUT /api/config`
+- `GET /api/native/accounts`
+- `POST /api/native/accounts`
+- `POST /api/native/accounts/:userId/:accountId/health`
 - `GET /api/tasks`
 - `POST /api/tasks`
 - `POST /api/tasks/:id/cancel`
@@ -71,7 +77,7 @@ Environment variables:
 
 ## Current boundary
 
-Feigram 2.0.37 no longer uses the old Node task state machine for large-file
+Feigram 2.0.38 no longer uses the old Node task state machine for large-file
 download scheduling. Node still owns Telegram authentication and provides the
 internal `/api/internal/media/...` byte stream consumed by the Go sidecar. This
 avoids duplicating Telegram auth keys while removing the fragile Node download
@@ -79,4 +85,15 @@ queue from the user-visible task flow.
 
 When the HTTP bridge is unavailable, Go keeps the `.part` file and retries with
 backoff. The remaining migration work is to replace the source URL with native
-Go MTProto reads after the account/session migration is complete.
+Go MTProto reads after the Go re-login/session migration is complete.
+
+## Native Account Store
+
+The sidecar stores native account records in `native-sessions.json`. Session
+payloads are encrypted with AES-GCM using a key derived from
+`FEIGRAM_DOWNLOADER_SECRET_FILE`; public APIs only return whether a session is
+set and whether the account passed the native health check.
+
+The current health check deliberately reports `needs-relogin` until a true Go
+MTProto session exists. This prevents Feigram from accidentally switching large
+downloads to a half-migrated native path.

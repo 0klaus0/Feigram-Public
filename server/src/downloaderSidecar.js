@@ -54,6 +54,23 @@ function updateConfig(patch) {
   }));
 }
 
+function nativeAccounts() {
+  return safe(async () => request("/api/native/accounts"));
+}
+
+function upsertNativeAccount(account) {
+  return request("/api/native/accounts", {
+    method: "POST",
+    body: JSON.stringify(account || {})
+  });
+}
+
+function checkNativeAccount(userId, accountId) {
+  return safe(async () => request(`/api/native/accounts/${encodeURIComponent(userId)}/${encodeURIComponent(accountId)}/health`, {
+    method: "POST"
+  }));
+}
+
 function enqueueTask(task) {
   return request("/api/tasks", {
     method: "POST",
@@ -95,7 +112,10 @@ module.exports = {
   getTask,
   health,
   listTasks,
+  nativeAccounts,
   queueTask,
   state,
-  updateConfig
+  updateConfig,
+  upsertNativeAccount,
+  checkNativeAccount
 };

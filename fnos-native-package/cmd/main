@@ -25,9 +25,10 @@ export FEIGRAM_DOWNLOADER_PORT="$DOWNLOADER_PORT"
 export FEIGRAM_DOWNLOADER_DATA="${DATA_HOME}/data/downloader"
 export FEIGRAM_DOWNLOADER_URL="http://127.0.0.1:${DOWNLOADER_PORT}"
 export FEIGRAM_DOWNLOADER_LOG="$DOWNLOADER_LOG_FILE"
+export FEIGRAM_DOWNLOADER_SECRET_FILE="${DATA_HOME}/data/app-secret"
 export APP_EDITION="Feigram 2.0 fnOS Client Edition"
-export APP_VERSION="2.0.37"
-export APP_CHANGELOG="新增媒体源传输层配置，将 Go 下载服务拆分为 HTTP 桥接与 Go 原生 MTProto 实验边界；运行诊断展示当前媒体源，文档补充 gotd/tdl 风格原生迁移计划。"
+export APP_VERSION="2.0.38"
+export APP_CHANGELOG="新增 Go 原生 Telegram session 加密存储、native 账号健康检查闸门和原生 file location 任务元数据，为下一版 gotd upload.getFile 真正接管媒体源做准备。"
 export NODE_ENV="production"
 
 is_running() {

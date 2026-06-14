@@ -1,7 +1,12 @@
 package main
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
 	"crypto/sha1"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -9,6 +14,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -18,7 +24,7 @@ import (
 )
 
 const (
-	version         = "0.3.0"
+	version         = "0.4.0"
 	defaultPartSize = 1024 * 1024
 )
 
@@ -34,37 +40,70 @@ type Config struct {
 }
 
 type Task struct {
-	ID          string `json:"id"`
+	ID          string             `json:"id"`
+	UserID      string             `json:"userId"`
+	AccountID   string             `json:"accountId"`
+	PeerID      string             `json:"peerId"`
+	MessageID   int64              `json:"messageId"`
+	FileName    string             `json:"fileName"`
+	ContentType string             `json:"contentType"`
+	Kind        string             `json:"kind"`
+	Size        int64              `json:"size"`
+	Downloaded  int64              `json:"downloaded"`
+	SpeedBps    int64              `json:"speedBps"`
+	Status      string             `json:"status"`
+	Source      string             `json:"source"`
+	AutoCache   bool               `json:"autoCache"`
+	Transport   string             `json:"transport"`
+	SourceURL   string             `json:"sourceUrl"`
+	FilePath    string             `json:"filePath"`
+	PartPath    string             `json:"partPath"`
+	InlineURL   string             `json:"inlineUrl"`
+	NativeFile  NativeFileLocation `json:"nativeFile"`
+	Error       string             `json:"error"`
+	RetryCount  int                `json:"retryCount"`
+	RetryAfter  int64              `json:"retryAfterUnix"`
+	Order       int64              `json:"order"`
+	CreatedAt   string             `json:"createdAt"`
+	UpdatedAt   string             `json:"updatedAt"`
+}
+
+type NativeFileLocation struct {
+	PeerID        string `json:"peerId"`
+	MessageID     int64  `json:"messageId"`
+	Kind          string `json:"kind"`
+	FileID        string `json:"fileId"`
+	AccessHash    string `json:"accessHash"`
+	FileReference string `json:"fileReference"`
+	DCID          int    `json:"dcId"`
+	Size          int64  `json:"size"`
+	MimeType      string `json:"mimeType"`
+	FileName      string `json:"fileName"`
+	UpdatedAt     string `json:"updatedAt"`
+}
+
+type NativeAccount struct {
 	UserID      string `json:"userId"`
 	AccountID   string `json:"accountId"`
-	PeerID      string `json:"peerId"`
-	MessageID   int64  `json:"messageId"`
-	FileName    string `json:"fileName"`
-	ContentType string `json:"contentType"`
-	Kind        string `json:"kind"`
-	Size        int64  `json:"size"`
-	Downloaded  int64  `json:"downloaded"`
-	SpeedBps    int64  `json:"speedBps"`
+	Phone       string `json:"phone"`
+	DisplayName string `json:"displayName"`
 	Status      string `json:"status"`
-	Source      string `json:"source"`
-	AutoCache   bool   `json:"autoCache"`
-	Transport   string `json:"transport"`
-	SourceURL   string `json:"sourceUrl"`
-	FilePath    string `json:"filePath"`
-	PartPath    string `json:"partPath"`
-	InlineURL   string `json:"inlineUrl"`
+	Ready       bool   `json:"ready"`
+	Session     string `json:"session"`
 	Error       string `json:"error"`
-	RetryCount  int    `json:"retryCount"`
-	RetryAfter  int64  `json:"retryAfterUnix"`
-	Order       int64  `json:"order"`
 	CreatedAt   string `json:"createdAt"`
 	UpdatedAt   string `json:"updatedAt"`
+	CheckedAt   string `json:"checkedAt"`
 }
 
 type Store struct {
 	Config Config `json:"config"`
 	Tasks  []Task `json:"tasks"`
 	Meta   Meta   `json:"meta"`
+}
+
+type NativeStore struct {
+	Accounts []NativeAccount `json:"accounts"`
 }
 
 type Meta struct {
@@ -74,23 +113,26 @@ type Meta struct {
 }
 
 type App struct {
-	mu        sync.Mutex
-	dataDir   string
-	storePath string
-	startedAt time.Time
-	config    Config
-	tasks     map[string]*Task
-	running   map[string]chan struct{}
-	client    *http.Client
+	mu         sync.Mutex
+	dataDir    string
+	storePath  string
+	nativePath string
+	startedAt  time.Time
+	config     Config
+	tasks      map[string]*Task
+	native     map[string]*NativeAccount
+	running    map[string]chan struct{}
+	client     *http.Client
 }
 
 func main() {
 	dataDir := env("FEIGRAM_DOWNLOADER_DATA", filepath.Join(env("DATA_DIR", "data"), "downloader"))
 	port := env("FEIGRAM_DOWNLOADER_PORT", "3090")
 	app := &App{
-		dataDir:   dataDir,
-		storePath: filepath.Join(dataDir, "tasks.json"),
-		startedAt: time.Now(),
+		dataDir:    dataDir,
+		storePath:  filepath.Join(dataDir, "tasks.json"),
+		nativePath: filepath.Join(dataDir, "native-sessions.json"),
+		startedAt:  time.Now(),
 		config: Config{
 			Enabled:      true,
 			Concurrency:  1,
@@ -102,6 +144,7 @@ func main() {
 			UpdatedAt:    now(),
 		},
 		tasks:   map[string]*Task{},
+		native:  map[string]*NativeAccount{},
 		running: map[string]chan struct{}{},
 		client: &http.Client{
 			Timeout: 0,
@@ -122,6 +165,8 @@ func main() {
 	mux.HandleFunc("/health", app.handleHealth)
 	mux.HandleFunc("/api/state", app.handleState)
 	mux.HandleFunc("/api/config", app.handleConfig)
+	mux.HandleFunc("/api/native/accounts", app.handleNativeAccounts)
+	mux.HandleFunc("/api/native/accounts/", app.handleNativeAccount)
 	mux.HandleFunc("/api/tasks", app.handleTasks)
 	mux.HandleFunc("/api/tasks/", app.handleTask)
 
@@ -169,6 +214,32 @@ func (a *App) load() error {
 		}
 		a.tasks[task.ID] = &task
 	}
+	if err := a.loadNativeLocked(); err != nil {
+		log.Printf("load native sessions: %v", err)
+	}
+	return nil
+}
+
+func (a *App) loadNativeLocked() error {
+	raw, err := os.ReadFile(a.nativePath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return a.saveNativeLocked()
+		}
+		return err
+	}
+	var store NativeStore
+	if err := json.Unmarshal(raw, &store); err != nil {
+		return err
+	}
+	for i := range store.Accounts {
+		account := store.Accounts[i]
+		if account.UserID == "" || account.AccountID == "" {
+			continue
+		}
+		account.Status = normalizeNativeStatus(account.Status, account.Ready)
+		a.native[nativeAccountKey(account.UserID, account.AccountID)] = &account
+	}
 	return nil
 }
 
@@ -192,6 +263,29 @@ func (a *App) saveLocked() error {
 		return err
 	}
 	return os.Rename(tmp, a.storePath)
+}
+
+func (a *App) saveNativeLocked() error {
+	accounts := make([]NativeAccount, 0, len(a.native))
+	for _, account := range a.native {
+		copy := *account
+		accounts = append(accounts, copy)
+	}
+	sort.SliceStable(accounts, func(i, j int) bool {
+		if accounts[i].UserID != accounts[j].UserID {
+			return accounts[i].UserID < accounts[j].UserID
+		}
+		return accounts[i].AccountID < accounts[j].AccountID
+	})
+	raw, err := json.MarshalIndent(NativeStore{Accounts: accounts}, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := a.nativePath + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, a.nativePath)
 }
 
 func (a *App) pump() {
@@ -537,6 +631,9 @@ func (a *App) handleConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	a.mu.Lock()
 	a.config = sanitizeConfig(applyConfigPatch(a.config, patch))
+	if a.config.Transport == "native-mtproto" && !a.nativeReadyLocked() {
+		a.config.Transport = "http-bridge"
+	}
 	a.config.UpdatedAt = now()
 	err := a.saveLocked()
 	a.mu.Unlock()
@@ -570,6 +667,91 @@ func (a *App) handleTasks(w http.ResponseWriter, r *http.Request) {
 		}
 		go a.pumpOnce()
 		writeJSON(w, http.StatusOK, task)
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+	}
+}
+
+func (a *App) handleNativeAccounts(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		writeJSON(w, http.StatusOK, a.publicNativeAccountsLocked())
+	case http.MethodPost, http.MethodPut:
+		var input NativeAccount
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		if input.UserID == "" || input.AccountID == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "userId and accountId are required"})
+			return
+		}
+		a.mu.Lock()
+		account, err := a.upsertNativeAccountLocked(input)
+		if err == nil {
+			err = a.saveNativeLocked()
+		}
+		a.mu.Unlock()
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, publicNativeAccount(account))
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+	}
+}
+
+func (a *App) handleNativeAccount(w http.ResponseWriter, r *http.Request) {
+	rest := strings.TrimPrefix(r.URL.Path, "/api/native/accounts/")
+	parts := strings.Split(strings.Trim(rest, "/"), "/")
+	if len(parts) < 2 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "expected /api/native/accounts/:userId/:accountId"})
+		return
+	}
+	userID, err := url.PathUnescape(parts[0])
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	accountID, err := url.PathUnescape(parts[1])
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	action := ""
+	if len(parts) >= 3 {
+		action = parts[2]
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	account := a.native[nativeAccountKey(userID, accountID)]
+	if account == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "native account is not prepared"})
+		return
+	}
+	switch {
+	case r.Method == http.MethodGet && action == "":
+		writeJSON(w, http.StatusOK, publicNativeAccount(*account))
+	case r.Method == http.MethodPost && action == "health":
+		account.CheckedAt = now()
+		if account.Session == "" {
+			account.Ready = false
+			account.Status = "needs-relogin"
+			account.Error = "Go 原生 MTProto session 尚未创建，请在下一版完成 Go 重新登录后再启用"
+		} else {
+			account.Ready = true
+			account.Status = "healthy"
+			account.Error = ""
+		}
+		account.UpdatedAt = now()
+		if err := a.saveNativeLocked(); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, publicNativeAccount(*account))
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 	}
@@ -648,10 +830,15 @@ func (a *App) stateLocked() map[string]any {
 	}
 	transport := normalizeTransport(a.config.Transport)
 	strategy := "Go 下载服务已接管队列、断点、限速和落盘；媒体源传输层当前使用 Node/GramJS HTTP 桥接。若 Node 未启动会自动重试并显示 connection refused。"
+	nativeReady := a.nativeReadyLocked()
 	native := map[string]any{
-		"ready":  false,
+		"ready":  nativeReady,
 		"status": "pending-session-migration",
 		"note":   "Go 原生 MTProto/gotd 传输层接口已接入，下一版迁移 Telegram session 与 file location 后启用真实原生读取。",
+	}
+	if nativeReady {
+		native["status"] = "healthy"
+		native["note"] = "已有健康 Go 原生 MTProto session，可以灰度启用 native-mtproto。"
 	}
 	if transport == "native-mtproto" {
 		strategy = "Go 原生 MTProto 传输层已选择，但当前版本还缺少 Go session/file location 迁移；请仅用于开发验证。"
@@ -738,6 +925,10 @@ func (a *App) upsertTaskLocked(input Task) Task {
 	if input.InlineURL != "" {
 		existing.InlineURL = input.InlineURL
 	}
+	if input.NativeFile.MessageID != 0 || input.NativeFile.FileID != "" || input.NativeFile.FileReference != "" {
+		existing.NativeFile = input.NativeFile
+		existing.NativeFile.UpdatedAt = coalesce(existing.NativeFile.UpdatedAt, now())
+	}
 	if input.Order > 0 {
 		existing.Order = input.Order
 	}
@@ -748,6 +939,69 @@ func (a *App) upsertTaskLocked(input Task) Task {
 	}
 	existing.UpdatedAt = now()
 	return *existing
+}
+
+func (a *App) upsertNativeAccountLocked(input NativeAccount) (NativeAccount, error) {
+	key := nativeAccountKey(input.UserID, input.AccountID)
+	existing := a.native[key]
+	created := now()
+	if existing == nil {
+		existing = &NativeAccount{
+			UserID:    input.UserID,
+			AccountID: input.AccountID,
+			Status:    "needs-relogin",
+			CreatedAt: created,
+		}
+		a.native[key] = existing
+	}
+	if input.Phone != "" {
+		existing.Phone = input.Phone
+	}
+	if input.DisplayName != "" {
+		existing.DisplayName = input.DisplayName
+	}
+	if input.Session != "" {
+		encrypted, err := a.encryptNativeSession([]byte(input.Session))
+		if err != nil {
+			return NativeAccount{}, err
+		}
+		existing.Session = encrypted
+		existing.Ready = false
+		existing.Status = "session-imported"
+		existing.Error = "Go session payload 已加密保存，等待 gotd 健康检查"
+	}
+	if input.Status != "" {
+		existing.Status = normalizeNativeStatus(input.Status, input.Ready)
+	}
+	if input.Ready {
+		existing.Ready = true
+		existing.Status = "healthy"
+		existing.Error = ""
+	}
+	existing.UpdatedAt = now()
+	return *existing, nil
+}
+
+func (a *App) publicNativeAccountsLocked() []map[string]any {
+	accounts := make([]map[string]any, 0, len(a.native))
+	for _, account := range a.native {
+		accounts = append(accounts, publicNativeAccount(*account))
+	}
+	sort.SliceStable(accounts, func(i, j int) bool {
+		left := fmt.Sprint(accounts[i]["userId"], "/", accounts[i]["accountId"])
+		right := fmt.Sprint(accounts[j]["userId"], "/", accounts[j]["accountId"])
+		return left < right
+	})
+	return accounts
+}
+
+func (a *App) nativeReadyLocked() bool {
+	for _, account := range a.native {
+		if account.Ready && account.Session != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func (t Task) OrderOrDefault(fallback int64) int64 {
@@ -812,6 +1066,81 @@ func normalizeTransport(value string) string {
 	default:
 		return "http-bridge"
 	}
+}
+
+func publicNativeAccount(account NativeAccount) map[string]any {
+	return map[string]any{
+		"userId":      account.UserID,
+		"accountId":   account.AccountID,
+		"phone":       account.Phone,
+		"displayName": account.DisplayName,
+		"status":      normalizeNativeStatus(account.Status, account.Ready),
+		"ready":       account.Ready && account.Session != "",
+		"sessionSet":  account.Session != "",
+		"error":       account.Error,
+		"createdAt":   account.CreatedAt,
+		"updatedAt":   account.UpdatedAt,
+		"checkedAt":   account.CheckedAt,
+	}
+}
+
+func normalizeNativeStatus(status string, ready bool) string {
+	if ready {
+		return "healthy"
+	}
+	switch strings.TrimSpace(status) {
+	case "healthy", "session-imported", "needs-relogin", "failed":
+		return status
+	default:
+		return "needs-relogin"
+	}
+}
+
+func nativeAccountKey(userID, accountID string) string {
+	return userID + "|" + accountID
+}
+
+func (a *App) encryptNativeSession(plain []byte) (string, error) {
+	key, err := a.nativeSecretKey()
+	if err != nil {
+		return "", err
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return "", err
+	}
+	cipherText := gcm.Seal(nil, nonce, plain, nil)
+	return "v1:" + base64.StdEncoding.EncodeToString(nonce) + ":" + base64.StdEncoding.EncodeToString(cipherText), nil
+}
+
+func (a *App) nativeSecretKey() ([]byte, error) {
+	secretFile := strings.TrimSpace(os.Getenv("FEIGRAM_DOWNLOADER_SECRET_FILE"))
+	if secretFile == "" {
+		secretFile = filepath.Join(a.dataDir, "native-secret")
+		if _, err := os.Stat(secretFile); errors.Is(err, os.ErrNotExist) {
+			secret := make([]byte, 32)
+			if _, err := io.ReadFull(rand.Reader, secret); err != nil {
+				return nil, err
+			}
+			if err := os.WriteFile(secretFile, []byte(hex.EncodeToString(secret)), 0o600); err != nil {
+				return nil, err
+			}
+		}
+	}
+	secret, err := os.ReadFile(secretFile)
+	if err != nil {
+		return nil, err
+	}
+	sum := sha256.Sum256([]byte(strings.TrimSpace(string(secret))))
+	return sum[:], nil
 }
 
 func boolValue(value any) (bool, bool) {

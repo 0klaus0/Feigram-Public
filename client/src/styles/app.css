@@ -1653,6 +1653,34 @@ textarea {
   color: var(--muted);
 }
 
+.native-account-list {
+  display: grid;
+  gap: 8px;
+}
+
+.native-account-row {
+  align-items: center;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  padding: 8px 10px;
+}
+
+.native-account-row p {
+  color: var(--muted);
+  font-size: 0.82rem;
+  margin: 2px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.native-account-row > span {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
 .update-card span,
 .update-card small {
   color: var(--muted);

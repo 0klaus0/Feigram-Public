@@ -477,6 +477,7 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
   const [hashPlaceholder, setHashPlaceholder] = useState("");
   const [diagnostics, setDiagnostics] = useState(null);
   const [downloaderState, setDownloaderState] = useState(null);
+  const [nativeAccounts, setNativeAccounts] = useState([]);
   const [cacheSpeedTest, setCacheSpeedTest] = useState(null);
   const [cacheSpeedTesting, setCacheSpeedTesting] = useState(false);
   const [updateInfo, setUpdateInfo] = useState(null);
@@ -583,6 +584,19 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
       return null;
     }));
     setDownloaderState(await api("/api/admin/downloader").catch(() => null));
+    setNativeAccounts(await api("/api/admin/native-accounts").catch(() => []));
+  }
+
+  async function checkNativeAccount(accountId) {
+    setError("");
+    const result = await api(`/api/admin/native-accounts/${accountId}/health`, { method: "POST" }).catch((err) => {
+      setError(err.message);
+      return null;
+    });
+    if (result) {
+      setNativeAccounts((items) => items.map((item) => item.accountId === result.accountId ? result : item));
+      setDownloaderState(await api("/api/admin/downloader").catch(() => downloaderState));
+    }
   }
 
   async function saveDownloaderConfig(patch) {
@@ -864,6 +878,24 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
             {downloaderState.nativeMTProto && <p className="hint">{downloaderState.nativeMTProto.note}</p>}
             <p className="hint">{downloaderState.strategy || "Go sidecar 已就绪，等待 Telegram 下载桥接。"}</p>
             {downloaderState.error && <p className="error">{downloaderState.error}</p>}
+          </div>}
+          {nativeAccounts.length > 0 && <div className="cache-speed-card">
+            <div className="cache-speed-head">
+              <strong>Go 原生账号</strong>
+              <span>{nativeAccounts.filter((item) => item.ready).length} / {nativeAccounts.length} 可用</span>
+            </div>
+            <div className="native-account-list">
+              {nativeAccounts.map((item) => (
+                <div className="native-account-row" key={`${item.userId}:${item.accountId}`}>
+                  <div>
+                    <strong>{item.displayName || item.phone || item.accountId}</strong>
+                    <p>{item.ready ? "Go MTProto session 健康" : item.error || "等待 Go 重新登录生成原生 session"}</p>
+                  </div>
+                  <span>{item.sessionSet ? item.status : "未迁移"}</span>
+                  <button className="icon-button" type="button" onClick={() => checkNativeAccount(item.accountId)}>健康检查</button>
+                </div>
+              ))}
+            </div>
           </div>}
           {cacheSpeedTest && <div className="cache-speed-card">
             <div className="cache-speed-head">

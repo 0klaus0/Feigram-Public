@@ -14,6 +14,20 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.38",
+    title: "Feigram 2.0.38 更新",
+    version: "2.0.38",
+    level: "success",
+    createdAt: "2026-06-14T20:30:00.000Z",
+    body: [
+      "新增 Go 原生 Telegram 账号元数据同步，管理后台运行诊断可以看到每个账号是否具备 Go 原生 session。",
+      "Go 下载服务新增加密 native session 存储，密钥跟随 FPK 数据目录生成，不在接口和日志中返回 session 内容。",
+      "下载任务补齐 Go 原生 file location 预备字段：peer、messageId、fileReference、dcId、size、mimeType 和文件名。",
+      "新增 native-mtproto 健康检查闸门：账号未完成 Go 重新登录前，媒体源仍会自动保持稳定 HTTP 桥接，避免再次拖崩聊天和下载。",
+      "本版本完成 gotd/tdl 风格原生下载前置迁移；下一版会增加 Go 重新登录流程和 upload.getFile 原生分片读取。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.37",
     title: "Feigram 2.0.37 更新",
     version: "2.0.37",
