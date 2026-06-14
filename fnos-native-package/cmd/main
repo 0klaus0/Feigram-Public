@@ -2,12 +2,16 @@
 
 APP_HOME="${TRIM_APPDEST}"
 NODE_BIN="${APP_HOME}/bin/node"
+DOWNLOADER_BIN="${APP_HOME}/bin/feigram-downloader"
 SERVER_DIR="${APP_HOME}/server"
 DATA_HOME="/${TRIM_APPDEST_VOL}/@appshare/feigrampub"
 PID_FILE="${DATA_HOME}/feigram.pid"
+DOWNLOADER_PID_FILE="${DATA_HOME}/feigram-downloader.pid"
 VERSION_FILE="${DATA_HOME}/feigram.version"
 LOG_FILE="${DATA_HOME}/feigram.log"
+DOWNLOADER_LOG_FILE="${DATA_HOME}/feigram-downloader.log"
 PORT="${wizard_app_port:-3088}"
+DOWNLOADER_PORT="${FEIGRAM_DOWNLOADER_PORT:-3090}"
 
 export APP_PORT="$PORT"
 export APP_PASSWORD="${wizard_app_password}"
@@ -17,9 +21,13 @@ export TELEGRAM_API_HASH="${wizard_telegram_api_hash}"
 export DATA_DIR="${DATA_HOME}/data"
 export DOWNLOAD_DIR="${DATA_HOME}/data/downloads"
 export LOG_FILE="$LOG_FILE"
+export FEIGRAM_DOWNLOADER_PORT="$DOWNLOADER_PORT"
+export FEIGRAM_DOWNLOADER_DATA="${DATA_HOME}/data/downloader"
+export FEIGRAM_DOWNLOADER_URL="http://127.0.0.1:${DOWNLOADER_PORT}"
+export FEIGRAM_DOWNLOADER_LOG="$DOWNLOADER_LOG_FILE"
 export APP_EDITION="Feigram 2.0 fnOS Client Edition"
-export APP_VERSION="2.0.32"
-export APP_CHANGELOG="修复同账号后台缓存并发导致 Telegram 连接反复重连的问题，新增停滞任务自动重排续传。"
+export APP_VERSION="2.0.33"
+export APP_CHANGELOG="新增内嵌 Go 下载 sidecar，管理后台可查看服务状态、配置下载引擎，为后续替换 Telegram 大文件下载链路打基础。"
 export NODE_ENV="production"
 
 is_running() {
@@ -47,6 +55,17 @@ stop_running() {
         fi
     fi
     rm -f "$PID_FILE"
+    if [ -f "$DOWNLOADER_PID_FILE" ]; then
+        downloader_pid="$(cat "$DOWNLOADER_PID_FILE")"
+        if [ -n "$downloader_pid" ] && kill -0 "$downloader_pid" >/dev/null 2>&1; then
+            kill "$downloader_pid" >/dev/null 2>&1 || true
+            sleep 1
+            if kill -0 "$downloader_pid" >/dev/null 2>&1; then
+                kill -9 "$downloader_pid" >/dev/null 2>&1 || true
+            fi
+        fi
+        rm -f "$DOWNLOADER_PID_FILE"
+    fi
     if command -v pgrep >/dev/null 2>&1; then
         pattern="${APP_HOME}/bin/node.*src/index.js|${SERVER_DIR}/src/index.js"
         for old_pid in $(pgrep -f "$pattern" 2>/dev/null || true); do
@@ -60,12 +79,18 @@ stop_running() {
                 kill -9 "$old_pid" >/dev/null 2>&1 || true
             fi
         done
+        downloader_pattern="${APP_HOME}/bin/feigram-downloader|feigram-downloader"
+        for old_pid in $(pgrep -f "$downloader_pattern" 2>/dev/null || true); do
+            if [ -n "$old_pid" ] && [ "$old_pid" != "$$" ]; then
+                kill "$old_pid" >/dev/null 2>&1 || true
+            fi
+        done
     fi
 }
 
 case "$1" in
 start)
-    mkdir -p "$DATA_HOME" "$DATA_DIR" "$DOWNLOAD_DIR"
+    mkdir -p "$DATA_HOME" "$DATA_DIR" "$DOWNLOAD_DIR" "$FEIGRAM_DOWNLOADER_DATA"
     chmod +x "$NODE_BIN"
     if is_running; then
         running_version=""
@@ -90,7 +115,15 @@ start)
         echo "Port: ${APP_PORT}"
         echo "Data: ${DATA_DIR}"
         echo "Downloads: ${DOWNLOAD_DIR}"
+        echo "Go downloader: ${FEIGRAM_DOWNLOADER_URL}"
     } >> "$LOG_FILE"
+    if [ -x "$DOWNLOADER_BIN" ]; then
+        chmod +x "$DOWNLOADER_BIN"
+        nohup "$DOWNLOADER_BIN" >> "$DOWNLOADER_LOG_FILE" 2>&1 &
+        echo $! > "$DOWNLOADER_PID_FILE"
+    else
+        echo "Go downloader binary missing: $DOWNLOADER_BIN" >> "$LOG_FILE"
+    fi
     nohup "$NODE_BIN" src/index.js >> "$LOG_FILE" 2>&1 &
     echo $! > "$PID_FILE"
     sleep 2

@@ -469,11 +469,14 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
     foldersEnabled: true,
     foldersShowArchived: false,
     foldersAutoSelectFirst: true,
-    playerMode: "browser"
+    playerMode: "browser",
+    downloaderEngine: "node",
+    downloaderSidecarUrl: "http://127.0.0.1:3090"
   });
   const [apiIdPlaceholder, setApiIdPlaceholder] = useState("");
   const [hashPlaceholder, setHashPlaceholder] = useState("");
   const [diagnostics, setDiagnostics] = useState(null);
+  const [downloaderState, setDownloaderState] = useState(null);
   const [cacheSpeedTest, setCacheSpeedTest] = useState(null);
   const [cacheSpeedTesting, setCacheSpeedTesting] = useState(false);
   const [updateInfo, setUpdateInfo] = useState(null);
@@ -525,7 +528,9 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
         foldersEnabled: nextSettings.foldersEnabled !== false,
         foldersShowArchived: Boolean(nextSettings.foldersShowArchived),
         foldersAutoSelectFirst: nextSettings.foldersAutoSelectFirst !== false,
-        playerMode: nextSettings.playerMode || "browser"
+        playerMode: nextSettings.playerMode || "browser",
+        downloaderEngine: nextSettings.downloaderEngine || "node",
+        downloaderSidecarUrl: nextSettings.downloaderSidecarUrl || "http://127.0.0.1:3090"
       });
       setApiIdPlaceholder(nextSettings.telegramApiIdSet ? "已保存，留空则不修改" : "请输入 Telegram API ID");
       setHashPlaceholder(nextSettings.telegramApiHashSet ? "已保存，留空则不修改" : "请输入 Telegram API Hash");
@@ -577,6 +582,19 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
       setError(err.message);
       return null;
     }));
+    setDownloaderState(await api("/api/admin/downloader").catch(() => null));
+  }
+
+  async function saveDownloaderConfig(patch) {
+    setError("");
+    const result = await api("/api/admin/downloader/config", {
+      method: "PUT",
+      body: JSON.stringify(patch)
+    }).catch((err) => {
+      setError(err.message);
+      return null;
+    });
+    if (result) setDownloaderState(result);
   }
 
   async function checkUpdates() {
@@ -696,6 +714,13 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
             <option value="local">本地播放器（下载后打开）</option>
           </select></label>
           <p className="hint">推荐优先使用原始视频在线播放；遇到浏览器不支持的编码时，可切换为本地播放器模式。</p>
+          <h3>下载引擎</h3>
+          <label><span>大文件下载引擎</span><select value={settings.downloaderEngine} onChange={(e) => setSettings({ ...settings, downloaderEngine: e.target.value })}>
+            <option value="node">Node 内置下载（当前稳定）</option>
+            <option value="go-sidecar">Go 下载服务（实验）</option>
+          </select></label>
+          <label><span>Go 下载服务地址</span><input value={settings.downloaderSidecarUrl} onChange={(e) => setSettings({ ...settings, downloaderSidecarUrl: e.target.value })} placeholder="http://127.0.0.1:3090" /></label>
+          <p className="hint">Go 下载服务已随 FPK 内嵌启动；当前版本先提供独立服务、持久化队列和后台诊断，Telegram 大文件传输仍默认使用 Node 管线。</p>
           {saved && <p className="success">{saved}</p>}
           <button className="primary"><Settings size={18} />保存服务端设置</button>
         </form>}
@@ -796,11 +821,47 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
             <span><b>缓存大小</b>{formatBytes(diagnostics.cache?.bytes)}</span>
             <span><b>下载任务</b>{diagnostics.cache?.downloadTasks || 0}</span>
             <span><b>后台缓存</b>{diagnostics.cache?.silentCacheTasks || 0}</span>
+            <span><b>Go 下载服务</b>{diagnostics.downloader?.ok ? `运行中 v${diagnostics.downloader.version}` : diagnostics.downloader?.error || "未连接"}</span>
           </div> : <div className="empty">点击刷新诊断查看系统状态</div>}
           {diagnostics && <div className="diagnostics-paths">
             <p><strong>数据目录</strong>{diagnostics.paths?.dataDir}</p>
             <p><strong>缓存目录</strong>{diagnostics.paths?.cacheBase}</p>
             <p><strong>日志文件</strong>{diagnostics.paths?.logFile || "未设置"}</p>
+            <p><strong>Go 下载日志</strong>{diagnostics.paths?.downloaderLogFile || "未设置"}</p>
+          </div>}
+          {downloaderState && <div className="cache-speed-card">
+            <div className="cache-speed-head">
+              <strong>Go 下载服务</strong>
+              <span>{downloaderState.ok ? "运行中" : "未连接"}</span>
+            </div>
+            <div className="diagnostics-grid compact">
+              <span><b>版本</b>{downloaderState.version || "-"}</span>
+              <span><b>PID</b>{downloaderState.pid || "-"}</span>
+              <span><b>运行时间</b>{downloaderState.uptime ? `${Math.floor(downloaderState.uptime / 60)} 分钟` : "-"}</span>
+              <span><b>任务数</b>{downloaderState.tasks?.length || downloaderState.taskCount || 0}</span>
+              <span><b>并发</b>{downloaderState.config?.concurrency || "-"}</span>
+              <span><b>限速</b>{downloaderState.config?.rateLimitBps ? `${formatBytes(downloaderState.config.rateLimitBps)}/s` : "不限速"}</span>
+              <span><b>模式</b>{downloaderState.config?.mode === "fast" ? "高速" : "保守"}</span>
+              <span><b>数据目录</b>{downloaderState.dataDir || "-"}</span>
+            </div>
+            <div className="silent-cache-controls downloader-config-controls">
+              <label className="check-row"><input type="checkbox" checked={downloaderState.config?.enabled !== false} onChange={(e) => saveDownloaderConfig({ enabled: e.target.checked })} /><span>{downloaderState.config?.enabled !== false ? "Go 队列已启用" : "Go 队列已暂停"}</span></label>
+              <label><span>Go 并发</span><select value={String(downloaderState.config?.concurrency || 1)} onChange={(e) => saveDownloaderConfig({ concurrency: Number(e.target.value) })}>
+                {[1, 2, 3, 4, 5, 10].map((value) => <option value={String(value)} key={value}>{value}</option>)}
+              </select></label>
+              <label><span>Go 限速</span><select value={String(downloaderState.config?.rateLimitBps || 0)} onChange={(e) => saveDownloaderConfig({ rateLimitBps: Number(e.target.value) })}>
+                <option value="0">不限速</option>
+                <option value={String(1024 * 1024)}>1 MB/s</option>
+                <option value={String(5 * 1024 * 1024)}>5 MB/s</option>
+                <option value={String(10 * 1024 * 1024)}>10 MB/s</option>
+              </select></label>
+              <label><span>Go 模式</span><select value={downloaderState.config?.mode || "conservative"} onChange={(e) => saveDownloaderConfig({ mode: e.target.value })}>
+                <option value="conservative">保守</option>
+                <option value="fast">高速</option>
+              </select></label>
+            </div>
+            <p className="hint">{downloaderState.strategy || "Go sidecar 已就绪，等待 Telegram 下载桥接。"}</p>
+            {downloaderState.error && <p className="error">{downloaderState.error}</p>}
           </div>}
           {cacheSpeedTest && <div className="cache-speed-card">
             <div className="cache-speed-head">
@@ -841,6 +902,7 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
             <a href={updateInfo.url} target="_blank" rel="noreferrer">打开发布页</a>
           </div>}
           {diagnostics?.logTail && <pre className="log-tail system-log-tail">{diagnostics.logTail}</pre>}
+          {diagnostics?.downloaderLogTail && <pre className="log-tail system-log-tail">{diagnostics.downloaderLogTail}</pre>}
         </div>}
       </div>
     </div>

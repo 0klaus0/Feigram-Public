@@ -21,6 +21,7 @@ const { publicSettings, readSettings, writeSettings } = require("./settings");
 const { readPolicies } = require("./policies");
 const { readAbout, readAnnouncements } = require("./releaseContent");
 const { checkForUpdates, diagnostics } = require("./diagnostics");
+const downloaderSidecar = require("./downloaderSidecar");
 const { migrateStore } = require("./migrations");
 const { rateLimit } = require("./rateLimit");
 const tg = require("./telegramService");
@@ -74,6 +75,14 @@ app.get("/api/admin/users", adminOnly, asyncRoute(async (_req, res) => {
 
 app.get("/api/admin/diagnostics", adminOnly, asyncRoute(async (_req, res) => {
   res.json(await diagnostics());
+}));
+
+app.get("/api/admin/downloader", adminOnly, asyncRoute(async (_req, res) => {
+  res.json(await downloaderSidecar.state());
+}));
+
+app.put("/api/admin/downloader/config", adminOnly, asyncRoute(async (req, res) => {
+  res.json(await downloaderSidecar.updateConfig(req.body || {}));
 }));
 
 app.post("/api/admin/cache-speed-diagnostics", adminOnly, asyncRoute(async (req, res) => {

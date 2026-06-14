@@ -14,6 +14,19 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.33",
+    title: "Feigram 2.0.33 更新",
+    version: "2.0.33",
+    level: "success",
+    createdAt: "2026-06-14T17:30:00.000Z",
+    body: [
+      "新增内嵌 Go 下载 sidecar：FPK 启动时会同时拉起独立 Go 服务，单独保存下载队列、配置和运行状态。",
+      "管理后台服务端设置新增下载引擎选择，可查看并配置 Go sidecar 的启用状态、并发、限速和保守/高速模式。",
+      "运行诊断新增 Go 下载服务健康状态、日志路径和 sidecar 日志，方便定位后续 Telegram 大文件下载桥接问题。",
+      "本版本先完成 sidecar 基础设施接入，默认仍使用 Node 内置下载管线；后续将把 Telegram 大文件传输迁移到 Go 服务，避免旧缓存状态机继续叠补丁。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.32",
     title: "Feigram 2.0.32 更新",
     version: "2.0.32",
