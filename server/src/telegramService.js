@@ -2524,6 +2524,13 @@ function internalMediaSourceUrl(userId, accountId, peerId, messageId) {
   return `http://127.0.0.1:${port}/api/internal/media/${encodeURIComponent(userId)}/${encodeURIComponent(accountId)}/${encodeURIComponent(peerId)}/${encodeURIComponent(messageId)}?token=${encodeURIComponent(token)}`;
 }
 
+function internalMediaMetadataUrl(userId, accountId, peerId, messageId) {
+  const token = process.env.FEIGRAM_INTERNAL_TOKEN || "";
+  if (!token) throw Object.assign(new Error("内部下载令牌未初始化，请重启 Feigram"), { status: 500 });
+  const port = Number(process.env.APP_PORT || 3088);
+  return `http://127.0.0.1:${port}/api/internal/media-meta/${encodeURIComponent(userId)}/${encodeURIComponent(accountId)}/${encodeURIComponent(peerId)}/${encodeURIComponent(messageId)}?token=${encodeURIComponent(token)}`;
+}
+
 function base64Buffer(value) {
   if (!value) return "";
   if (Buffer.isBuffer(value)) return value.toString("base64");
@@ -2619,12 +2626,27 @@ async function ensureGoDownloadTask(userId, accountId, peerId, messageId, option
     autoCache: Boolean(options.autoCache || source === "auto"),
     transport,
     sourceUrl: internalMediaSourceUrl(userId, accountId, peerId, messageId),
+    metadataUrl: internalMediaMetadataUrl(userId, accountId, peerId, messageId),
     inlineUrl: `/api/media/${accountId}/${encodeURIComponent(peerId)}/${messageId}?inline=1`,
     nativeFile: nativeFileLocation(peerId, message, contentType, fileName, kind),
     order: Number(options.order || 0) || Date.now(),
     dedupKey: options.dedupKey || ""
   });
   return normalizeGoDownloadTask(task);
+}
+
+async function mediaNativeMetadata(userId, accountId, peerId, messageId) {
+  const { message } = await mediaMessage(userId, accountId, peerId, messageId);
+  const contentType = message.photo ? "image/jpeg" : message.document?.mimeType || "";
+  const kind = mediaKind(message, contentType);
+  const file = message.file || {};
+  const fileName = safeFileName(file.name || message.document?.mimeType || `telegram-${messageId}`);
+  return {
+    accountId,
+    peerId,
+    messageId: Number(messageId),
+    nativeFile: nativeFileLocation(peerId, message, contentType, fileName, kind)
+  };
 }
 
 async function startGoDownloadTask(userId, accountId, peerId, messageId, _io, options = {}) {
@@ -2842,6 +2864,23 @@ async function goNativeAccountLoginStart(userId, accountId, payload = {}) {
   });
 }
 
+async function goNativeAccountQRLoginStart(userId, accountId, payload = {}) {
+  const account = (await readAccounts()).find((item) => item.userId === userId && item.id === accountId);
+  if (!account) throw Object.assign(new Error("账号不存在"), { status: 404 });
+  const { apiId, apiHash } = await telegramConfig();
+  await syncGoNativeAccount(account).catch(() => null);
+  return downloaderSidecar.startNativeQRLogin(userId, accountId, {
+    apiId: payload.apiId || apiId,
+    apiHash: payload.apiHash || apiHash
+  });
+}
+
+async function goNativeAccountQRLoginStatus(userId, accountId, payload = {}) {
+  return downloaderSidecar.pollNativeQRLogin(userId, accountId, {
+    loginId: payload.loginId
+  });
+}
+
 async function goNativeAccountLoginCode(userId, accountId, payload = {}) {
   return downloaderSidecar.submitNativeLoginCode(userId, accountId, {
     loginId: payload.loginId,
@@ -2920,8 +2959,11 @@ module.exports = {
   nativeAccounts: goNativeAccounts,
   nativeAccountHealth: goNativeAccountHealth,
   nativeAccountLoginStart: goNativeAccountLoginStart,
+  nativeAccountQRLoginStart: goNativeAccountQRLoginStart,
+  nativeAccountQRLoginStatus: goNativeAccountQRLoginStatus,
   nativeAccountLoginCode: goNativeAccountLoginCode,
   nativeAccountLoginPassword: goNativeAccountLoginPassword,
+  mediaNativeMetadata,
   cancelSilentCacheTask: cancelGoSilentCacheTask,
   cancelSilentCacheTasks: cancelGoSilentCacheTasks,
   resumeDownloadTask: resumeGoDownloadTask,

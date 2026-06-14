@@ -66,6 +66,16 @@ app.get("/api/internal/media/:user/:account/:peer/:messageId", asyncRoute(async 
   }
 }));
 
+app.get("/api/internal/media-meta/:user/:account/:peer/:messageId", asyncRoute(async (req, res) => {
+  const expected = process.env.FEIGRAM_INTERNAL_TOKEN || "";
+  const provided = req.query.token || req.get("x-feigram-internal-token") || "";
+  if (!expected || provided !== expected) {
+    res.status(403).json({ error: "forbidden" });
+    return;
+  }
+  res.json(await tg.mediaNativeMetadata(req.params.user, req.params.account, req.params.peer, req.params.messageId));
+}));
+
 app.use("/api", authMiddleware());
 
 app.get("/api/me", asyncRoute(async (req, res) => {
@@ -108,6 +118,14 @@ app.post("/api/admin/native-accounts/:account/health", adminOnly, asyncRoute(asy
 
 app.post("/api/admin/native-accounts/:account/login/start", adminOnly, asyncRoute(async (req, res) => {
   res.json(await tg.nativeAccountLoginStart(req.user.id, req.params.account, req.body || {}));
+}));
+
+app.post("/api/admin/native-accounts/:account/login/qr-start", adminOnly, asyncRoute(async (req, res) => {
+  res.json(await tg.nativeAccountQRLoginStart(req.user.id, req.params.account, req.body || {}));
+}));
+
+app.post("/api/admin/native-accounts/:account/login/qr-status", adminOnly, asyncRoute(async (req, res) => {
+  res.json(await tg.nativeAccountQRLoginStatus(req.user.id, req.params.account, req.body || {}));
 }));
 
 app.post("/api/admin/native-accounts/:account/login/code", adminOnly, asyncRoute(async (req, res) => {

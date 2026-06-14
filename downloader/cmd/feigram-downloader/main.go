@@ -28,10 +28,11 @@ import (
 	"github.com/gotd/td/telegram"
 	"github.com/gotd/td/telegram/auth"
 	"github.com/gotd/td/tg"
+	"rsc.io/qr"
 )
 
 const (
-	version         = "0.5.0"
+	version         = "0.6.0"
 	defaultPartSize = 1024 * 1024
 )
 
@@ -63,6 +64,7 @@ type Task struct {
 	AutoCache   bool               `json:"autoCache"`
 	Transport   string             `json:"transport"`
 	SourceURL   string             `json:"sourceUrl"`
+	MetadataURL string             `json:"metadataUrl"`
 	FilePath    string             `json:"filePath"`
 	PartPath    string             `json:"partPath"`
 	InlineURL   string             `json:"inlineUrl"`
@@ -124,6 +126,22 @@ type NativeLogin struct {
 	UpdatedAt     time.Time
 }
 
+type NativeQRLogin struct {
+	ID        string
+	UserID    string
+	AccountID string
+	APIID     int
+	APIHash   string
+	Token     []byte
+	URL       string
+	QRImage   string
+	Status    string
+	Error     string
+	Expires   time.Time
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
 type nativeLoginResult struct {
 	Account          NativeAccount
 	Error            error
@@ -131,6 +149,17 @@ type nativeLoginResult struct {
 	PhoneCodeHash    string
 	PasswordRequired bool
 	Done             bool
+}
+
+type nativeQRLoginResult struct {
+	Account NativeAccount `json:"account,omitempty"`
+	LoginID string        `json:"loginId"`
+	URL     string        `json:"url,omitempty"`
+	QRImage string        `json:"qrImage,omitempty"`
+	Status  string        `json:"status"`
+	Done    bool          `json:"done"`
+	Error   string        `json:"error,omitempty"`
+	Expires string        `json:"expires,omitempty"`
 }
 
 type Store struct {
@@ -159,6 +188,7 @@ type App struct {
 	tasks      map[string]*Task
 	native     map[string]*NativeAccount
 	logins     map[string]*NativeLogin
+	qrLogins   map[string]*NativeQRLogin
 	running    map[string]chan struct{}
 	client     *http.Client
 }
@@ -181,10 +211,11 @@ func main() {
 			Transport:    "http-bridge",
 			UpdatedAt:    now(),
 		},
-		tasks:   map[string]*Task{},
-		native:  map[string]*NativeAccount{},
-		logins:  map[string]*NativeLogin{},
-		running: map[string]chan struct{}{},
+		tasks:    map[string]*Task{},
+		native:   map[string]*NativeAccount{},
+		logins:   map[string]*NativeLogin{},
+		qrLogins: map[string]*NativeQRLogin{},
+		running:  map[string]chan struct{}{},
 		client: &http.Client{
 			Timeout: 0,
 			Transport: &http.Transport{
@@ -692,6 +723,29 @@ func (a *App) downloadNativeMTProto(task *Task, cancel <-chan struct{}) error {
 				Limit:    limit,
 			})
 			if err != nil {
+				if strings.Contains(err.Error(), "FILE_REFERENCE_EXPIRED") {
+					refreshed, refreshErr := a.refreshNativeFileLocation(task.ID)
+					if refreshErr != nil {
+						return fmt.Errorf("FILE_REFERENCE_EXPIRED: 自动刷新消息元数据失败：%w", refreshErr)
+					}
+					fileID, err = strconv.ParseInt(refreshed.FileID, 10, 64)
+					if err != nil {
+						return fmt.Errorf("invalid refreshed native file id: %w", err)
+					}
+					accessHash, err = strconv.ParseInt(refreshed.AccessHash, 10, 64)
+					if err != nil {
+						return fmt.Errorf("invalid refreshed native access hash: %w", err)
+					}
+					fileReference, err = base64.StdEncoding.DecodeString(refreshed.FileReference)
+					if err != nil {
+						return fmt.Errorf("invalid refreshed native file reference: %w", err)
+					}
+					log.Printf("task %s refreshed FILE_REFERENCE and resumed at %d", task.ID, downloaded)
+					continue
+				}
+				if strings.Contains(err.Error(), "_MIGRATE_") {
+					log.Printf("task %s got Telegram DC migration request at offset %d: %v", task.ID, downloaded, err)
+				}
 				return classifyNativeReadError(err)
 			}
 			chunk, ok := resp.(*tg.UploadFile)
@@ -743,6 +797,47 @@ func (a *App) downloadNativeMTProto(task *Task, cancel <-chan struct{}) error {
 		return fmt.Errorf("file incomplete: %d / %d", stat.Size(), size)
 	}
 	return os.Rename(task.PartPath, task.FilePath)
+}
+
+func (a *App) refreshNativeFileLocation(taskID string) (NativeFileLocation, error) {
+	task := a.taskSnapshot(taskID)
+	if task == nil {
+		return NativeFileLocation{}, errors.New("task not found")
+	}
+	if task.MetadataURL == "" {
+		return NativeFileLocation{}, errors.New("metadata refresh url is empty")
+	}
+	req, err := http.NewRequest(http.MethodGet, task.MetadataURL, nil)
+	if err != nil {
+		return NativeFileLocation{}, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	resp, err := a.client.Do(req.WithContext(ctx))
+	if err != nil {
+		return NativeFileLocation{}, err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
+	if resp.StatusCode != http.StatusOK {
+		return NativeFileLocation{}, fmt.Errorf("metadata refresh returned %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	var payload struct {
+		NativeFile NativeFileLocation `json:"nativeFile"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return NativeFileLocation{}, err
+	}
+	if payload.NativeFile.FileID == "" || payload.NativeFile.AccessHash == "" || payload.NativeFile.FileReference == "" {
+		return NativeFileLocation{}, errors.New("refreshed metadata missing native file location")
+	}
+	a.updateTask(taskID, func(t *Task) {
+		t.NativeFile = payload.NativeFile
+		t.NativeFile.UpdatedAt = coalesce(t.NativeFile.UpdatedAt, now())
+		t.Error = ""
+		t.UpdatedAt = now()
+	})
+	return payload.NativeFile, nil
 }
 
 func (a *App) taskTransport(task Task) string {
@@ -960,6 +1055,37 @@ func (a *App) handleNativeAccount(w http.ResponseWriter, r *http.Request) {
 			"done":             result.Done,
 			"account":          publicNativeAccount(result.Account),
 		})
+	case r.Method == http.MethodPost && action == "login" && len(parts) >= 4 && parts[3] == "qr-start":
+		a.mu.Unlock()
+		var input struct {
+			APIID   int    `json:"apiId"`
+			APIHash string `json:"apiHash"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		result, err := a.startNativeQRLogin(userID, accountID, input.APIID, input.APIHash)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+	case r.Method == http.MethodPost && action == "login" && len(parts) >= 4 && parts[3] == "qr-status":
+		a.mu.Unlock()
+		var input struct {
+			LoginID string `json:"loginId"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		result, err := a.pollNativeQRLogin(input.LoginID)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
 	case r.Method == http.MethodPost && action == "login" && len(parts) >= 4 && (parts[3] == "code" || parts[3] == "password"):
 		a.mu.Unlock()
 		var input struct {
@@ -1060,19 +1186,19 @@ func (a *App) stateLocked() map[string]any {
 		}
 	}
 	transport := normalizeTransport(a.config.Transport)
-	strategy := "Go 下载服务已接管队列、断点、限速和落盘；媒体源传输层当前使用 Node/GramJS HTTP 桥接。若 Node 未启动会自动重试并显示 connection refused。"
+	strategy := "Go 下载服务已接管队列、断点、限速和落盘；可在保守模式与 Go 原生 MTProto 模式之间切换，HTTP 桥接仍作为回退。"
 	nativeReady := a.nativeReadyLocked()
 	native := map[string]any{
 		"ready":  nativeReady,
-		"status": "pending-session-migration",
-		"note":   "Go 原生 MTProto/gotd 传输层接口已接入，下一版迁移 Telegram session 与 file location 后启用真实原生读取。",
+		"status": "needs-login",
+		"note":   "Go 原生 MTProto 需要在账号管理里扫码登录，完成后可做真实 Telegram 小文件健康检查。",
 	}
 	if nativeReady {
 		native["status"] = "healthy"
 		native["note"] = "已有健康 Go 原生 MTProto session，可以灰度启用 native-mtproto。"
 	}
 	if transport == "native-mtproto" {
-		strategy = "Go 原生 MTProto 传输层已选择，但当前版本还缺少 Go session/file location 迁移；请仅用于开发验证。"
+		strategy = "Go 原生 MTProto 传输层已选择；文件读取会直接使用 Go session，FILE_REFERENCE_EXPIRED 会尝试刷新元数据后续传。"
 	}
 	return map[string]any{
 		"ok":            true,
@@ -1144,6 +1270,9 @@ func (a *App) upsertTaskLocked(input Task) Task {
 	existing.AutoCache = existing.AutoCache || input.AutoCache
 	if input.SourceURL != "" {
 		existing.SourceURL = input.SourceURL
+	}
+	if input.MetadataURL != "" {
+		existing.MetadataURL = input.MetadataURL
 	}
 	if input.FilePath != "" {
 		existing.FilePath = input.FilePath
@@ -1332,7 +1461,7 @@ func normalizeNativeStatus(status string, ready bool) string {
 		return "healthy"
 	}
 	switch strings.TrimSpace(status) {
-	case "healthy", "session-imported", "needs-relogin", "code-sent", "password-needed", "checking", "failed":
+	case "healthy", "session-imported", "needs-relogin", "code-sent", "password-needed", "qr-waiting", "checking", "failed":
 		return status
 	default:
 		return "needs-relogin"
@@ -1464,6 +1593,10 @@ func (s nativeSessionStorage) StoreSession(ctx context.Context, data []byte) err
 func (a *App) nativeAccountSnapshot(userID, accountID string) (NativeAccount, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	return a.nativeAccountSnapshotLocked(userID, accountID)
+}
+
+func (a *App) nativeAccountSnapshotLocked(userID, accountID string) (NativeAccount, error) {
 	account := a.native[nativeAccountKey(userID, accountID)]
 	if account == nil {
 		return NativeAccount{}, fmt.Errorf("Go 原生 MTProto 账号未准备好")
@@ -1521,6 +1654,13 @@ func (a *App) nativeHealthCheck(account NativeAccount) (NativeAccount, error) {
 		if !status.Authorized {
 			return errors.New("gotd session 未授权，请重新登录")
 		}
+		sample := a.nativeSampleTask(account.UserID, account.AccountID)
+		if sample != nil {
+			if err := readNativeSample(ctx, client.API(), sample.NativeFile); err != nil {
+				return fmt.Errorf("Go 原生文件抽样读取失败：%w", classifyNativeReadError(err))
+			}
+			account.Error = "健康检查已真实读取 Telegram 文件分片"
+		}
 		return nil
 	})
 	if err != nil {
@@ -1531,8 +1671,47 @@ func (a *App) nativeHealthCheck(account NativeAccount) (NativeAccount, error) {
 	}
 	account.Ready = true
 	account.Status = "healthy"
-	account.Error = ""
+	if account.Error == "" {
+		account.Error = "Go 原生 MTProto session 健康"
+	}
 	return a.saveNativeAccount(account)
+}
+
+func (a *App) nativeSampleTask(userID, accountID string) *Task {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, task := range a.tasks {
+		if task.UserID == userID && task.AccountID == accountID && task.NativeFile.FileID != "" && task.NativeFile.AccessHash != "" && task.NativeFile.FileReference != "" {
+			copy := *task
+			return &copy
+		}
+	}
+	return nil
+}
+
+func readNativeSample(ctx context.Context, api *tg.Client, file NativeFileLocation) error {
+	fileID, err := strconv.ParseInt(file.FileID, 10, 64)
+	if err != nil {
+		return err
+	}
+	accessHash, err := strconv.ParseInt(file.AccessHash, 10, 64)
+	if err != nil {
+		return err
+	}
+	fileReference, err := base64.StdEncoding.DecodeString(file.FileReference)
+	if err != nil {
+		return err
+	}
+	_, err = api.UploadGetFile(ctx, &tg.UploadGetFileRequest{
+		Location: &tg.InputDocumentFileLocation{
+			ID:            fileID,
+			AccessHash:    accessHash,
+			FileReference: fileReference,
+		},
+		Offset: 0,
+		Limit:  4096,
+	})
+	return err
 }
 
 func (a *App) saveNativeAccount(account NativeAccount) (NativeAccount, error) {
@@ -1666,6 +1845,282 @@ func (a *App) continueNativeLogin(loginID, step, code, password string) (nativeL
 	case <-time.After(60 * time.Second):
 		return nativeLoginResult{}, errors.New("等待 Telegram 登录结果超时")
 	}
+}
+
+func (a *App) startNativeQRLogin(userID, accountID string, apiID int, apiHash string) (nativeQRLoginResult, error) {
+	a.mu.Lock()
+	account := a.native[nativeAccountKey(userID, accountID)]
+	if account == nil {
+		a.mu.Unlock()
+		return nativeQRLoginResult{}, errors.New("native account is not prepared")
+	}
+	if apiID <= 0 {
+		apiID = account.APIID
+	}
+	if apiHash == "" && account.APIHash != "" {
+		copy := *account
+		a.mu.Unlock()
+		var err error
+		apiHash, err = a.nativeAPIHash(copy)
+		if err != nil {
+			return nativeQRLoginResult{}, err
+		}
+		a.mu.Lock()
+		account = a.native[nativeAccountKey(userID, accountID)]
+	}
+	if account == nil {
+		a.mu.Unlock()
+		return nativeQRLoginResult{}, errors.New("native account is not prepared")
+	}
+	if apiID <= 0 || apiHash == "" {
+		a.mu.Unlock()
+		return nativeQRLoginResult{}, errors.New("apiId/apiHash is required")
+	}
+	if account.APIID != apiID {
+		account.APIID = apiID
+	}
+	if apiHash != "" {
+		encrypted, err := a.encryptNativeSession([]byte(apiHash))
+		if err != nil {
+			a.mu.Unlock()
+			return nativeQRLoginResult{}, err
+		}
+		account.APIHash = encrypted
+	}
+	account.Ready = false
+	account.Status = "qr-waiting"
+	account.Error = ""
+	account.UpdatedAt = now()
+	_ = a.saveNativeLocked()
+	snapshot := *account
+	loginID := taskID("native-qr", userID, accountID, time.Now().UnixNano())
+	login := &NativeQRLogin{
+		ID:        loginID,
+		UserID:    userID,
+		AccountID: accountID,
+		APIID:     apiID,
+		APIHash:   apiHash,
+		Status:    "starting",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	a.qrLogins[loginID] = login
+	a.mu.Unlock()
+
+	token, err := a.exportNativeQRToken(snapshot, apiHash)
+	if err != nil {
+		a.mu.Lock()
+		delete(a.qrLogins, loginID)
+		if account := a.native[nativeAccountKey(userID, accountID)]; account != nil {
+			account.Status = "failed"
+			account.Error = compactError(err)
+			account.UpdatedAt = now()
+			_ = a.saveNativeLocked()
+		}
+		a.mu.Unlock()
+		return nativeQRLoginResult{}, err
+	}
+	a.mu.Lock()
+	login = a.qrLogins[loginID]
+	if login == nil {
+		a.mu.Unlock()
+		return nativeQRLoginResult{}, errors.New("QR 登录流程已取消")
+	}
+	login.Token = token.Token
+	login.URL = qrLoginURL(token.Token)
+	login.QRImage = qrPNGDataURL(login.URL)
+	login.Expires = time.Unix(int64(token.Expires), 0)
+	login.Status = "waiting-scan"
+	login.UpdatedAt = time.Now()
+	result := nativeQRLoginResult{
+		LoginID: login.ID,
+		URL:     login.URL,
+		QRImage: login.QRImage,
+		Status:  login.Status,
+		Expires: login.Expires.Format(time.RFC3339),
+	}
+	a.mu.Unlock()
+	return result, nil
+}
+
+func (a *App) pollNativeQRLogin(loginID string) (nativeQRLoginResult, error) {
+	a.mu.Lock()
+	login := a.qrLogins[loginID]
+	if login == nil {
+		a.mu.Unlock()
+		return nativeQRLoginResult{}, errors.New("QR 登录流程不存在或已过期")
+	}
+	snapshot, err := a.nativeAccountSnapshotLocked(login.UserID, login.AccountID)
+	if err != nil {
+		a.mu.Unlock()
+		return nativeQRLoginResult{}, err
+	}
+	token := append([]byte(nil), login.Token...)
+	apiHash := login.APIHash
+	expires := login.Expires
+	a.mu.Unlock()
+
+	if len(token) == 0 || time.Now().After(expires.Add(-15*time.Second)) {
+		fresh, err := a.exportNativeQRToken(snapshot, apiHash)
+		if err != nil {
+			return nativeQRLoginResult{}, err
+		}
+		a.mu.Lock()
+		login := a.qrLogins[loginID]
+		if login == nil {
+			a.mu.Unlock()
+			return nativeQRLoginResult{}, errors.New("QR 登录流程已取消")
+		}
+		login.Token = fresh.Token
+		login.URL = qrLoginURL(fresh.Token)
+		login.QRImage = qrPNGDataURL(login.URL)
+		login.Expires = time.Unix(int64(fresh.Expires), 0)
+		login.Status = "waiting-scan"
+		login.UpdatedAt = time.Now()
+		result := nativeQRLoginResult{LoginID: login.ID, URL: login.URL, QRImage: login.QRImage, Status: login.Status, Expires: login.Expires.Format(time.RFC3339)}
+		a.mu.Unlock()
+		return result, nil
+	}
+
+	client, err := a.newTelegramClient(snapshot, apiHash)
+	if err != nil {
+		return nativeQRLoginResult{}, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	var account NativeAccount
+	var response nativeQRLoginResult
+	err = client.Run(ctx, func(ctx context.Context) error {
+		status, err := client.Auth().Status(ctx)
+		if err == nil && status.Authorized {
+			account = snapshot
+			account.Ready = true
+			account.Status = "healthy"
+			account.Error = ""
+			account.CheckedAt = now()
+			account, _ = a.saveNativeAccount(account)
+			response = nativeQRLoginResult{Account: account, LoginID: loginID, Status: "authorized", Done: true}
+			return nil
+		}
+		result, err := client.API().AuthImportLoginToken(ctx, token)
+		if err != nil {
+			if strings.Contains(err.Error(), "AUTH_TOKEN_EXPIRED") {
+				return err
+			}
+			if strings.Contains(err.Error(), "SESSION_PASSWORD_NEEDED") {
+				return fmt.Errorf("QR 登录遇到两步验证，请临时使用验证码登录完成 Go session")
+			}
+			return err
+		}
+		switch value := result.(type) {
+		case *tg.AuthLoginTokenSuccess:
+			_ = value
+			account = snapshot
+			account.Ready = true
+			account.Status = "healthy"
+			account.Error = ""
+			account.CheckedAt = now()
+			account, _ = a.saveNativeAccount(account)
+			response = nativeQRLoginResult{Account: account, LoginID: loginID, Status: "authorized", Done: true}
+			return nil
+		case *tg.AuthLoginTokenMigrateTo:
+			log.Printf("native qr login requires DC migration to %d for %s/%s", value.DCID, snapshot.UserID, snapshot.AccountID)
+			return fmt.Errorf("QR 登录需要迁移到 Telegram DC %d，当前版本已记录诊断，请稍后重试或使用验证码兜底", value.DCID)
+		case *tg.AuthLoginToken:
+			a.mu.Lock()
+			if login := a.qrLogins[loginID]; login != nil {
+				login.Token = value.Token
+				login.URL = qrLoginURL(value.Token)
+				login.QRImage = qrPNGDataURL(login.URL)
+				login.Expires = time.Unix(int64(value.Expires), 0)
+				login.Status = "waiting-scan"
+				login.UpdatedAt = time.Now()
+				response = nativeQRLoginResult{LoginID: login.ID, URL: login.URL, QRImage: login.QRImage, Status: login.Status, Expires: login.Expires.Format(time.RFC3339)}
+			}
+			a.mu.Unlock()
+			return nil
+		default:
+			return fmt.Errorf("未知 QR 登录响应：%T", result)
+		}
+	})
+	if err != nil {
+		if strings.Contains(err.Error(), "AUTH_TOKEN_EXPIRED") {
+			return a.pollNativeQRLogin(loginID)
+		}
+		a.mu.Lock()
+		if login := a.qrLogins[loginID]; login != nil {
+			login.Status = "error"
+			login.Error = compactError(err)
+			login.UpdatedAt = time.Now()
+			response = nativeQRLoginResult{LoginID: login.ID, URL: login.URL, QRImage: login.QRImage, Status: login.Status, Error: login.Error, Expires: login.Expires.Format(time.RFC3339)}
+		}
+		a.mu.Unlock()
+		if response.LoginID != "" {
+			return response, nil
+		}
+		return nativeQRLoginResult{}, err
+	}
+	if response.Done {
+		a.mu.Lock()
+		delete(a.qrLogins, loginID)
+		a.mu.Unlock()
+	}
+	return response, nil
+}
+
+func (a *App) exportNativeQRToken(account NativeAccount, apiHash string) (*tg.AuthLoginToken, error) {
+	client, err := a.newTelegramClient(account, apiHash)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	var token *tg.AuthLoginToken
+	err = client.Run(ctx, func(ctx context.Context) error {
+		status, err := client.Auth().Status(ctx)
+		if err == nil && status.Authorized {
+			return errors.New("Go 原生账号已授权，无需重新扫码")
+		}
+		result, err := client.API().AuthExportLoginToken(ctx, &tg.AuthExportLoginTokenRequest{
+			APIID:     account.APIID,
+			APIHash:   apiHash,
+			ExceptIDs: []int64{},
+		})
+		if err != nil {
+			return err
+		}
+		switch value := result.(type) {
+		case *tg.AuthLoginToken:
+			token = value
+			return nil
+		case *tg.AuthLoginTokenMigrateTo:
+			log.Printf("native qr export requires DC migration to %d for %s/%s", value.DCID, account.UserID, account.AccountID)
+			return fmt.Errorf("QR 登录需要迁移到 Telegram DC %d，当前版本已记录诊断，请稍后重试", value.DCID)
+		case *tg.AuthLoginTokenSuccess:
+			return errors.New("Go 原生账号已授权")
+		default:
+			return fmt.Errorf("未知 QR token 响应：%T", result)
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+	if token == nil || len(token.Token) == 0 {
+		return nil, errors.New("Telegram 未返回 QR 登录 token")
+	}
+	return token, nil
+}
+
+func qrLoginURL(token []byte) string {
+	return "tg://login?token=" + base64.RawURLEncoding.EncodeToString(token)
+}
+
+func qrPNGDataURL(value string) string {
+	code, err := qr.Encode(value, qr.M)
+	if err != nil {
+		return ""
+	}
+	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(code.PNG())
 }
 
 func (a *App) runNativeLogin(ctx context.Context, login *NativeLogin) {

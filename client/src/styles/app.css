@@ -1487,7 +1487,7 @@ textarea {
   border-radius: 8px;
   display: grid;
   gap: 10px;
-  grid-template-columns: 38px minmax(0, 1fr) auto auto;
+  grid-template-columns: 38px minmax(0, 1fr) repeat(5, auto);
   padding: 10px;
 }
 
@@ -1507,6 +1507,48 @@ textarea {
 .account-admin-row span {
   color: var(--muted);
   font-size: 0.86rem;
+}
+
+.native-status {
+  color: var(--muted);
+  font-size: 0.78rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.native-status.ready {
+  color: var(--primary);
+}
+
+.qr-login-panel {
+  background: var(--soft);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  justify-items: center;
+  margin: 12px 0;
+  max-height: 420px;
+  overflow: auto;
+  padding: 14px;
+  position: relative;
+  text-align: center;
+}
+
+.qr-login-panel img {
+  background: #fff;
+  border-radius: 8px;
+  height: 220px;
+  image-rendering: pixelated;
+  padding: 10px;
+  width: 220px;
+}
+
+.mini-close {
+  position: absolute;
+  right: 8px;
+  top: 8px;
 }
 
 .announcement-admin {
@@ -1744,6 +1786,26 @@ textarea {
   color: var(--text, inherit);
   min-height: 36px;
   padding: 0 10px;
+}
+
+.cache-runtime-summary {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.cache-runtime-summary span {
+  background: var(--soft);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  display: grid;
+  gap: 3px;
+  padding: 8px 10px;
+}
+
+.cache-runtime-summary b {
+  color: var(--text);
 }
 
 .silent-cache-list {

@@ -478,6 +478,7 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
   const [diagnostics, setDiagnostics] = useState(null);
   const [downloaderState, setDownloaderState] = useState(null);
   const [nativeAccounts, setNativeAccounts] = useState([]);
+  const [nativeQr, setNativeQr] = useState(null);
   const [cacheSpeedTest, setCacheSpeedTest] = useState(null);
   const [cacheSpeedTesting, setCacheSpeedTesting] = useState(false);
   const [updateInfo, setUpdateInfo] = useState(null);
@@ -535,6 +536,7 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
       });
       setApiIdPlaceholder(nextSettings.telegramApiIdSet ? "已保存，留空则不修改" : "请输入 Telegram API ID");
       setHashPlaceholder(nextSettings.telegramApiHashSet ? "已保存，留空则不修改" : "请输入 Telegram API Hash");
+      setNativeAccounts(await api("/api/admin/native-accounts").catch(() => []));
     }
   }
 
@@ -584,6 +586,11 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
       return null;
     }));
     setDownloaderState(await api("/api/admin/downloader").catch(() => null));
+    setNativeAccounts(await api("/api/admin/native-accounts").catch(() => []));
+  }
+
+  async function refreshNativeAccounts() {
+    if (!canAdmin) return;
     setNativeAccounts(await api("/api/admin/native-accounts").catch(() => []));
   }
 
@@ -637,6 +644,41 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
       setError(err.message);
     }
   }
+
+  async function startNativeQrLogin(item) {
+    setError("");
+    try {
+      const started = await api(`/api/admin/native-accounts/${item.accountId}/login/qr-start`, { method: "POST", body: JSON.stringify({}) });
+      setNativeQr({ ...started, accountId: item.accountId, title: item.displayName || item.phone || item.accountId });
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  useEffect(() => {
+    if (!nativeQr?.loginId || nativeQr.done || nativeQr.status === "error") return undefined;
+    let cancelled = false;
+    const timer = window.setInterval(async () => {
+      try {
+        const result = await api(`/api/admin/native-accounts/${nativeQr.accountId}/login/qr-status`, {
+          method: "POST",
+          body: JSON.stringify({ loginId: nativeQr.loginId })
+        });
+        if (cancelled) return;
+        setNativeQr((current) => current?.loginId === result.loginId ? { ...current, ...result } : current);
+        if (result.account) {
+          setNativeAccounts((items) => items.map((entry) => entry.accountId === result.account.accountId ? result.account : entry));
+          setDownloaderState(await api("/api/admin/downloader").catch(() => downloaderState));
+        }
+      } catch (err) {
+        if (!cancelled) setNativeQr((current) => current ? { ...current, status: "error", error: err.message } : current);
+      }
+    }, 2500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [nativeQr?.loginId, nativeQr?.accountId, nativeQr?.done, nativeQr?.status]);
 
   async function saveDownloaderConfig(patch) {
     setError("");
@@ -710,6 +752,15 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
           {canAdmin && <button className={cx(tab === "diagnostics" && "active")} onClick={() => { setTab("diagnostics"); loadDiagnostics(); }}>运行诊断</button>}
         </div>
         {error && <p className="error">{error}</p>}
+        {nativeQr && <div className="qr-login-panel">
+          <button className="close mini-close" type="button" onClick={() => setNativeQr(null)} title="关闭"><X size={16} /></button>
+          <h3>Telegram App 扫码登录 Go</h3>
+          <p>{nativeQr.title || "Telegram 账号"} · {nativeQr.done ? "已授权" : nativeQr.status === "error" ? "登录异常" : "请用 Telegram 手机客户端扫描二维码"}</p>
+          {nativeQr.qrImage && !nativeQr.done && <img src={nativeQr.qrImage} alt="Telegram QR login" />}
+          {nativeQr.done && <p className="success">Go 原生 MTProto session 已生成，正在刷新健康状态。</p>}
+          {nativeQr.error && <p className="error">{nativeQr.error}</p>}
+          {nativeQr.expires && !nativeQr.done && <small>二维码有效期：{formatTime(nativeQr.expires)}，过期会自动刷新。</small>}
+        </div>}
         {tab === "accounts" && <div className="account-admin">
           {canAdmin && <>
             <h3>飞牛账号管理</h3>
@@ -738,15 +789,24 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
             {socket && <AccountLogin socket={socket} onDone={() => onAccountsChanged?.()} />}
           </div>
           <div className="account-admin-list">
-            {accounts.map((account) => <div className="account-admin-row" key={account.id}>
-              <Avatar accountId={account.id} label={account.displayName || account.label} size={38} />
-              <div>
-                <strong>{account.displayName || account.label}</strong>
-                <span>{account.username ? `@${account.username}` : account.phoneNumber || "Telegram 账号"}</span>
-              </div>
-              <button className="icon-button" onClick={() => onAccountChange(account.id)}>{account.id === accountId ? "当前" : "切换"}</button>
-              <button className="icon-button danger-button" onClick={() => onAccountLogout(account.id)}><LogOut size={16} />退出</button>
-            </div>)}
+            {accounts.map((account) => {
+              const native = nativeAccounts.find((item) => item.accountId === account.id);
+              return <div className="account-admin-row" key={account.id}>
+                <Avatar accountId={account.id} label={account.displayName || account.label} size={38} />
+                <div>
+                  <strong>{account.displayName || account.label}</strong>
+                  <span>{account.username ? `@${account.username}` : account.phoneNumber || "Telegram 账号"}</span>
+                  {canAdmin && <small className={cx("native-status", native?.ready && "ready")}>
+                    Go：{native?.ready ? "原生 session 健康" : native?.error || native?.status || "等待扫码迁移"}
+                  </small>}
+                </div>
+                <button className="icon-button" onClick={() => onAccountChange(account.id)}>{account.id === accountId ? "当前" : "切换"}</button>
+                {canAdmin && <button className="icon-button" type="button" onClick={() => startNativeQrLogin(native || { accountId: account.id, displayName: account.displayName || account.label, phone: account.phoneNumber })}>扫码登录 Go</button>}
+                {canAdmin && <button className="icon-button" type="button" onClick={() => native ? checkNativeAccount(account.id) : refreshNativeAccounts()}>健康检查</button>}
+                {canAdmin && <button className="icon-button" type="button" onClick={() => reloginNativeAccount(native || { accountId: account.id, phone: account.phoneNumber, displayName: account.displayName || account.label })}>验证码兜底</button>}
+                <button className="icon-button danger-button" onClick={() => onAccountLogout(account.id)}><LogOut size={16} />退出</button>
+              </div>;
+            })}
             {!accounts.length && <div className="empty">暂无 Telegram 账号</div>}
           </div>
         </div>}
@@ -796,9 +856,12 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
               {[1, 2, 3, 4, 5, 10].map((value) => <option value={String(value)} key={value}>{value}</option>)}
             </select></label>
           </div>
-          <p className="hint">这里统一展示用户主动缓存和群组信息页自动缓存的大于 100MB 视频；聊天窗口不再单独显示下载列表。</p>
-          <p className="hint">保守模式同账号单任务；高速模式按 Go 并发尝试多任务。媒体源传输层可在运行诊断中查看和调整。</p>
-          <p className="hint">当前运行 {silentCacheState.running || 0} / 有效上限 {silentCacheState.effectiveConcurrency || silentCacheState.concurrency || 1}，并发设置 {silentCacheState.configuredConcurrency || silentCacheState.concurrency || 1}。</p>
+          <div className="cache-runtime-summary">
+            <span><b>运行</b>{silentCacheState.running || 0} / {silentCacheState.effectiveConcurrency || silentCacheState.concurrency || 1}</span>
+            <span><b>并发设置</b>{silentCacheState.configuredConcurrency || silentCacheState.concurrency || 1}</span>
+            <span><b>传输层</b>{silentCacheState.transport === "native-mtproto" ? "Go 原生 MTProto" : "HTTP 回退"}</span>
+            <span><b>任务数</b>{silentCaches.length}</span>
+          </div>
           <div className="silent-cache-bulk">
             <button type="button" className="icon-button" onClick={() => setSelectedSilentIds(silentCaches.filter((task) => task.status !== "completed").map((task) => task.id))}>全选当前</button>
             <button type="button" className="icon-button" onClick={() => setSelectedSilentIds([])} disabled={!selectedSilentIds.length}>清空选择</button>
@@ -931,7 +994,6 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
                     <p>{item.ready ? "Go MTProto session 健康" : item.error || "等待 Go 重新登录生成原生 session"}</p>
                   </div>
                   <span>{item.sessionSet ? item.status : "未迁移"}</span>
-                  <button className="icon-button" type="button" onClick={() => reloginNativeAccount(item)}>Go 重新登录</button>
                   <button className="icon-button" type="button" onClick={() => checkNativeAccount(item.accountId)}>健康检查</button>
                 </div>
               ))}

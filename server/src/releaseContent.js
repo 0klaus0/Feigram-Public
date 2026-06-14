@@ -14,6 +14,20 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.40",
+    title: "Feigram 2.0.40 更新",
+    version: "2.0.40",
+    level: "success",
+    createdAt: "2026-06-14T18:30:00.000Z",
+    body: [
+      "Go 原生账号登录入口移入账号管理，新增 Telegram App 扫码登录，验证码登录保留为兜底。",
+      "Go 下载服务新增 QR login token 生成与轮询确认，成功后由 Go 侧生成独立 MTProto auth key。",
+      "Go 原生下载遇到 FILE_REFERENCE_EXPIRED 时，会通过内部元数据接口刷新 fileReference 并继续续传。",
+      "Go 原生账号健康检查会优先真实抽样读取 Telegram 文件分片，没有样本时才退回 session 授权检查。",
+      "缓存信息页去掉过期开发提示，只保留运行、并发、传输层和任务数等有效状态。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.39",
     title: "Feigram 2.0.39 更新",
     version: "2.0.39",
