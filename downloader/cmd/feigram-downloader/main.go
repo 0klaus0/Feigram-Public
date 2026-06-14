@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	version         = "0.2.0"
+	version         = "0.2.1"
 	defaultPartSize = 1024 * 1024
 )
 
@@ -52,6 +52,8 @@ type Task struct {
 	PartPath    string `json:"partPath"`
 	InlineURL   string `json:"inlineUrl"`
 	Error       string `json:"error"`
+	RetryCount  int    `json:"retryCount"`
+	RetryAfter  int64  `json:"retryAfterUnix"`
 	Order       int64  `json:"order"`
 	CreatedAt   string `json:"createdAt"`
 	UpdatedAt   string `json:"updatedAt"`
@@ -159,6 +161,9 @@ func (a *App) load() error {
 			task.SpeedBps = 0
 			task.Error = "Go 下载服务重启，已等待续传"
 		}
+		if task.Status != "downloading" && task.Status != "running" {
+			task.SpeedBps = 0
+		}
 		a.tasks[task.ID] = &task
 	}
 	return nil
@@ -209,6 +214,7 @@ func (a *App) pumpOnce() bool {
 		limit = 1
 	}
 	started := false
+	nowUnix := time.Now().Unix()
 	for _, task := range a.listTasksLocked() {
 		if len(a.running) >= limit {
 			break
@@ -217,6 +223,9 @@ func (a *App) pumpOnce() bool {
 			continue
 		}
 		if task.SourceURL == "" || task.FilePath == "" {
+			continue
+		}
+		if task.RetryAfter > nowUnix {
 			continue
 		}
 		if _, ok := a.running[task.ID]; ok {
@@ -255,14 +264,29 @@ func (a *App) runTask(id string, cancel <-chan struct{}) {
 					t.Status = "cancelled"
 					t.SpeedBps = 0
 					t.Error = ""
+					t.RetryAfter = 0
 					t.UpdatedAt = now()
 				})
+				return
+			}
+			if transientSourceError(err) {
+				delay := retryDelay(task.RetryCount + 1)
+				a.updateTask(id, func(t *Task) {
+					t.Status = "queued"
+					t.SpeedBps = 0
+					t.RetryCount++
+					t.RetryAfter = time.Now().Add(delay).Unix()
+					t.Error = fmt.Sprintf("媒体源暂不可用，%s 后自动续传：%s", formatDuration(delay), compactError(err))
+					t.UpdatedAt = now()
+				})
+				log.Printf("task %s transient failure, retry in %s: %v", id, delay, err)
 				return
 			}
 			a.updateTask(id, func(t *Task) {
 				t.Status = "error"
 				t.SpeedBps = 0
 				t.Error = err.Error()
+				t.RetryAfter = 0
 				t.UpdatedAt = now()
 			})
 			log.Printf("task %s failed: %v", id, err)
@@ -270,15 +294,16 @@ func (a *App) runTask(id string, cancel <-chan struct{}) {
 		}
 		a.updateTask(id, func(t *Task) {
 			t.Status = "completed"
-			t.Downloaded = t.Size
-			if t.Size <= 0 {
-				if stat, err := os.Stat(t.FilePath); err == nil {
-					t.Downloaded = stat.Size()
+			if stat, err := os.Stat(t.FilePath); err == nil {
+				t.Downloaded = stat.Size()
+				if t.Size <= 0 || stat.Size() > t.Size {
 					t.Size = stat.Size()
 				}
 			}
 			t.SpeedBps = 0
 			t.Error = ""
+			t.RetryCount = 0
+			t.RetryAfter = 0
 			t.UpdatedAt = now()
 		})
 		return
@@ -542,11 +567,14 @@ func (a *App) handleTask(w http.ResponseWriter, r *http.Request) {
 		task.Status = "cancelled"
 		task.SpeedBps = 0
 		task.Error = ""
+		task.RetryAfter = 0
 		task.UpdatedAt = now()
 	case r.Method == http.MethodPost && action == "queue":
 		task.Status = "queued"
 		task.SpeedBps = 0
 		task.Error = ""
+		task.RetryCount = 0
+		task.RetryAfter = 0
 		task.UpdatedAt = now()
 	default:
 		a.mu.Unlock()
@@ -576,7 +604,9 @@ func (a *App) stateLocked() map[string]any {
 	var speed int64
 	for _, task := range tasks {
 		counts[task.Status]++
-		speed += task.SpeedBps
+		if task.Status == "downloading" || task.Status == "running" {
+			speed += task.SpeedBps
+		}
 	}
 	return map[string]any{
 		"ok":       true,
@@ -589,7 +619,7 @@ func (a *App) stateLocked() map[string]any {
 		"running":  len(a.running),
 		"speedBps": speed,
 		"tasks":    tasks,
-		"strategy": "go-sidecar active: HTTP source bridge, resumable .part files, Go-owned queue/rate/concurrency",
+		"strategy": "Go 下载服务已接管队列、断点、限速和落盘；当前媒体源仍通过本机 Telegram 桥接，后续可迁移到 tdl/gotd 原生传输。",
 	}
 }
 
@@ -660,6 +690,8 @@ func (a *App) upsertTaskLocked(input Task) Task {
 	}
 	if existing.Status == "cancelled" || existing.Status == "error" {
 		existing.Status = "queued"
+		existing.RetryCount = 0
+		existing.RetryAfter = 0
 	}
 	existing.UpdatedAt = now()
 	return *existing
@@ -813,6 +845,69 @@ func max64(a, b int64) int64 {
 
 func maxFloat(a, b float64) float64 {
 	if a > b {
+		return a
+	}
+	return b
+}
+
+func transientSourceError(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	markers := []string{
+		"connection refused",
+		"unexpected eof",
+		"timeout",
+		"timed out",
+		"connection reset",
+		"connection closed",
+		"broken pipe",
+		"not connected",
+		"source returned 408",
+		"source returned 425",
+		"source returned 429",
+		"source returned 500",
+		"source returned 502",
+		"source returned 503",
+		"source returned 504",
+	}
+	for _, marker := range markers {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func retryDelay(count int) time.Duration {
+	if count < 1 {
+		count = 1
+	}
+	delay := time.Duration(5*(1<<minInt(count-1, 5))) * time.Second
+	if delay > 5*time.Minute {
+		return 5 * time.Minute
+	}
+	return delay
+}
+
+func formatDuration(duration time.Duration) string {
+	if duration < time.Minute {
+		return fmt.Sprintf("%d 秒", int(duration.Seconds()))
+	}
+	return fmt.Sprintf("%d 分钟", int(duration.Minutes()))
+}
+
+func compactError(err error) string {
+	text := strings.TrimSpace(err.Error())
+	if len(text) > 180 {
+		return text[:180] + "..."
+	}
+	return text
+}
+
+func minInt(a, b int) int {
+	if a < b {
 		return a
 	}
 	return b

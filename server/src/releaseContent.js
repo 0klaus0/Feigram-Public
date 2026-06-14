@@ -14,6 +14,20 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.36",
+    title: "Feigram 2.0.36 更新",
+    version: "2.0.36",
+    level: "success",
+    createdAt: "2026-06-14T23:30:00.000Z",
+    body: [
+      "修复 Go 下载服务在 FPK 启动时早于 Node 媒体桥接启动，导致 connect refused 后反复重试的问题。",
+      "Go 下载队列新增可恢复错误退避：连接拒绝、unexpected EOF、timeout、连接重置和 5xx 会保留 .part 文件，等待冷却后自动续传。",
+      "运行诊断的速度只统计真实 downloading/running 任务，不再把排队任务残留速度算进总速率。",
+      "管理后台清理旧 Node 下载管线选择和过期提示，统一展示当前 Go 下载服务状态。",
+      "本版本继续保留本机 Telegram 媒体桥接，后续会按 tdl/gotd 思路迁移原生 Go 传输层以提升大文件吞吐。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.35",
     title: "Feigram 2.0.35 更新",
     version: "2.0.35",

@@ -26,8 +26,8 @@ export FEIGRAM_DOWNLOADER_DATA="${DATA_HOME}/data/downloader"
 export FEIGRAM_DOWNLOADER_URL="http://127.0.0.1:${DOWNLOADER_PORT}"
 export FEIGRAM_DOWNLOADER_LOG="$DOWNLOADER_LOG_FILE"
 export APP_EDITION="Feigram 2.0 fnOS Client Edition"
-export APP_VERSION="2.0.35"
-export APP_CHANGELOG="修复 Telegram 账号恢复或下载任务迁移失败时后端直接退出导致拒绝连接的问题；Go 下载服务接管大文件下载队列，Node 仅保留内部媒体流桥接。"
+export APP_VERSION="2.0.36"
+export APP_CHANGELOG="修复 Go 下载服务早于 Node 媒体桥接启动导致的 connect refused 重试风暴；下载队列增加可恢复错误退避续传，诊断速度只统计真实运行任务，并清理旧 Node 下载管线提示。"
 export NODE_ENV="production"
 
 is_running() {
@@ -129,17 +129,18 @@ start)
         echo "Downloads: ${DOWNLOAD_DIR}"
         echo "Go downloader: ${FEIGRAM_DOWNLOADER_URL}"
     } >> "$LOG_FILE"
-    if [ -x "$DOWNLOADER_BIN" ]; then
-        chmod +x "$DOWNLOADER_BIN"
-        nohup "$DOWNLOADER_BIN" >> "$DOWNLOADER_LOG_FILE" 2>&1 &
-        echo $! > "$DOWNLOADER_PID_FILE"
-    else
-        echo "Go downloader binary missing: $DOWNLOADER_BIN" >> "$LOG_FILE"
-    fi
     nohup "$NODE_BIN" src/index.js >> "$LOG_FILE" 2>&1 &
     echo $! > "$PID_FILE"
     sleep 2
     if is_running; then
+        if [ -x "$DOWNLOADER_BIN" ]; then
+            chmod +x "$DOWNLOADER_BIN"
+            sleep 1
+            nohup "$DOWNLOADER_BIN" >> "$DOWNLOADER_LOG_FILE" 2>&1 &
+            echo $! > "$DOWNLOADER_PID_FILE"
+        else
+            echo "Go downloader binary missing: $DOWNLOADER_BIN" >> "$LOG_FILE"
+        fi
         echo "$APP_VERSION" > "$VERSION_FILE"
         exit 0
     fi

@@ -714,13 +714,9 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
             <option value="local">本地播放器（下载后打开）</option>
           </select></label>
           <p className="hint">推荐优先使用原始视频在线播放；遇到浏览器不支持的编码时，可切换为本地播放器模式。</p>
-          <h3>下载引擎</h3>
-          <label><span>大文件下载引擎</span><select value={settings.downloaderEngine} onChange={(e) => setSettings({ ...settings, downloaderEngine: e.target.value })}>
-            <option value="go-sidecar">Go 下载服务（当前接管）</option>
-            <option value="node">Node 内置下载（旧版兼容）</option>
-          </select></label>
+          <h3>下载服务</h3>
           <label><span>Go 下载服务地址</span><input value={settings.downloaderSidecarUrl} onChange={(e) => setSettings({ ...settings, downloaderSidecarUrl: e.target.value })} placeholder="http://127.0.0.1:3090" /></label>
-          <p className="hint">Go 下载服务已随 FPK 内嵌启动；当前版本先提供独立服务、持久化队列和后台诊断，Telegram 大文件传输仍默认使用 Node 管线。</p>
+          <p className="hint">Go 下载服务已接管大文件队列、断点续传、限速、并发和文件落盘；当前媒体源仍通过本机 Telegram 桥接，后续会继续迁移到原生 Go/tdl 传输层。</p>
           {saved && <p className="success">{saved}</p>}
           <button className="primary"><Settings size={18} />保存服务端设置</button>
         </form>}
@@ -748,7 +744,7 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
             </select></label>
           </div>
           <p className="hint">这里统一展示用户主动缓存和群组信息页自动缓存的大于 100MB 视频；聊天窗口不再单独显示下载列表。</p>
-          <p className="hint">为避免 Telegram 连接反复重连，同一个 Telegram 账号始终只运行 1 个大文件任务；并发数量用于多个 Telegram 账号之间并行。</p>
+          <p className="hint">保守模式同账号单任务；高速模式按 Go 并发尝试多任务，但当前桥接源仍受 Telegram 连接稳定性限制。</p>
           <p className="hint">当前运行 {silentCacheState.running || 0} / 有效上限 {silentCacheState.effectiveConcurrency || silentCacheState.concurrency || 1}，并发设置 {silentCacheState.configuredConcurrency || silentCacheState.concurrency || 1}。</p>
           <div className="silent-cache-bulk">
             <button type="button" className="icon-button" onClick={() => setSelectedSilentIds(silentCaches.filter((task) => task.status !== "completed").map((task) => task.id))}>全选当前</button>
@@ -892,7 +888,7 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
             </div>}
             {cacheSpeedTest.error && <p className="error">{cacheSpeedTest.error}</p>}
             {cacheSpeedTest.note && <p className="hint">{cacheSpeedTest.note}</p>}
-            <p className="hint">为避免 Telegram 连接反复重连，同一个 Telegram 账号始终只运行 1 个大文件任务；高速模式用于多个 Telegram 账号之间并行。</p>
+            <p className="hint">诊断速度来自 Go 队列的真实运行任务；如果运行数为 0，速度也会归零，避免排队任务残留速度造成误判。</p>
             <pre className="log-tail cache-speed-json">{JSON.stringify(cacheSpeedTest, null, 2)}</pre>
           </div>}
           {updateInfo && <div className="update-card">
