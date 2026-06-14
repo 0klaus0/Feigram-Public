@@ -2559,6 +2559,8 @@ async function ensureGoDownloadTask(userId, accountId, peerId, messageId, option
   await fs.ensureDir(downloadDir);
   const id = goDownloaderTaskId(userId, accountId, peerId, messageId);
   const source = options.source || "manual";
+  const downloaderState = await downloaderSidecar.state().catch(() => null);
+  const transport = downloaderState?.config?.transport || "http-bridge";
   const task = await downloaderSidecar.enqueueTask({
     id,
     userId,
@@ -2573,6 +2575,7 @@ async function ensureGoDownloadTask(userId, accountId, peerId, messageId, option
     size,
     source,
     autoCache: Boolean(options.autoCache || source === "auto"),
+    transport,
     sourceUrl: internalMediaSourceUrl(userId, accountId, peerId, messageId),
     inlineUrl: `/api/media/${accountId}/${encodeURIComponent(peerId)}/${messageId}?inline=1`,
     order: Number(options.order || 0) || Date.now(),
@@ -2619,6 +2622,7 @@ async function goSilentCacheState(userId) {
     configuredConcurrency: Math.max(1, Number(config.concurrency || 1)),
     effectiveConcurrency: Number(state?.running || 0),
     mode: config.mode || "conservative",
+    transport: config.transport || state?.transport || "http-bridge",
     running: tasks.filter((task) => task.status === "running").length,
     tasks,
     engine: "go-sidecar"
@@ -2631,6 +2635,7 @@ async function setGoSilentCacheControl(userId, payload = {}) {
   if (payload.rateLimitBps !== undefined) patch.rateLimitBps = Math.max(0, Math.min(1024 * 1024 * 1024, Number(payload.rateLimitBps || 0)));
   if (payload.concurrency !== undefined) patch.concurrency = Math.max(1, Math.min(10, Number(payload.concurrency || 1)));
   if (payload.mode !== undefined) patch.mode = normalizedSilentCacheMode(payload.mode);
+  if (payload.transport !== undefined) patch.transport = payload.transport === "native-mtproto" ? "native-mtproto" : "http-bridge";
   await downloaderSidecar.updateConfig(patch);
   return goSilentCacheState(userId);
 }
@@ -2748,6 +2753,7 @@ async function goSilentCacheSpeedDiagnostics(userId) {
     configuredConcurrency: Number(state?.config?.concurrency || 1),
     effectiveConcurrency: Number(state?.running || 0),
     cacheMode: state?.config?.mode || "conservative",
+    transport: state?.config?.transport || state?.transport || "http-bridge",
     mode: "go-sidecar",
     running: running.length,
     queued: tasks.filter((task) => task.status === "queued").length,
@@ -2765,7 +2771,7 @@ async function goSilentCacheSpeedDiagnostics(userId) {
     },
     task: primary ? normalizeGoSilentTask(primary) : null,
     activeTasks: tasks.slice(0, 20).map(normalizeGoSilentTask),
-    note: "Go 下载服务已接管队列与文件写入；诊断显示 Go 任务聚合速度，不再额外占用 Telegram 连接。"
+    note: "Go 下载服务已接管队列与文件写入；诊断显示 Go 任务聚合速度。媒体源传输层会在运行诊断中显示。"
   };
 }
 

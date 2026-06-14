@@ -4,16 +4,17 @@ Feigram 的后台缓存不是普通 HTTP 下载。它需要处理 Telegram MTPro
 
 ## 当前默认方案
 
-Feigram 当前使用内置 GramJS 下载链路：
+Feigram 当前使用 Go 下载服务作为统一队列和落盘引擎，媒体源默认仍由
+Node/GramJS 提供本机 HTTP 桥接：
 
-- 通过当前登录的 Telegram session 直接访问 MTProto。
-- document 视频直接调用 Telegram `upload.getFile` 分片下载，避开大 offset 续传时的慢路径。
-- 未完成任务保留 `.silent.part`，重启或升级后继续写入。
-- `FILE_REFERENCE_EXPIRED`、网络超时和临时失败会重新排队并刷新消息引用。
-- 后台群缓存和用户主动下载分开保存，避免互相污染列表。
-- 后台缓存统一受全局并发和限速控制。
+- Go 负责任务排队、断点 `.part`、限速、并发、完成校验和状态展示。
+- Node/GramJS 负责复用当前 Telegram session，提供
+  `/api/internal/media/...` 本机媒体源。
+- 后台群缓存和用户主动缓存已进入同一个 Go 队列，不再在聊天窗口单独展示。
+- `native-mtproto` 传输层已经预留接口，下一步迁移 gotd/tdl 风格的原生文件读取。
 
-这是当前最稳的路径，优先继续修这个链路，而不是在稳定版本里直接替换成外部下载器。
+这是当前最稳的路径。只有完成 Go 侧账号 session、file location 和 DC 迁移后，
+才能彻底移除 Node/GramJS HTTP 媒体桥接。
 
 ## Gopeed
 
@@ -35,7 +36,8 @@ Telegram 专用下载器更接近 Feigram 的需求，但目前不适合直接�
 - 外部进程需要处理账号隔离、并发调度、取消、恢复、错误回传和版本兼容。
 - 若使用 AGPL 等强 copyleft 许可项目，需要确认发布方式、源码公开和衍生作品义务。
 
-结论：可以作为后续实验后端评估，但不进入当前稳定版默认链路。
+结论：可以参考 tdl 的 MTProto 下载设计，但不复制 AGPL 源码。Feigram 会优先
+基于 gotd/td 或兼容许可组件实现自己的原生 Go 传输层。
 
 ## 后续接入外部下载器的最低要求
 

@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	version         = "0.2.1"
+	version         = "0.3.0"
 	defaultPartSize = 1024 * 1024
 )
 
@@ -29,6 +29,7 @@ type Config struct {
 	Mode         string `json:"mode"`
 	PartSize     int64  `json:"partSize"`
 	Backend      string `json:"backend"`
+	Transport    string `json:"transport"`
 	UpdatedAt    string `json:"updatedAt"`
 }
 
@@ -47,6 +48,7 @@ type Task struct {
 	Status      string `json:"status"`
 	Source      string `json:"source"`
 	AutoCache   bool   `json:"autoCache"`
+	Transport   string `json:"transport"`
 	SourceURL   string `json:"sourceUrl"`
 	FilePath    string `json:"filePath"`
 	PartPath    string `json:"partPath"`
@@ -96,6 +98,7 @@ func main() {
 			Mode:         "conservative",
 			PartSize:     defaultPartSize,
 			Backend:      "go-sidecar",
+			Transport:    "http-bridge",
 			UpdatedAt:    now(),
 		},
 		tasks:   map[string]*Task{},
@@ -222,7 +225,11 @@ func (a *App) pumpOnce() bool {
 		if task.Status != "queued" && task.Status != "error" {
 			continue
 		}
-		if task.SourceURL == "" || task.FilePath == "" {
+		if task.FilePath == "" {
+			continue
+		}
+		transport := a.taskTransport(task)
+		if transport == "http-bridge" && task.SourceURL == "" {
 			continue
 		}
 		if task.RetryAfter > nowUnix {
@@ -313,8 +320,20 @@ func (a *App) runTask(id string, cancel <-chan struct{}) {
 var errCancelled = errors.New("cancelled")
 
 func (a *App) download(task *Task, cancel <-chan struct{}) error {
+	switch a.taskTransport(*task) {
+	case "native-mtproto":
+		return a.downloadNativeMTProto(task, cancel)
+	default:
+		return a.downloadHTTPBridge(task, cancel)
+	}
+}
+
+func (a *App) downloadHTTPBridge(task *Task, cancel <-chan struct{}) error {
 	if err := os.MkdirAll(filepath.Dir(task.FilePath), 0o755); err != nil {
 		return err
+	}
+	if task.SourceURL == "" {
+		return errors.New("HTTP 桥接媒体源为空，无法开始下载")
 	}
 	if task.PartPath == "" {
 		task.PartPath = task.FilePath + ".part"
@@ -425,6 +444,25 @@ func (a *App) download(task *Task, cancel <-chan struct{}) error {
 		return err
 	}
 	return nil
+}
+
+func (a *App) downloadNativeMTProto(task *Task, cancel <-chan struct{}) error {
+	select {
+	case <-cancel:
+		return errCancelled
+	default:
+	}
+	if task.SourceURL != "" {
+		return fmt.Errorf("Go 原生 MTProto 传输层尚未完成账号 session 迁移，已拒绝继续走 Node HTTP 桥接；请切回 HTTP 桥接或等待下一版原生 session 迁移")
+	}
+	return fmt.Errorf("Go 原生 MTProto 传输层需要 gotd/tdl session 与 file location 元数据，本任务尚未携带原生媒体源")
+}
+
+func (a *App) taskTransport(task Task) string {
+	if task.Transport != "" {
+		return normalizeTransport(task.Transport)
+	}
+	return normalizeTransport(a.config.Transport)
 }
 
 func (a *App) throttle(windowBytes int64, windowStart time.Time, cancel <-chan struct{}) error {
@@ -608,18 +646,30 @@ func (a *App) stateLocked() map[string]any {
 			speed += task.SpeedBps
 		}
 	}
+	transport := normalizeTransport(a.config.Transport)
+	strategy := "Go 下载服务已接管队列、断点、限速和落盘；媒体源传输层当前使用 Node/GramJS HTTP 桥接。若 Node 未启动会自动重试并显示 connection refused。"
+	native := map[string]any{
+		"ready":  false,
+		"status": "pending-session-migration",
+		"note":   "Go 原生 MTProto/gotd 传输层接口已接入，下一版迁移 Telegram session 与 file location 后启用真实原生读取。",
+	}
+	if transport == "native-mtproto" {
+		strategy = "Go 原生 MTProto 传输层已选择，但当前版本还缺少 Go session/file location 迁移；请仅用于开发验证。"
+	}
 	return map[string]any{
-		"ok":       true,
-		"version":  version,
-		"pid":      os.Getpid(),
-		"uptime":   int(time.Since(a.startedAt).Seconds()),
-		"dataDir":  a.dataDir,
-		"config":   a.config,
-		"counts":   counts,
-		"running":  len(a.running),
-		"speedBps": speed,
-		"tasks":    tasks,
-		"strategy": "Go 下载服务已接管队列、断点、限速和落盘；当前媒体源仍通过本机 Telegram 桥接，后续可迁移到 tdl/gotd 原生传输。",
+		"ok":            true,
+		"version":       version,
+		"pid":           os.Getpid(),
+		"uptime":        int(time.Since(a.startedAt).Seconds()),
+		"dataDir":       a.dataDir,
+		"config":        a.config,
+		"counts":        counts,
+		"running":       len(a.running),
+		"speedBps":      speed,
+		"tasks":         tasks,
+		"transport":     transport,
+		"nativeMTProto": native,
+		"strategy":      strategy,
 	}
 }
 
@@ -669,6 +719,9 @@ func (a *App) upsertTaskLocked(input Task) Task {
 	}
 	if input.Source != "" {
 		existing.Source = input.Source
+	}
+	if input.Transport != "" {
+		existing.Transport = normalizeTransport(input.Transport)
 	}
 	existing.AutoCache = existing.AutoCache || input.AutoCache
 	if input.SourceURL != "" {
@@ -723,6 +776,7 @@ func sanitizeConfig(input Config) Config {
 	if input.Backend == "" {
 		input.Backend = "go-sidecar"
 	}
+	input.Transport = normalizeTransport(input.Transport)
 	if input.UpdatedAt == "" {
 		input.UpdatedAt = now()
 	}
@@ -745,7 +799,19 @@ func applyConfigPatch(current Config, patch map[string]any) Config {
 	if value, ok := int64Value(patch["partSize"]); ok {
 		current.PartSize = value
 	}
+	if value, ok := stringValue(patch["transport"]); ok {
+		current.Transport = value
+	}
 	return current
+}
+
+func normalizeTransport(value string) string {
+	switch strings.TrimSpace(strings.ToLower(value)) {
+	case "native-mtproto", "go-mtproto", "gotd", "tdl":
+		return "native-mtproto"
+	default:
+		return "http-bridge"
+	}
 }
 
 func boolValue(value any) (bool, bool) {

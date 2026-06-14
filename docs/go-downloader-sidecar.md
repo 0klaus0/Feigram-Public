@@ -1,6 +1,6 @@
 # Feigram Go Downloader Sidecar
 
-Feigram 2.0.34 runs an embedded Go downloader sidecar with the FPK service.
+Feigram 2.0.37 runs an embedded Go downloader sidecar with the FPK service.
 The service now owns the large-file download queue, resumable `.part` files,
 rate limits, concurrency and completion validation for manual video caching and
 group video background caching.
@@ -34,10 +34,15 @@ the same broad architectural ideas that are useful for Telegram downloads:
 - retry and flood-wait aware transport layer
 
 The current sidecar phase does not copy or embed tdl. Go owns orchestration and
-file writing, while Node exposes a localhost-only authenticated Telegram media
-stream bridge because the logged-in Telegram session still lives in GramJS.
-A later native gotd/tdl-style transport can replace this bridge after a clear
-license and session-migration review.
+file writing. The media source is now represented as an explicit transport
+layer:
+
+- `http-bridge`: stable default, Node exposes a localhost-only authenticated
+  Telegram media stream because the logged-in Telegram session still lives in
+  GramJS.
+- `native-mtproto`: experimental boundary for the next gotd/tdl-style native
+  transport. It is visible in diagnostics but not ready for production until
+  GramJS sessions and Telegram file locations are migrated to Go.
 
 ## Runtime
 
@@ -66,8 +71,12 @@ Environment variables:
 
 ## Current boundary
 
-Feigram 2.0.34 no longer uses the old Node task state machine for large-file
+Feigram 2.0.37 no longer uses the old Node task state machine for large-file
 download scheduling. Node still owns Telegram authentication and provides the
 internal `/api/internal/media/...` byte stream consumed by the Go sidecar. This
 avoids duplicating Telegram auth keys while removing the fragile Node download
 queue from the user-visible task flow.
+
+When the HTTP bridge is unavailable, Go keeps the `.part` file and retries with
+backoff. The remaining migration work is to replace the source URL with native
+Go MTProto reads after the account/session migration is complete.

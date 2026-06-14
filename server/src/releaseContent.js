@@ -14,6 +14,20 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.37",
+    title: "Feigram 2.0.37 更新",
+    version: "2.0.37",
+    level: "success",
+    createdAt: "2026-06-14T17:30:00.000Z",
+    body: [
+      "新增媒体源传输层配置，Go 下载服务现在能区分 HTTP 桥接和 Go 原生 MTProto 实验边界。",
+      "运行诊断新增媒体源状态，便于识别当前是否仍依赖 Node/GramJS 本机媒体桥接。",
+      "Go 下载任务模型新增 transport 字段，为下一版 gotd/tdl 风格原生文件读取做兼容准备。",
+      "文档补充 Go 原生 MTProto 迁移路线：账号 session、file location、DC、fileReference 刷新和灰度启用策略。",
+      "默认继续使用稳定 HTTP 桥接，避免在 Go session 迁移完成前影响现有下载。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.36",
     title: "Feigram 2.0.36 更新",
     version: "2.0.36",

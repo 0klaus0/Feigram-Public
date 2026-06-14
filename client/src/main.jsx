@@ -744,7 +744,7 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
             </select></label>
           </div>
           <p className="hint">这里统一展示用户主动缓存和群组信息页自动缓存的大于 100MB 视频；聊天窗口不再单独显示下载列表。</p>
-          <p className="hint">保守模式同账号单任务；高速模式按 Go 并发尝试多任务，但当前桥接源仍受 Telegram 连接稳定性限制。</p>
+          <p className="hint">保守模式同账号单任务；高速模式按 Go 并发尝试多任务。媒体源传输层可在运行诊断中查看和调整。</p>
           <p className="hint">当前运行 {silentCacheState.running || 0} / 有效上限 {silentCacheState.effectiveConcurrency || silentCacheState.concurrency || 1}，并发设置 {silentCacheState.configuredConcurrency || silentCacheState.concurrency || 1}。</p>
           <div className="silent-cache-bulk">
             <button type="button" className="icon-button" onClick={() => setSelectedSilentIds(silentCaches.filter((task) => task.status !== "completed").map((task) => task.id))}>全选当前</button>
@@ -838,6 +838,7 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
               <span><b>并发</b>{downloaderState.config?.concurrency || "-"}</span>
               <span><b>限速</b>{downloaderState.config?.rateLimitBps ? `${formatBytes(downloaderState.config.rateLimitBps)}/s` : "不限速"}</span>
               <span><b>模式</b>{downloaderState.config?.mode === "fast" ? "高速" : "保守"}</span>
+              <span><b>媒体源</b>{(downloaderState.config?.transport || downloaderState.transport) === "native-mtproto" ? "Go 原生 MTProto" : "HTTP 桥接"}</span>
               <span><b>数据目录</b>{downloaderState.dataDir || "-"}</span>
             </div>
             <div className="silent-cache-controls downloader-config-controls">
@@ -855,7 +856,12 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
                 <option value="conservative">保守</option>
                 <option value="fast">高速</option>
               </select></label>
+              <label><span>媒体源传输层</span><select value={downloaderState.config?.transport || "http-bridge"} onChange={(e) => saveDownloaderConfig({ transport: e.target.value })}>
+                <option value="http-bridge">HTTP 桥接（稳定）</option>
+                <option value="native-mtproto" disabled={!downloaderState.nativeMTProto?.ready}>Go 原生 MTProto（待 session 迁移）</option>
+              </select></label>
             </div>
+            {downloaderState.nativeMTProto && <p className="hint">{downloaderState.nativeMTProto.note}</p>}
             <p className="hint">{downloaderState.strategy || "Go sidecar 已就绪，等待 Telegram 下载桥接。"}</p>
             {downloaderState.error && <p className="error">{downloaderState.error}</p>}
           </div>}
