@@ -14,6 +14,34 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.42",
+    title: "Feigram 2.0.42 更新",
+    version: "2.0.42",
+    level: "success",
+    createdAt: "2026-06-15T12:20:00.000Z",
+    body: [
+      "公告排序继续按版本号置顶，避免客户端停留在旧的 2.0.39 公告。",
+      "Go 原生下载新增 media-only DC 读取：文件分片优先走 document dcId，对 _MIGRATE_ 会自动切换目标 DC 后续传。",
+      "Go 原生 FILE_REFERENCE_EXPIRED 优先通过 gotd 重取 Telegram 消息刷新 fileReference，旧任务才回退 Node 元数据接口。",
+      "Go 扫码登录补齐 Telegram DC 迁移导入流程，遇到 auth.loginTokenMigrateTo 时会自动 MigrateTo 后导入 token。",
+      "HTTP 媒体桥接继续保留一个版本作为回退；native-mtproto 长时间稳定后再默认切换并删除 Node 媒体桥接。"
+    ].join("\n")
+  },
+  {
+    id: "release-2.0.41",
+    title: "Feigram 2.0.41 更新",
+    version: "2.0.41",
+    level: "success",
+    createdAt: "2026-06-15T11:30:00.000Z",
+    body: [
+      "公告排序改为按版本号优先，避免发布时间填写差异导致旧版本置顶。",
+      "Go 下载任务补齐 native peer 元数据，后续原生模式可直接在 Go 侧重取消息。",
+      "Go 原生下载遇到 FILE_REFERENCE_EXPIRED 时，优先使用 gotd 重新读取 Telegram 消息并刷新 document fileReference。",
+      "旧任务缺少 native peer 元数据时仍保留 /api/internal/media-meta 回退，避免升级后任务直接失效。",
+      "HTTP 桥接仍保留一个版本作为回退；native-mtproto 稳定后再移除 Node 媒体桥接。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.40",
     title: "Feigram 2.0.40 更新",
     version: "2.0.40",
@@ -650,8 +678,19 @@ function readAbout() {
   return about;
 }
 
+function compareVersion(a, b) {
+  const left = String(a || "").split(".").map((part) => Number(part) || 0);
+  const right = String(b || "").split(".").map((part) => Number(part) || 0);
+  const length = Math.max(left.length, right.length);
+  for (let index = 0; index < length; index += 1) {
+    const diff = (right[index] || 0) - (left[index] || 0);
+    if (diff) return diff;
+  }
+  return 0;
+}
+
 function readAnnouncements() {
-  return announcements.slice().sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+  return announcements.slice().sort((a, b) => compareVersion(a.version, b.version) || String(b.createdAt).localeCompare(String(a.createdAt)));
 }
 
 module.exports = {

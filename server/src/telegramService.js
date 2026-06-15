@@ -56,7 +56,7 @@ function sleep(ms) {
 
 function isTransientDownloadError(error) {
   const message = String(error?.message || error || "");
-  return /FILE_REFERENCE_EXPIRED|File reference expired|Request was unsuccessful|TIMEOUT|timeout|ECONN|ETIMEDOUT|EPIPE|socket|network|disconnect|CONNECTION_NOT_INITED|AUTH_KEY_UNREGISTERED|AUTH_KEY_DUPLICATED|Not connected/i.test(message);
+  return /FILE_REFERENCE_EXPIRED|File reference expired|Request was unsuccessful|TIMEOUT|timeout|retryUntilAck|retry limit reached|unexpected EOF|ECONN|ETIMEDOUT|EPIPE|socket|network|disconnect|CONNECTION_NOT_INITED|AUTH_KEY_UNREGISTERED|AUTH_KEY_DUPLICATED|Not connected/i.test(message);
 }
 
 function isDuplicatedAuthKey(error) {
@@ -2557,6 +2557,23 @@ function nativeFileLocation(peerId, message, contentType, fileName, kind) {
   };
 }
 
+function nativePeerLocation(peerId, entity) {
+  const klass = entity?.className || entity?.constructor?.name || "";
+  const [fallbackType, fallbackId] = String(peerId || "").split(":");
+  const id = toText(entity?.id || fallbackId || "");
+  const accessHash = entity?.accessHash ? toText(entity.accessHash) : "";
+  if (klass.includes("Channel") || fallbackType === "Channel") {
+    return { type: "channel", id, accessHash };
+  }
+  if (klass.includes("User") || fallbackType === "User") {
+    return { type: "user", id, accessHash };
+  }
+  if (klass.includes("Chat") || fallbackType === "Chat") {
+    return { type: "chat", id, accessHash };
+  }
+  return { type: "", id, accessHash };
+}
+
 function normalizeGoDownloadTask(task) {
   const next = {
     id: task.id,
@@ -2600,7 +2617,7 @@ async function goAllTasks() {
 }
 
 async function ensureGoDownloadTask(userId, accountId, peerId, messageId, options = {}) {
-  const { message } = await mediaMessage(userId, accountId, peerId, messageId);
+  const { entity, message } = await mediaMessage(userId, accountId, peerId, messageId);
   const contentType = message.photo ? "image/jpeg" : message.document?.mimeType || "";
   const kind = mediaKind(message, contentType);
   const size = Number(message.file?.size || message.document?.size || 0);
@@ -2629,6 +2646,7 @@ async function ensureGoDownloadTask(userId, accountId, peerId, messageId, option
     metadataUrl: internalMediaMetadataUrl(userId, accountId, peerId, messageId),
     inlineUrl: `/api/media/${accountId}/${encodeURIComponent(peerId)}/${messageId}?inline=1`,
     nativeFile: nativeFileLocation(peerId, message, contentType, fileName, kind),
+    nativePeer: nativePeerLocation(peerId, entity),
     order: Number(options.order || 0) || Date.now(),
     dedupKey: options.dedupKey || ""
   });
@@ -2636,7 +2654,7 @@ async function ensureGoDownloadTask(userId, accountId, peerId, messageId, option
 }
 
 async function mediaNativeMetadata(userId, accountId, peerId, messageId) {
-  const { message } = await mediaMessage(userId, accountId, peerId, messageId);
+  const { entity, message } = await mediaMessage(userId, accountId, peerId, messageId);
   const contentType = message.photo ? "image/jpeg" : message.document?.mimeType || "";
   const kind = mediaKind(message, contentType);
   const file = message.file || {};
@@ -2645,7 +2663,8 @@ async function mediaNativeMetadata(userId, accountId, peerId, messageId) {
     accountId,
     peerId,
     messageId: Number(messageId),
-    nativeFile: nativeFileLocation(peerId, message, contentType, fileName, kind)
+    nativeFile: nativeFileLocation(peerId, message, contentType, fileName, kind),
+    nativePeer: nativePeerLocation(peerId, entity)
   };
 }
 

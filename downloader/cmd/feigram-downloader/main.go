@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -32,9 +33,11 @@ import (
 )
 
 const (
-	version         = "0.6.0"
+	version         = "0.7.0"
 	defaultPartSize = 1024 * 1024
 )
+
+var migrateRe = regexp.MustCompile(`(?:FILE|PHONE|NETWORK|USER)?_?MIGRATE_([0-9]+)`)
 
 type Config struct {
 	Enabled      bool   `json:"enabled"`
@@ -69,6 +72,7 @@ type Task struct {
 	PartPath    string             `json:"partPath"`
 	InlineURL   string             `json:"inlineUrl"`
 	NativeFile  NativeFileLocation `json:"nativeFile"`
+	NativePeer  NativePeerLocation `json:"nativePeer"`
 	Error       string             `json:"error"`
 	RetryCount  int                `json:"retryCount"`
 	RetryAfter  int64              `json:"retryAfterUnix"`
@@ -89,6 +93,12 @@ type NativeFileLocation struct {
 	MimeType      string `json:"mimeType"`
 	FileName      string `json:"fileName"`
 	UpdatedAt     string `json:"updatedAt"`
+}
+
+type NativePeerLocation struct {
+	Type       string `json:"type"`
+	ID         string `json:"id"`
+	AccessHash string `json:"accessHash"`
 }
 
 type NativeAccount struct {
@@ -686,7 +696,47 @@ func (a *App) downloadNativeMTProto(task *Task, cancel <-chan struct{}) error {
 		}
 	}()
 	runErr := client.Run(ctx, func(ctx context.Context) error {
-		api := client.API()
+		metadataAPI := client.API()
+		fileAPI := metadataAPI
+		fileDC := task.NativeFile.DCID
+		var mediaInvoker telegram.CloseInvoker
+		closeMedia := func() {
+			if mediaInvoker != nil {
+				if err := mediaInvoker.Close(); err != nil {
+					log.Printf("task %s close media DC %d invoker: %v", task.ID, fileDC, err)
+				}
+				mediaInvoker = nil
+			}
+		}
+		defer closeMedia()
+		switchToMediaDC := func(dc int) error {
+			if dc <= 0 {
+				fileAPI = metadataAPI
+				closeMedia()
+				fileDC = 0
+				return nil
+			}
+			if mediaInvoker != nil && fileDC == dc {
+				return nil
+			}
+			closeMedia()
+			invoker, err := client.MediaOnly(ctx, dc, 1)
+			if err != nil {
+				fileAPI = metadataAPI
+				fileDC = 0
+				return fmt.Errorf("connect Telegram media DC %d: %w", dc, err)
+			}
+			mediaInvoker = invoker
+			fileAPI = tg.NewClient(invoker)
+			fileDC = dc
+			log.Printf("task %s using Telegram media DC %d for native upload.getFile", task.ID, dc)
+			return nil
+		}
+		if fileDC > 0 {
+			if err := switchToMediaDC(fileDC); err != nil {
+				log.Printf("task %s media DC %d unavailable, fallback current DC: %v", task.ID, fileDC, err)
+			}
+		}
 		lastBytes := downloaded
 		lastTick := time.Now()
 		windowStart := time.Now()
@@ -717,14 +767,14 @@ func (a *App) downloadNativeMTProto(task *Task, cancel <-chan struct{}) error {
 				AccessHash:    accessHash,
 				FileReference: fileReference,
 			}
-			resp, err := api.UploadGetFile(ctx, &tg.UploadGetFileRequest{
+			resp, err := fileAPI.UploadGetFile(ctx, &tg.UploadGetFileRequest{
 				Location: location,
 				Offset:   downloaded,
 				Limit:    limit,
 			})
 			if err != nil {
 				if strings.Contains(err.Error(), "FILE_REFERENCE_EXPIRED") {
-					refreshed, refreshErr := a.refreshNativeFileLocation(task.ID)
+					refreshed, refreshErr := a.refreshNativeFileLocation(ctx, metadataAPI, task.ID)
 					if refreshErr != nil {
 						return fmt.Errorf("FILE_REFERENCE_EXPIRED: 自动刷新消息元数据失败：%w", refreshErr)
 					}
@@ -740,11 +790,21 @@ func (a *App) downloadNativeMTProto(task *Task, cancel <-chan struct{}) error {
 					if err != nil {
 						return fmt.Errorf("invalid refreshed native file reference: %w", err)
 					}
-					log.Printf("task %s refreshed FILE_REFERENCE and resumed at %d", task.ID, downloaded)
+					task.NativeFile = refreshed
+					if refreshed.DCID > 0 && refreshed.DCID != fileDC {
+						if err := switchToMediaDC(refreshed.DCID); err != nil {
+							return classifyNativeReadError(err)
+						}
+					}
+					log.Printf("task %s refreshed FILE_REFERENCE via Go message refetch and resumed at %d", task.ID, downloaded)
 					continue
 				}
-				if strings.Contains(err.Error(), "_MIGRATE_") {
-					log.Printf("task %s got Telegram DC migration request at offset %d: %v", task.ID, downloaded, err)
+				if migrateDC := migrationDC(err); migrateDC > 0 {
+					log.Printf("task %s got Telegram DC migration request to %d at offset %d: %v", task.ID, migrateDC, downloaded, err)
+					if err := switchToMediaDC(migrateDC); err != nil {
+						return classifyNativeReadError(err)
+					}
+					continue
 				}
 				return classifyNativeReadError(err)
 			}
@@ -799,7 +859,99 @@ func (a *App) downloadNativeMTProto(task *Task, cancel <-chan struct{}) error {
 	return os.Rename(task.PartPath, task.FilePath)
 }
 
-func (a *App) refreshNativeFileLocation(taskID string) (NativeFileLocation, error) {
+func (a *App) refreshNativeFileLocation(ctx context.Context, api *tg.Client, taskID string) (NativeFileLocation, error) {
+	task := a.taskSnapshot(taskID)
+	if task == nil {
+		return NativeFileLocation{}, errors.New("task not found")
+	}
+	if refreshed, err := a.refreshNativeFileLocationFromTelegram(ctx, api, *task); err == nil {
+		return refreshed, nil
+	} else {
+		log.Printf("task %s Go metadata refetch failed, fallback to Node metadata bridge: %v", taskID, err)
+	}
+	return a.refreshNativeFileLocationFromMetadataURL(taskID)
+}
+
+func (a *App) refreshNativeFileLocationFromTelegram(ctx context.Context, api *tg.Client, task Task) (NativeFileLocation, error) {
+	if api == nil {
+		return NativeFileLocation{}, errors.New("native api is nil")
+	}
+	messageID := int(task.MessageID)
+	if messageID <= 0 {
+		return NativeFileLocation{}, errors.New("native task missing message id")
+	}
+	reqCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	var result tg.MessagesMessagesClass
+	var err error
+	peerType := strings.ToLower(strings.TrimSpace(task.NativePeer.Type))
+	switch peerType {
+	case "channel":
+		channelID, parseErr := strconv.ParseInt(task.NativePeer.ID, 10, 64)
+		if parseErr != nil || channelID == 0 {
+			return NativeFileLocation{}, fmt.Errorf("invalid native channel id: %w", parseErr)
+		}
+		accessHash, parseErr := strconv.ParseInt(task.NativePeer.AccessHash, 10, 64)
+		if parseErr != nil {
+			return NativeFileLocation{}, fmt.Errorf("invalid native channel access hash: %w", parseErr)
+		}
+		result, err = api.ChannelsGetMessages(reqCtx, &tg.ChannelsGetMessagesRequest{
+			Channel: &tg.InputChannel{ChannelID: channelID, AccessHash: accessHash},
+			ID:      []tg.InputMessageClass{&tg.InputMessageID{ID: messageID}},
+		})
+	case "user", "chat":
+		result, err = api.MessagesGetMessages(reqCtx, []tg.InputMessageClass{&tg.InputMessageID{ID: messageID}})
+	default:
+		return NativeFileLocation{}, errors.New("native peer metadata missing; old task requires Node metadata fallback")
+	}
+	if err != nil {
+		return NativeFileLocation{}, classifyNativeReadError(err)
+	}
+	modified, ok := result.AsModified()
+	if !ok {
+		return NativeFileLocation{}, fmt.Errorf("unexpected messages result: %T", result)
+	}
+	for _, item := range modified.GetMessages() {
+		message, ok := item.(*tg.Message)
+		if !ok || message.ID != messageID {
+			continue
+		}
+		media, ok := message.GetMedia()
+		if !ok {
+			return NativeFileLocation{}, errors.New("消息已存在，但没有媒体文件")
+		}
+		docMedia, ok := media.(*tg.MessageMediaDocument)
+		if !ok {
+			return NativeFileLocation{}, fmt.Errorf("消息媒体不是文档视频：%T", media)
+		}
+		doc, ok := docMedia.Document.(*tg.Document)
+		if !ok || doc == nil {
+			return NativeFileLocation{}, fmt.Errorf("消息文档类型不支持：%T", docMedia.Document)
+		}
+		refreshed := NativeFileLocation{
+			PeerID:        task.PeerID,
+			MessageID:     task.MessageID,
+			Kind:          coalesce(task.NativeFile.Kind, task.Kind),
+			FileID:        strconv.FormatInt(doc.ID, 10),
+			AccessHash:    strconv.FormatInt(doc.AccessHash, 10),
+			FileReference: base64.StdEncoding.EncodeToString(doc.FileReference),
+			DCID:          doc.DCID,
+			Size:          max64(doc.Size, task.Size),
+			MimeType:      coalesce(task.NativeFile.MimeType, coalesce(task.ContentType, doc.MimeType)),
+			FileName:      coalesce(task.NativeFile.FileName, task.FileName),
+			UpdatedAt:     now(),
+		}
+		a.updateTask(task.ID, func(t *Task) {
+			t.NativeFile = refreshed
+			t.Error = ""
+			t.UpdatedAt = now()
+		})
+		return refreshed, nil
+	}
+	return NativeFileLocation{}, errors.New("你要访问的内容已被删除，或当前账号没有权限读取这条消息")
+}
+
+func (a *App) refreshNativeFileLocationFromMetadataURL(taskID string) (NativeFileLocation, error) {
 	task := a.taskSnapshot(taskID)
 	if task == nil {
 		return NativeFileLocation{}, errors.New("task not found")
@@ -824,6 +976,7 @@ func (a *App) refreshNativeFileLocation(taskID string) (NativeFileLocation, erro
 	}
 	var payload struct {
 		NativeFile NativeFileLocation `json:"nativeFile"`
+		NativePeer NativePeerLocation `json:"nativePeer"`
 	}
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return NativeFileLocation{}, err
@@ -833,6 +986,9 @@ func (a *App) refreshNativeFileLocation(taskID string) (NativeFileLocation, erro
 	}
 	a.updateTask(taskID, func(t *Task) {
 		t.NativeFile = payload.NativeFile
+		if payload.NativePeer.Type != "" || payload.NativePeer.ID != "" {
+			t.NativePeer = payload.NativePeer
+		}
 		t.NativeFile.UpdatedAt = coalesce(t.NativeFile.UpdatedAt, now())
 		t.Error = ""
 		t.UpdatedAt = now()
@@ -1273,6 +1429,9 @@ func (a *App) upsertTaskLocked(input Task) Task {
 	}
 	if input.MetadataURL != "" {
 		existing.MetadataURL = input.MetadataURL
+	}
+	if input.NativePeer.Type != "" || input.NativePeer.ID != "" {
+		existing.NativePeer = input.NativePeer
 	}
 	if input.FilePath != "" {
 		existing.FilePath = input.FilePath
@@ -2025,7 +2184,26 @@ func (a *App) pollNativeQRLogin(loginID string) (nativeQRLoginResult, error) {
 			return nil
 		case *tg.AuthLoginTokenMigrateTo:
 			log.Printf("native qr login requires DC migration to %d for %s/%s", value.DCID, snapshot.UserID, snapshot.AccountID)
-			return fmt.Errorf("QR 登录需要迁移到 Telegram DC %d，当前版本已记录诊断，请稍后重试或使用验证码兜底", value.DCID)
+			if err := client.MigrateTo(ctx, value.DCID); err != nil {
+				return fmt.Errorf("QR 登录迁移到 Telegram DC %d 失败：%w", value.DCID, err)
+			}
+			imported, err := client.API().AuthImportLoginToken(ctx, value.Token)
+			if err != nil {
+				return fmt.Errorf("QR 登录迁移后导入 token 失败：%w", err)
+			}
+			success, ok := imported.(*tg.AuthLoginTokenSuccess)
+			if !ok {
+				return fmt.Errorf("QR 登录迁移后返回未知响应：%T", imported)
+			}
+			_ = success
+			account = snapshot
+			account.Ready = true
+			account.Status = "healthy"
+			account.Error = ""
+			account.CheckedAt = now()
+			account, _ = a.saveNativeAccount(account)
+			response = nativeQRLoginResult{Account: account, LoginID: loginID, Status: "authorized", Done: true}
+			return nil
 		case *tg.AuthLoginToken:
 			a.mu.Lock()
 			if login := a.qrLogins[loginID]; login != nil {
@@ -2095,7 +2273,18 @@ func (a *App) exportNativeQRToken(account NativeAccount, apiHash string) (*tg.Au
 			return nil
 		case *tg.AuthLoginTokenMigrateTo:
 			log.Printf("native qr export requires DC migration to %d for %s/%s", value.DCID, account.UserID, account.AccountID)
-			return fmt.Errorf("QR 登录需要迁移到 Telegram DC %d，当前版本已记录诊断，请稍后重试", value.DCID)
+			if err := client.MigrateTo(ctx, value.DCID); err != nil {
+				return fmt.Errorf("QR token 迁移到 Telegram DC %d 失败：%w", value.DCID, err)
+			}
+			imported, err := client.API().AuthImportLoginToken(ctx, value.Token)
+			if err != nil {
+				return fmt.Errorf("QR token 迁移后导入失败：%w", err)
+			}
+			if success, ok := imported.(*tg.AuthLoginTokenSuccess); ok {
+				_ = success
+				return errors.New("Go 原生账号已授权")
+			}
+			return fmt.Errorf("QR token 迁移后返回未知响应：%T", imported)
 		case *tg.AuthLoginTokenSuccess:
 			return errors.New("Go 原生账号已授权")
 		default:
@@ -2231,6 +2420,21 @@ func classifyNativeReadError(err error) error {
 	default:
 		return err
 	}
+}
+
+func migrationDC(err error) int {
+	if err == nil {
+		return 0
+	}
+	match := migrateRe.FindStringSubmatch(err.Error())
+	if len(match) != 2 {
+		return 0
+	}
+	dc, parseErr := strconv.Atoi(match[1])
+	if parseErr != nil || dc <= 0 {
+		return 0
+	}
+	return dc
 }
 
 func (a *App) currentPartSize() int64 {
