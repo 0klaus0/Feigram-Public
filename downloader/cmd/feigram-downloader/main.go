@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	version         = "0.8.0"
+	version         = "0.8.1"
 	defaultPartSize = 1024 * 1024
 )
 
@@ -1997,17 +1997,50 @@ func (a *App) saveNativeAccount(account NativeAccount) (NativeAccount, error) {
 	existing.Phone = account.Phone
 	existing.DisplayName = account.DisplayName
 	existing.APIID = account.APIID
-	existing.APIHash = account.APIHash
+	if account.APIHash != "" {
+		existing.APIHash = account.APIHash
+	}
 	existing.Status = normalizeNativeStatus(account.Status, account.Ready)
 	existing.Ready = account.Ready
-	existing.Session = account.Session
+	if account.Session != "" {
+		existing.Session = account.Session
+	}
 	existing.Error = account.Error
+	existing.HealthPasses = account.HealthPasses
+	existing.LastHealthBytes = account.LastHealthBytes
+	existing.LastHealthDC = account.LastHealthDC
+	existing.LastHealthDurationMS = account.LastHealthDurationMS
 	existing.CheckedAt = account.CheckedAt
 	existing.UpdatedAt = now()
 	if err := a.saveNativeLocked(); err != nil {
 		return *existing, err
 	}
 	return *existing, nil
+}
+
+func (a *App) finalizeNativeAuthorization(userID, accountID string) (NativeAccount, error) {
+	for attempt := 0; attempt < 10; attempt++ {
+		a.mu.Lock()
+		account := a.native[nativeAccountKey(userID, accountID)]
+		if account != nil && account.Session != "" {
+			account.Ready = false
+			account.HealthPasses = 0
+			account.LastHealthBytes = 0
+			account.LastHealthDC = 0
+			account.LastHealthDurationMS = 0
+			account.Status = "session-imported"
+			account.Error = "Go 原生账号已授权，请连续完成 2 次真实文件健康检查"
+			account.CheckedAt = ""
+			account.UpdatedAt = now()
+			result := *account
+			err := a.saveNativeLocked()
+			a.mu.Unlock()
+			return result, err
+		}
+		a.mu.Unlock()
+		time.Sleep(100 * time.Millisecond)
+	}
+	return NativeAccount{}, errors.New("Telegram 已授权，但 gotd session 尚未持久化，请重新扫码")
 }
 
 func (a *App) startNativeLogin(userID, accountID, phone string, apiID int, apiHash string) (nativeLoginResult, error) {
@@ -2159,6 +2192,11 @@ func (a *App) startNativeQRLogin(userID, accountID string, apiID int, apiHash st
 		account.APIHash = encrypted
 	}
 	account.Ready = false
+	account.Session = ""
+	account.HealthPasses = 0
+	account.LastHealthBytes = 0
+	account.LastHealthDC = 0
+	account.LastHealthDurationMS = 0
 	account.Status = "qr-waiting"
 	account.Error = ""
 	account.UpdatedAt = now()
@@ -2264,12 +2302,10 @@ func (a *App) pollNativeQRLogin(loginID string) (nativeQRLoginResult, error) {
 	err = client.Run(ctx, func(ctx context.Context) error {
 		status, err := client.Auth().Status(ctx)
 		if err == nil && status.Authorized {
-			account = snapshot
-			account.Ready = true
-			account.Status = "healthy"
-			account.Error = ""
-			account.CheckedAt = now()
-			account, _ = a.saveNativeAccount(account)
+			account, err = a.finalizeNativeAuthorization(snapshot.UserID, snapshot.AccountID)
+			if err != nil {
+				return err
+			}
 			response = nativeQRLoginResult{Account: account, LoginID: loginID, Status: "authorized", Done: true}
 			return nil
 		}
@@ -2286,12 +2322,10 @@ func (a *App) pollNativeQRLogin(loginID string) (nativeQRLoginResult, error) {
 		switch value := result.(type) {
 		case *tg.AuthLoginTokenSuccess:
 			_ = value
-			account = snapshot
-			account.Ready = true
-			account.Status = "healthy"
-			account.Error = ""
-			account.CheckedAt = now()
-			account, _ = a.saveNativeAccount(account)
+			account, err = a.finalizeNativeAuthorization(snapshot.UserID, snapshot.AccountID)
+			if err != nil {
+				return err
+			}
 			response = nativeQRLoginResult{Account: account, LoginID: loginID, Status: "authorized", Done: true}
 			return nil
 		case *tg.AuthLoginTokenMigrateTo:
@@ -2308,12 +2342,10 @@ func (a *App) pollNativeQRLogin(loginID string) (nativeQRLoginResult, error) {
 				return fmt.Errorf("QR 登录迁移后返回未知响应：%T", imported)
 			}
 			_ = success
-			account = snapshot
-			account.Ready = true
-			account.Status = "healthy"
-			account.Error = ""
-			account.CheckedAt = now()
-			account, _ = a.saveNativeAccount(account)
+			account, err = a.finalizeNativeAuthorization(snapshot.UserID, snapshot.AccountID)
+			if err != nil {
+				return err
+			}
 			response = nativeQRLoginResult{Account: account, LoginID: loginID, Status: "authorized", Done: true}
 			return nil
 		case *tg.AuthLoginToken:
@@ -2439,10 +2471,10 @@ func (a *App) runNativeLogin(ctx context.Context, login *NativeLogin) {
 	err = client.Run(ctx, func(ctx context.Context) error {
 		status, err := client.Auth().Status(ctx)
 		if err == nil && status.Authorized {
-			account.Ready = true
-			account.Status = "healthy"
-			account.Error = ""
-			account, _ = a.saveNativeAccount(account)
+			account, err = a.finalizeNativeAuthorization(login.UserID, login.AccountID)
+			if err != nil {
+				return err
+			}
 			login.StartResult <- nativeLoginResult{Account: account, LoginID: login.ID, Done: true}
 			return nil
 		}
@@ -2484,10 +2516,10 @@ func (a *App) runNativeLogin(ctx context.Context, login *NativeLogin) {
 		if err != nil {
 			return err
 		}
-		account.Ready = true
-		account.Status = "healthy"
-		account.Error = ""
-		account, _ = a.saveNativeAccount(account)
+		account, err = a.finalizeNativeAuthorization(login.UserID, login.AccountID)
+		if err != nil {
+			return err
+		}
 		login.Result <- nativeLoginResult{Account: account, LoginID: login.ID, Done: true}
 		return nil
 	})

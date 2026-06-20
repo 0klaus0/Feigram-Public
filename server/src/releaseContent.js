@@ -14,6 +14,20 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.44",
+    title: "Feigram 2.0.44 更新",
+    version: "2.0.44",
+    level: "success",
+    createdAt: "2026-06-20T13:30:00.000Z",
+    body: [
+      "修复 Telegram App 扫码已经授权，但随后健康检查提示 gotd session 未授权的问题。",
+      "根因是授权成功后旧账号快照覆盖了 gotd 刚写入的新 session；现在所有扫码和验证码成功分支都会读取最新持久化 session。",
+      "重新扫码会清除旧的无效 session，强制 Go 生成新的 MTProto auth key，避免误判旧授权。",
+      "健康检查通过次数、读取字节、Telegram DC 和耗时现在会完整持久化，不再反复停留在 0/2。",
+      "扫码成功后账号进入待检查状态；连续通过 2 次真实 Telegram 文件检查后，才启用 native 大文件下载资格。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.43",
     title: "Feigram 2.0.43 更新",
     version: "2.0.43",

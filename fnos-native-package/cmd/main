@@ -27,8 +27,8 @@ export FEIGRAM_DOWNLOADER_URL="http://127.0.0.1:${DOWNLOADER_PORT}"
 export FEIGRAM_DOWNLOADER_LOG="$DOWNLOADER_LOG_FILE"
 export FEIGRAM_DOWNLOADER_SECRET_FILE="${DATA_HOME}/data/app-secret"
 export APP_EDITION="Feigram 2.0 fnOS Client Edition"
-export APP_VERSION="2.0.43"
-export APP_CHANGELOG="Go 原生健康检查改为消息刷新后从媒体 DC 真实读取；补齐私聊和普通群 peer 回查；连续通过两次检查的账号，其新建大于 100MB 任务自动灰度到 native-mtproto，HTTP 桥接继续保留。"
+export APP_VERSION="2.0.44"
+export APP_CHANGELOG="修复 Go 扫码显示已授权后又提示 session 未授权的问题：登录成功不再用旧账号快照覆盖 gotd 新 session；健康检查次数和 DC 读取结果现在可正确持久化。"
 export NODE_ENV="production"
 
 is_running() {
