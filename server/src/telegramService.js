@@ -2626,7 +2626,12 @@ async function ensureGoDownloadTask(userId, accountId, peerId, messageId, option
   const id = goDownloaderTaskId(userId, accountId, peerId, messageId);
   const source = options.source || "manual";
   const downloaderState = await downloaderSidecar.state().catch(() => null);
-  const transport = downloaderState?.config?.transport || "http-bridge";
+  const configuredTransport = downloaderState?.config?.transport || "http-bridge";
+  const readyAccountKeys = Array.isArray(downloaderState?.nativeMTProto?.readyAccountKeys)
+    ? downloaderState.nativeMTProto.readyAccountKeys
+    : [];
+  const nativeEligible = size >= 100 * 1024 * 1024 && readyAccountKeys.includes(`${userId}|${accountId}`);
+  const transport = configuredTransport === "native-mtproto" || nativeEligible ? "native-mtproto" : "http-bridge";
   const task = await downloaderSidecar.enqueueTask({
     id,
     userId,

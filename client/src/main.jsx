@@ -799,6 +799,10 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
                   {canAdmin && <small className={cx("native-status", native?.ready && "ready")}>
                     Go：{native?.ready ? "原生 session 健康" : native?.error || native?.status || "等待扫码迁移"}
                   </small>}
+                  {canAdmin && native?.sessionSet && <small>
+                    连续检查 {native.healthPasses || 0}/2
+                    {native.lastHealthBytes ? ` · ${formatBytes(native.lastHealthBytes)} · DC ${native.lastHealthDc || "-"} · ${native.lastHealthDurationMs || 0} ms` : ""}
+                  </small>}
                 </div>
                 <button className="icon-button" onClick={() => onAccountChange(account.id)}>{account.id === accountId ? "当前" : "切换"}</button>
                 {canAdmin && <button className="icon-button" type="button" onClick={() => startNativeQrLogin(native || { accountId: account.id, displayName: account.displayName || account.label, phone: account.phoneNumber })}>扫码登录 Go</button>}
@@ -992,6 +996,7 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
                   <div>
                     <strong>{item.displayName || item.phone || item.accountId}</strong>
                     <p>{item.ready ? "Go MTProto session 健康" : item.error || "等待 Go 重新登录生成原生 session"}</p>
+                    <small>连续检查 {item.healthPasses || 0}/2{item.lastHealthBytes ? ` · ${formatBytes(item.lastHealthBytes)} · DC ${item.lastHealthDc || "-"} · ${item.lastHealthDurationMs || 0} ms` : ""}</small>
                   </div>
                   <span>{item.sessionSet ? item.status : "未迁移"}</span>
                   <button className="icon-button" type="button" onClick={() => checkNativeAccount(item.accountId)}>健康检查</button>

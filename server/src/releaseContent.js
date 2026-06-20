@@ -14,6 +14,20 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.43",
+    title: "Feigram 2.0.43 更新",
+    version: "2.0.43",
+    level: "success",
+    createdAt: "2026-06-20T12:00:00.000Z",
+    body: [
+      "Go 原生健康检查改为先由 Go 重取 Telegram 消息刷新 fileReference，再从 document 所在 media DC 真实读取 64KB 分片。",
+      "新增连续健康闸门：新账号连续通过 2 次真实文件检查后，才具备 native-mtproto 大文件下载资格。",
+      "补齐私聊和普通群 peer 回查；messages.getMessages 未命中时，会在指定 peer 内精确查询目标消息附近记录。",
+      "连续通过检查的账号，新建大于 100MB 的任务会自动灰度到 Go 原生传输；小文件、旧任务和未通过账号继续使用 HTTP 回退。",
+      "管理后台新增健康通过次数、真实读取字节、Telegram DC 和耗时信息，便于判断 native 通道是否真正可用。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.42",
     title: "Feigram 2.0.42 更新",
     version: "2.0.42",

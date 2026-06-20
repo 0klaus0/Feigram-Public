@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	version         = "0.7.0"
+	version         = "0.8.0"
 	defaultPartSize = 1024 * 1024
 )
 
@@ -102,19 +102,23 @@ type NativePeerLocation struct {
 }
 
 type NativeAccount struct {
-	UserID      string `json:"userId"`
-	AccountID   string `json:"accountId"`
-	Phone       string `json:"phone"`
-	DisplayName string `json:"displayName"`
-	APIID       int    `json:"apiId"`
-	APIHash     string `json:"apiHash"`
-	Status      string `json:"status"`
-	Ready       bool   `json:"ready"`
-	Session     string `json:"session"`
-	Error       string `json:"error"`
-	CreatedAt   string `json:"createdAt"`
-	UpdatedAt   string `json:"updatedAt"`
-	CheckedAt   string `json:"checkedAt"`
+	UserID               string `json:"userId"`
+	AccountID            string `json:"accountId"`
+	Phone                string `json:"phone"`
+	DisplayName          string `json:"displayName"`
+	APIID                int    `json:"apiId"`
+	APIHash              string `json:"apiHash"`
+	Status               string `json:"status"`
+	Ready                bool   `json:"ready"`
+	Session              string `json:"session"`
+	Error                string `json:"error"`
+	HealthPasses         int    `json:"healthPasses"`
+	LastHealthBytes      int    `json:"lastHealthBytes"`
+	LastHealthDC         int    `json:"lastHealthDc"`
+	LastHealthDurationMS int64  `json:"lastHealthDurationMs"`
+	CreatedAt            string `json:"createdAt"`
+	UpdatedAt            string `json:"updatedAt"`
+	CheckedAt            string `json:"checkedAt"`
 }
 
 type NativeLogin struct {
@@ -907,9 +911,69 @@ func (a *App) refreshNativeFileLocationFromTelegram(ctx context.Context, api *tg
 	if err != nil {
 		return NativeFileLocation{}, classifyNativeReadError(err)
 	}
+	doc, err := nativeDocumentFromMessages(result, messageID)
+	if err != nil && (peerType == "user" || peerType == "chat") {
+		peer, peerErr := nativeInputPeer(task.NativePeer)
+		if peerErr == nil {
+			history, historyErr := api.MessagesGetHistory(reqCtx, &tg.MessagesGetHistoryRequest{
+				Peer:     peer,
+				OffsetID: messageID + 1,
+				Limit:    3,
+			})
+			if historyErr == nil {
+				doc, err = nativeDocumentFromMessages(history, messageID)
+			} else {
+				err = classifyNativeReadError(historyErr)
+			}
+		}
+	}
+	if err != nil {
+		return NativeFileLocation{}, err
+	}
+	refreshed := NativeFileLocation{
+		PeerID:        task.PeerID,
+		MessageID:     task.MessageID,
+		Kind:          coalesce(task.NativeFile.Kind, task.Kind),
+		FileID:        strconv.FormatInt(doc.ID, 10),
+		AccessHash:    strconv.FormatInt(doc.AccessHash, 10),
+		FileReference: base64.StdEncoding.EncodeToString(doc.FileReference),
+		DCID:          doc.DCID,
+		Size:          max64(doc.Size, task.Size),
+		MimeType:      coalesce(task.NativeFile.MimeType, coalesce(task.ContentType, doc.MimeType)),
+		FileName:      coalesce(task.NativeFile.FileName, task.FileName),
+		UpdatedAt:     now(),
+	}
+	a.updateTask(task.ID, func(t *Task) {
+		t.NativeFile = refreshed
+		t.Error = ""
+		t.UpdatedAt = now()
+	})
+	return refreshed, nil
+}
+
+func nativeInputPeer(peer NativePeerLocation) (tg.InputPeerClass, error) {
+	id, err := strconv.ParseInt(peer.ID, 10, 64)
+	if err != nil || id == 0 {
+		return nil, fmt.Errorf("invalid native peer id: %w", err)
+	}
+	switch strings.ToLower(strings.TrimSpace(peer.Type)) {
+	case "user":
+		accessHash, parseErr := strconv.ParseInt(peer.AccessHash, 10, 64)
+		if parseErr != nil {
+			return nil, fmt.Errorf("invalid native user access hash: %w", parseErr)
+		}
+		return &tg.InputPeerUser{UserID: id, AccessHash: accessHash}, nil
+	case "chat":
+		return &tg.InputPeerChat{ChatID: id}, nil
+	default:
+		return nil, fmt.Errorf("unsupported native peer type %q", peer.Type)
+	}
+}
+
+func nativeDocumentFromMessages(result tg.MessagesMessagesClass, messageID int) (*tg.Document, error) {
 	modified, ok := result.AsModified()
 	if !ok {
-		return NativeFileLocation{}, fmt.Errorf("unexpected messages result: %T", result)
+		return nil, fmt.Errorf("unexpected messages result: %T", result)
 	}
 	for _, item := range modified.GetMessages() {
 		message, ok := item.(*tg.Message)
@@ -918,37 +982,19 @@ func (a *App) refreshNativeFileLocationFromTelegram(ctx context.Context, api *tg
 		}
 		media, ok := message.GetMedia()
 		if !ok {
-			return NativeFileLocation{}, errors.New("消息已存在，但没有媒体文件")
+			return nil, errors.New("消息已存在，但没有媒体文件")
 		}
 		docMedia, ok := media.(*tg.MessageMediaDocument)
 		if !ok {
-			return NativeFileLocation{}, fmt.Errorf("消息媒体不是文档视频：%T", media)
+			return nil, fmt.Errorf("消息媒体不是文档视频：%T", media)
 		}
 		doc, ok := docMedia.Document.(*tg.Document)
 		if !ok || doc == nil {
-			return NativeFileLocation{}, fmt.Errorf("消息文档类型不支持：%T", docMedia.Document)
+			return nil, fmt.Errorf("消息文档类型不支持：%T", docMedia.Document)
 		}
-		refreshed := NativeFileLocation{
-			PeerID:        task.PeerID,
-			MessageID:     task.MessageID,
-			Kind:          coalesce(task.NativeFile.Kind, task.Kind),
-			FileID:        strconv.FormatInt(doc.ID, 10),
-			AccessHash:    strconv.FormatInt(doc.AccessHash, 10),
-			FileReference: base64.StdEncoding.EncodeToString(doc.FileReference),
-			DCID:          doc.DCID,
-			Size:          max64(doc.Size, task.Size),
-			MimeType:      coalesce(task.NativeFile.MimeType, coalesce(task.ContentType, doc.MimeType)),
-			FileName:      coalesce(task.NativeFile.FileName, task.FileName),
-			UpdatedAt:     now(),
-		}
-		a.updateTask(task.ID, func(t *Task) {
-			t.NativeFile = refreshed
-			t.Error = ""
-			t.UpdatedAt = now()
-		})
-		return refreshed, nil
+		return doc, nil
 	}
-	return NativeFileLocation{}, errors.New("你要访问的内容已被删除，或当前账号没有权限读取这条消息")
+	return nil, errors.New("你要访问的内容已被删除，或当前账号没有权限读取这条消息")
 }
 
 func (a *App) refreshNativeFileLocationFromMetadataURL(taskID string) (NativeFileLocation, error) {
@@ -1344,10 +1390,19 @@ func (a *App) stateLocked() map[string]any {
 	transport := normalizeTransport(a.config.Transport)
 	strategy := "Go 下载服务已接管队列、断点、限速和落盘；可在保守模式与 Go 原生 MTProto 模式之间切换，HTTP 桥接仍作为回退。"
 	nativeReady := a.nativeReadyLocked()
+	readyAccountKeys := make([]string, 0)
+	for _, account := range a.native {
+		if nativeAccountEligible(*account) {
+			readyAccountKeys = append(readyAccountKeys, nativeAccountKey(account.UserID, account.AccountID))
+		}
+	}
+	sort.Strings(readyAccountKeys)
 	native := map[string]any{
-		"ready":  nativeReady,
-		"status": "needs-login",
-		"note":   "Go 原生 MTProto 需要在账号管理里扫码登录，完成后可做真实 Telegram 小文件健康检查。",
+		"ready":            nativeReady,
+		"readyAccountKeys": readyAccountKeys,
+		"requiredPasses":   2,
+		"status":           "needs-login",
+		"note":             "Go 原生 MTProto 需要扫码登录并连续通过 2 次真实 Telegram 文件健康检查。",
 	}
 	if nativeReady {
 		native["status"] = "healthy"
@@ -1496,6 +1551,7 @@ func (a *App) upsertNativeAccountLocked(input NativeAccount) (NativeAccount, err
 		}
 		existing.Session = encrypted
 		existing.Ready = false
+		existing.HealthPasses = 0
 		existing.Status = "session-imported"
 		existing.Error = "Go session payload 已加密保存，等待 gotd 健康检查"
 	}
@@ -1504,6 +1560,9 @@ func (a *App) upsertNativeAccountLocked(input NativeAccount) (NativeAccount, err
 	}
 	if input.Ready {
 		existing.Ready = true
+		if existing.HealthPasses < 2 {
+			existing.HealthPasses = 2
+		}
 		existing.Status = "healthy"
 		existing.Error = ""
 	}
@@ -1526,11 +1585,15 @@ func (a *App) publicNativeAccountsLocked() []map[string]any {
 
 func (a *App) nativeReadyLocked() bool {
 	for _, account := range a.native {
-		if account.Ready && account.Session != "" && account.APIID > 0 && account.APIHash != "" {
+		if nativeAccountEligible(*account) {
 			return true
 		}
 	}
 	return false
+}
+
+func nativeAccountEligible(account NativeAccount) bool {
+	return account.Ready && account.HealthPasses >= 2 && account.Session != "" && account.APIID > 0 && account.APIHash != ""
 }
 
 func (t Task) OrderOrDefault(fallback int64) int64 {
@@ -1599,19 +1662,23 @@ func normalizeTransport(value string) string {
 
 func publicNativeAccount(account NativeAccount) map[string]any {
 	return map[string]any{
-		"userId":      account.UserID,
-		"accountId":   account.AccountID,
-		"phone":       account.Phone,
-		"displayName": account.DisplayName,
-		"apiId":       account.APIID,
-		"apiSet":      account.APIID > 0 && account.APIHash != "",
-		"status":      normalizeNativeStatus(account.Status, account.Ready),
-		"ready":       account.Ready && account.Session != "" && account.APIID > 0 && account.APIHash != "",
-		"sessionSet":  account.Session != "",
-		"error":       account.Error,
-		"createdAt":   account.CreatedAt,
-		"updatedAt":   account.UpdatedAt,
-		"checkedAt":   account.CheckedAt,
+		"userId":               account.UserID,
+		"accountId":            account.AccountID,
+		"phone":                account.Phone,
+		"displayName":          account.DisplayName,
+		"apiId":                account.APIID,
+		"apiSet":               account.APIID > 0 && account.APIHash != "",
+		"status":               normalizeNativeStatus(account.Status, account.Ready),
+		"ready":                nativeAccountEligible(account),
+		"sessionSet":           account.Session != "",
+		"error":                account.Error,
+		"healthPasses":         account.HealthPasses,
+		"lastHealthBytes":      account.LastHealthBytes,
+		"lastHealthDc":         account.LastHealthDC,
+		"lastHealthDurationMs": account.LastHealthDurationMS,
+		"createdAt":            account.CreatedAt,
+		"updatedAt":            account.UpdatedAt,
+		"checkedAt":            account.CheckedAt,
 	}
 }
 
@@ -1803,7 +1870,7 @@ func (a *App) nativeHealthCheck(account NativeAccount) (NativeAccount, error) {
 		account.Error = err.Error()
 		return a.saveNativeAccount(account)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	err = client.Run(ctx, func(ctx context.Context) error {
 		status, err := client.Auth().Status(ctx)
@@ -1815,20 +1882,37 @@ func (a *App) nativeHealthCheck(account NativeAccount) (NativeAccount, error) {
 		}
 		sample := a.nativeSampleTask(account.UserID, account.AccountID)
 		if sample != nil {
-			if err := readNativeSample(ctx, client.API(), sample.NativeFile); err != nil {
+			bytesRead, dc, duration, err := a.readNativeSample(ctx, client, *sample)
+			if err != nil {
 				return fmt.Errorf("Go 原生文件抽样读取失败：%w", classifyNativeReadError(err))
 			}
-			account.Error = "健康检查已真实读取 Telegram 文件分片"
+			account.LastHealthBytes = bytesRead
+			account.LastHealthDC = dc
+			account.LastHealthDurationMS = duration.Milliseconds()
+			account.Error = fmt.Sprintf("健康检查已从 Telegram DC %d 读取 %d 字节，耗时 %d ms", dc, bytesRead, duration.Milliseconds())
+		} else {
+			return errors.New("没有可用于原生健康检查的 Telegram 文件任务，请先缓存一个视频")
 		}
 		return nil
 	})
 	if err != nil {
 		account.Ready = false
-		account.Status = "needs-relogin"
+		account.HealthPasses = 0
+		message := strings.ToUpper(err.Error())
+		if strings.Contains(message, "AUTH_KEY_UNREGISTERED") || strings.Contains(message, "SESSION_REVOKED") || strings.Contains(message, "未授权") {
+			account.Status = "needs-relogin"
+		} else {
+			account.Status = "failed"
+		}
 		account.Error = compactError(err)
 		return a.saveNativeAccount(account)
 	}
-	account.Ready = true
+	if account.Ready && account.HealthPasses == 0 {
+		account.HealthPasses = 2
+	} else {
+		account.HealthPasses++
+	}
+	account.Ready = account.HealthPasses >= 2
 	account.Status = "healthy"
 	if account.Error == "" {
 		account.Error = "Go 原生 MTProto session 健康"
@@ -1848,29 +1932,57 @@ func (a *App) nativeSampleTask(userID, accountID string) *Task {
 	return nil
 }
 
-func readNativeSample(ctx context.Context, api *tg.Client, file NativeFileLocation) error {
+func (a *App) readNativeSample(ctx context.Context, client *telegram.Client, task Task) (int, int, time.Duration, error) {
+	started := time.Now()
+	metadataAPI := client.API()
+	if refreshed, err := a.refreshNativeFileLocationFromTelegram(ctx, metadataAPI, task); err == nil {
+		task.NativeFile = refreshed
+	} else if strings.Contains(err.Error(), "已被删除") {
+		return 0, 0, time.Since(started), err
+	}
+	file := task.NativeFile
 	fileID, err := strconv.ParseInt(file.FileID, 10, 64)
 	if err != nil {
-		return err
+		return 0, file.DCID, time.Since(started), err
 	}
 	accessHash, err := strconv.ParseInt(file.AccessHash, 10, 64)
 	if err != nil {
-		return err
+		return 0, file.DCID, time.Since(started), err
 	}
 	fileReference, err := base64.StdEncoding.DecodeString(file.FileReference)
 	if err != nil {
-		return err
+		return 0, file.DCID, time.Since(started), err
 	}
-	_, err = api.UploadGetFile(ctx, &tg.UploadGetFileRequest{
+	fileAPI := metadataAPI
+	var mediaInvoker telegram.CloseInvoker
+	if file.DCID > 0 {
+		mediaInvoker, err = client.MediaOnly(ctx, file.DCID, 1)
+		if err != nil {
+			return 0, file.DCID, time.Since(started), fmt.Errorf("connect Telegram media DC %d: %w", file.DCID, err)
+		}
+		defer mediaInvoker.Close()
+		fileAPI = tg.NewClient(mediaInvoker)
+	}
+	result, err := fileAPI.UploadGetFile(ctx, &tg.UploadGetFileRequest{
 		Location: &tg.InputDocumentFileLocation{
 			ID:            fileID,
 			AccessHash:    accessHash,
 			FileReference: fileReference,
 		},
 		Offset: 0,
-		Limit:  4096,
+		Limit:  64 * 1024,
 	})
-	return err
+	if err != nil {
+		return 0, file.DCID, time.Since(started), err
+	}
+	chunk, ok := result.(*tg.UploadFile)
+	if !ok {
+		return 0, file.DCID, time.Since(started), fmt.Errorf("健康检查收到不支持的 Telegram 文件响应：%T", result)
+	}
+	if len(chunk.Bytes) == 0 {
+		return 0, file.DCID, time.Since(started), errors.New("Telegram 文件健康检查返回空分片")
+	}
+	return len(chunk.Bytes), file.DCID, time.Since(started), nil
 }
 
 func (a *App) saveNativeAccount(account NativeAccount) (NativeAccount, error) {
