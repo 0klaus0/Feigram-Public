@@ -14,6 +14,20 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.48",
+    title: "Feigram 2.0.48 更新",
+    version: "2.0.48",
+    level: "success",
+    createdAt: "2026-06-21T00:05:00.000Z",
+    body: [
+      "修复 Go 扫码确认时 AUTH_TOKEN_EXPIRED 被当成终止错误的问题；过期 token 会在同一 gotd 连接内自动刷新二维码并继续等待。",
+      "扫码导入返回过期前会再次检查授权状态，避免 Telegram 已授权但 Feigram 误判失败。",
+      "Go 原生健康检查不再要求先缓存视频；没有任务样本时会从最近 100 个 Telegram 会话中寻找文档或视频并真实读取 64KB。",
+      "管理员后台只展示当前仍存在的 Telegram 账号对应的 Go 账号，避免重新登录后点击旧账号出现账号不存在。",
+      "运行日志中的 AUTH_KEY_UNREGISTERED 表示旧主聊天 session 已被 Telegram 注销，需要在账号管理中重新登录一次。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.47",
     title: "Feigram 2.0.47 更新",
     version: "2.0.47",

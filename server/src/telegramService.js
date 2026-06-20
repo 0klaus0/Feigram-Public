@@ -2905,8 +2905,12 @@ async function goSilentCacheSpeedDiagnostics(userId) {
 }
 
 async function goNativeAccounts() {
+  const activeAccounts = await readAccounts();
+  await Promise.all(activeAccounts.map((account) => syncGoNativeAccount(account).catch(() => null)));
   const accounts = await downloaderSidecar.nativeAccounts();
-  return Array.isArray(accounts) ? accounts : [];
+  if (!Array.isArray(accounts)) return [];
+  const activeKeys = new Set(activeAccounts.map((account) => `${account.userId}:${account.id}`));
+  return accounts.filter((account) => activeKeys.has(`${account.userId}:${account.accountId}`));
 }
 
 async function goNativeAccountHealth(userId, accountId) {

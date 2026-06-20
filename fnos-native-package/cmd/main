@@ -27,8 +27,8 @@ export FEIGRAM_DOWNLOADER_URL="http://127.0.0.1:${DOWNLOADER_PORT}"
 export FEIGRAM_DOWNLOADER_LOG="$DOWNLOADER_LOG_FILE"
 export FEIGRAM_DOWNLOADER_SECRET_FILE="${DATA_HOME}/data/app-secret"
 export APP_EDITION="Feigram 2.0 fnOS Client Edition"
-export APP_VERSION="2.0.47"
-export APP_CHANGELOG="修复主 Telegram 登录验证码过期后无法继续的问题；过期登录会自动清理，弹窗支持一键重新发送并生成新的验证码会话。"
+export APP_VERSION="2.0.48"
+export APP_CHANGELOG="修复 Go 扫码 AUTH_TOKEN_EXPIRED 中断；二维码会在同一 gotd 连接内自动刷新，健康检查无需预先缓存视频，并隐藏已失效的旧 Go 账号。"
 export NODE_ENV="production"
 
 is_running() {

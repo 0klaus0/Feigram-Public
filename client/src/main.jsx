@@ -766,7 +766,7 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
           <div className="qr-login-panel" role="dialog" aria-modal="true" aria-label="Telegram App 扫码登录 Go">
             <button className="close mini-close" type="button" onClick={() => setNativeQr(null)} title="关闭"><X size={18} /></button>
             <h3>Telegram App 扫码登录 Go</h3>
-            <p>{nativeQr.title || "Telegram 账号"} · {nativeQr.done ? "已授权" : nativeQr.status === "error" ? "登录异常" : "请用 Telegram 手机客户端扫描二维码"}</p>
+            <p>{nativeQr.title || "Telegram 账号"} · {nativeQr.done ? "已授权" : nativeQr.status === "error" ? "登录异常" : nativeQr.status === "refreshing" ? "二维码已过期，正在刷新" : "请用 Telegram 手机客户端扫描二维码"}</p>
             {nativeQr.qrImage && !nativeQr.done && <img src={nativeQr.qrImage} alt="Telegram QR login" />}
             {nativeQr.done && <p className="success">Go 原生 MTProto session 已生成，请关闭弹窗后连续执行两次健康检查。</p>}
             {nativeQr.error && <p className="error">{nativeQr.error}</p>}

@@ -34,7 +34,7 @@ import (
 )
 
 const (
-	version         = "0.9.0"
+	version         = "0.9.1"
 	defaultPartSize = 1024 * 1024
 )
 
@@ -1905,18 +1905,20 @@ func (a *App) nativeHealthCheck(account NativeAccount) (NativeAccount, error) {
 			return errors.New("gotd session 未授权，请重新登录")
 		}
 		sample := a.nativeSampleTask(account.UserID, account.AccountID)
-		if sample != nil {
-			bytesRead, dc, duration, err := a.readNativeSample(ctx, client, *sample)
+		if sample == nil {
+			sample, err = nativeSampleTaskFromDialogs(ctx, client.API())
 			if err != nil {
-				return fmt.Errorf("Go 原生文件抽样读取失败：%w", classifyNativeReadError(err))
+				return fmt.Errorf("无法从 Telegram 最近会话找到健康检查文件：%w", err)
 			}
-			account.LastHealthBytes = bytesRead
-			account.LastHealthDC = dc
-			account.LastHealthDurationMS = duration.Milliseconds()
-			account.Error = fmt.Sprintf("健康检查已从 Telegram DC %d 读取 %d 字节，耗时 %d ms", dc, bytesRead, duration.Milliseconds())
-		} else {
-			return errors.New("没有可用于原生健康检查的 Telegram 文件任务，请先缓存一个视频")
 		}
+		bytesRead, dc, duration, err := a.readNativeSample(ctx, client, *sample)
+		if err != nil {
+			return fmt.Errorf("Go 原生文件抽样读取失败：%w", classifyNativeReadError(err))
+		}
+		account.LastHealthBytes = bytesRead
+		account.LastHealthDC = dc
+		account.LastHealthDurationMS = duration.Milliseconds()
+		account.Error = fmt.Sprintf("健康检查已从 Telegram DC %d 读取 %d 字节，耗时 %d ms", dc, bytesRead, duration.Milliseconds())
 		return nil
 	})
 	if err != nil {
@@ -1954,6 +1956,55 @@ func (a *App) nativeSampleTask(userID, accountID string) *Task {
 		}
 	}
 	return nil
+}
+
+func nativeSampleTaskFromDialogs(ctx context.Context, api *tg.Client) (*Task, error) {
+	result, err := api.MessagesGetDialogs(ctx, &tg.MessagesGetDialogsRequest{
+		Limit:      100,
+		OffsetPeer: &tg.InputPeerEmpty{},
+	})
+	if err != nil {
+		return nil, classifyNativeReadError(err)
+	}
+	modified, ok := result.AsModified()
+	if !ok {
+		return nil, fmt.Errorf("unexpected dialogs result: %T", result)
+	}
+	for _, item := range modified.GetMessages() {
+		message, ok := item.(*tg.Message)
+		if !ok {
+			continue
+		}
+		media, ok := message.GetMedia()
+		if !ok {
+			continue
+		}
+		documentMedia, ok := media.(*tg.MessageMediaDocument)
+		if !ok {
+			continue
+		}
+		document, ok := documentMedia.Document.(*tg.Document)
+		if !ok || document == nil || document.ID == 0 || document.AccessHash == 0 || len(document.FileReference) == 0 {
+			continue
+		}
+		return &Task{
+			MessageID: int64(message.ID),
+			Kind:      "file",
+			Size:      document.Size,
+			NativeFile: NativeFileLocation{
+				MessageID:     int64(message.ID),
+				Kind:          "file",
+				FileID:        strconv.FormatInt(document.ID, 10),
+				AccessHash:    strconv.FormatInt(document.AccessHash, 10),
+				FileReference: base64.StdEncoding.EncodeToString(document.FileReference),
+				DCID:          document.DCID,
+				Size:          document.Size,
+				MimeType:      document.MimeType,
+				UpdatedAt:     now(),
+			},
+		}, nil
+	}
+	return nil, errors.New("最近 100 个会话没有可读取的 Telegram 文档或视频")
 }
 
 func (a *App) readNativeSample(ctx context.Context, client *telegram.Client, task Task) (int, int, time.Duration, error) {
@@ -2293,34 +2344,52 @@ func (a *App) runNativeQRLogin(ctx context.Context, login *NativeQRLogin) {
 		if statusErr == nil && status.Authorized {
 			return nil
 		}
-		_, authErr := client.QR().Auth(ctx, loggedIn, func(_ context.Context, token qrlogin.Token) error {
-			a.mu.Lock()
-			current := a.qrLogins[login.ID]
-			if current == nil {
+		for {
+			_, authErr := client.QR().Auth(ctx, loggedIn, func(_ context.Context, token qrlogin.Token) error {
+				a.mu.Lock()
+				current := a.qrLogins[login.ID]
+				if current == nil {
+					a.mu.Unlock()
+					return context.Canceled
+				}
+				current.URL = token.URL()
+				current.QRImage = qrPNGDataURL(current.URL)
+				current.Expires = token.Expires()
+				current.Status = "waiting-scan"
+				current.Error = ""
+				current.UpdatedAt = time.Now()
+				if native := a.native[nativeAccountKey(login.UserID, login.AccountID)]; native != nil {
+					native.Status = "qr-waiting"
+					native.Error = ""
+					native.UpdatedAt = now()
+					_ = a.saveNativeLocked()
+				}
+				result := nativeQRLoginSnapshot(current)
 				a.mu.Unlock()
-				return context.Canceled
+				select {
+				case login.Ready <- result:
+				default:
+				}
+				return nil
+			})
+			if authErr == nil {
+				return nil
 			}
-			current.URL = token.URL()
-			current.QRImage = qrPNGDataURL(current.URL)
-			current.Expires = token.Expires()
-			current.Status = "waiting-scan"
-			current.Error = ""
-			current.UpdatedAt = time.Now()
-			if native := a.native[nativeAccountKey(login.UserID, login.AccountID)]; native != nil {
-				native.Status = "qr-waiting"
-				native.Error = ""
-				native.UpdatedAt = now()
-				_ = a.saveNativeLocked()
+			status, statusErr := client.Auth().Status(ctx)
+			if statusErr == nil && status.Authorized {
+				return nil
 			}
-			result := nativeQRLoginSnapshot(current)
-			a.mu.Unlock()
+			if !isExpiredQRTokenError(authErr) {
+				return authErr
+			}
+			log.Printf("native QR token expired for %s; refreshing inside persistent client", login.ID)
+			a.markNativeQRRefreshing(login.ID)
 			select {
-			case login.Ready <- result:
-			default:
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(250 * time.Millisecond):
 			}
-			return nil
-		})
-		return authErr
+		}
 	})
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -2331,6 +2400,26 @@ func (a *App) runNativeQRLogin(ctx context.Context, login *NativeQRLogin) {
 	}
 	account, err = a.finalizeNativeAuthorization(login.UserID, login.AccountID)
 	a.finishNativeQRLogin(login.ID, account, err)
+}
+
+func isExpiredQRTokenError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToUpper(err.Error())
+	return strings.Contains(message, "AUTH_TOKEN_EXPIRED") || strings.Contains(message, "AUTH_TOKEN_INVALID")
+}
+
+func (a *App) markNativeQRRefreshing(loginID string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	login := a.qrLogins[loginID]
+	if login == nil {
+		return
+	}
+	login.Status = "refreshing"
+	login.Error = ""
+	login.UpdatedAt = time.Now()
 }
 
 func (a *App) finishNativeQRLogin(loginID string, account NativeAccount, runErr error) {
