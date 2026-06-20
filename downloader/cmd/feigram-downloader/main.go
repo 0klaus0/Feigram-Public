@@ -28,12 +28,13 @@ import (
 	"github.com/gotd/td/session"
 	"github.com/gotd/td/telegram"
 	"github.com/gotd/td/telegram/auth"
+	"github.com/gotd/td/telegram/auth/qrlogin"
 	"github.com/gotd/td/tg"
 	"rsc.io/qr"
 )
 
 const (
-	version         = "0.8.2"
+	version         = "0.9.0"
 	defaultPartSize = 1024 * 1024
 )
 
@@ -151,7 +152,10 @@ type NativeQRLogin struct {
 	QRImage   string
 	Status    string
 	Error     string
-	Polling   bool
+	Done      bool
+	Account   NativeAccount
+	Cancel    context.CancelFunc
+	Ready     chan nativeQRLoginResult
 	Expires   time.Time
 	CreatedAt time.Time
 	UpdatedAt time.Time
@@ -1575,7 +1579,7 @@ func (a *App) upsertNativeAccountLocked(input NativeAccount) (NativeAccount, err
 		existing.Status = "session-imported"
 		existing.Error = "Go session payload 已加密保存，等待 gotd 健康检查"
 	}
-	if input.Status != "" {
+	if input.Status != "" && !(input.Status == "needs-relogin" && existing.Session != "") {
 		existing.Status = normalizeNativeStatus(input.Status, input.Ready)
 	}
 	if input.Ready {
@@ -2221,8 +2225,16 @@ func (a *App) startNativeQRLogin(userID, accountID string, apiID int, apiHash st
 	account.Error = ""
 	account.UpdatedAt = now()
 	_ = a.saveNativeLocked()
-	snapshot := *account
+	for id, pending := range a.qrLogins {
+		if pending.UserID == userID && pending.AccountID == accountID {
+			if pending.Cancel != nil {
+				pending.Cancel()
+			}
+			delete(a.qrLogins, id)
+		}
+	}
 	loginID := taskID("native-qr", userID, accountID, time.Now().UnixNano())
+	ctx, cancel := context.WithCancel(context.Background())
 	login := &NativeQRLogin{
 		ID:        loginID,
 		UserID:    userID,
@@ -2230,217 +2242,126 @@ func (a *App) startNativeQRLogin(userID, accountID string, apiID int, apiHash st
 		APIID:     apiID,
 		APIHash:   apiHash,
 		Status:    "starting",
+		Cancel:    cancel,
+		Ready:     make(chan nativeQRLoginResult, 1),
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 	}
 	a.qrLogins[loginID] = login
 	a.mu.Unlock()
 
-	token, err := a.exportNativeQRToken(snapshot, apiHash)
-	if err != nil {
-		a.mu.Lock()
-		delete(a.qrLogins, loginID)
-		if account := a.native[nativeAccountKey(userID, accountID)]; account != nil {
-			account.Status = "failed"
-			account.Error = compactError(err)
-			account.UpdatedAt = now()
-			_ = a.saveNativeLocked()
+	go a.runNativeQRLogin(ctx, login)
+	select {
+	case result := <-login.Ready:
+		if result.Error != "" {
+			return result, errors.New(result.Error)
 		}
-		a.mu.Unlock()
-		return nativeQRLoginResult{}, err
+		return result, nil
+	case <-time.After(35 * time.Second):
+		cancel()
+		return nativeQRLoginResult{}, errors.New("生成 Telegram 登录二维码超时")
 	}
-	a.mu.Lock()
-	login = a.qrLogins[loginID]
-	if login == nil {
-		a.mu.Unlock()
-		return nativeQRLoginResult{}, errors.New("QR 登录流程已取消")
-	}
-	login.Token = token.Token
-	login.URL = qrLoginURL(token.Token)
-	login.QRImage = qrPNGDataURL(login.URL)
-	login.Expires = time.Unix(int64(token.Expires), 0)
-	login.Status = "waiting-scan"
-	login.UpdatedAt = time.Now()
-	result := nativeQRLoginResult{
-		LoginID: login.ID,
-		URL:     login.URL,
-		QRImage: login.QRImage,
-		Status:  login.Status,
-		Expires: login.Expires.Format(time.RFC3339),
-	}
-	a.mu.Unlock()
-	return result, nil
 }
 
 func (a *App) pollNativeQRLogin(loginID string) (nativeQRLoginResult, error) {
 	a.mu.Lock()
+	defer a.mu.Unlock()
+	login := a.qrLogins[loginID]
+	if login == nil {
+		return nativeQRLoginResult{}, errors.New("QR 登录流程不存在或已过期")
+	}
+	return nativeQRLoginSnapshot(login), nil
+}
+
+func (a *App) runNativeQRLogin(ctx context.Context, login *NativeQRLogin) {
+	account, err := a.nativeAccountSnapshot(login.UserID, login.AccountID)
+	if err != nil {
+		a.finishNativeQRLogin(login.ID, NativeAccount{}, err)
+		return
+	}
+	dispatcher := tg.NewUpdateDispatcher()
+	loggedIn := qrlogin.OnLoginToken(dispatcher)
+	client := telegram.NewClient(account.APIID, login.APIHash, telegram.Options{
+		SessionStorage:   nativeSessionStorage{app: a, userID: account.UserID, accountID: account.AccountID},
+		UpdateHandler:    dispatcher,
+		MigrationTimeout: 30 * time.Second,
+		RetryInterval:    time.Second,
+		MaxRetries:       5,
+	})
+	err = client.Run(ctx, func(ctx context.Context) error {
+		status, statusErr := client.Auth().Status(ctx)
+		if statusErr == nil && status.Authorized {
+			return nil
+		}
+		_, authErr := client.QR().Auth(ctx, loggedIn, func(_ context.Context, token qrlogin.Token) error {
+			a.mu.Lock()
+			current := a.qrLogins[login.ID]
+			if current == nil {
+				a.mu.Unlock()
+				return context.Canceled
+			}
+			current.URL = token.URL()
+			current.QRImage = qrPNGDataURL(current.URL)
+			current.Expires = token.Expires()
+			current.Status = "waiting-scan"
+			current.Error = ""
+			current.UpdatedAt = time.Now()
+			if native := a.native[nativeAccountKey(login.UserID, login.AccountID)]; native != nil {
+				native.Status = "qr-waiting"
+				native.Error = ""
+				native.UpdatedAt = now()
+				_ = a.saveNativeLocked()
+			}
+			result := nativeQRLoginSnapshot(current)
+			a.mu.Unlock()
+			select {
+			case login.Ready <- result:
+			default:
+			}
+			return nil
+		})
+		return authErr
+	})
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return
+		}
+		a.finishNativeQRLogin(login.ID, NativeAccount{}, err)
+		return
+	}
+	account, err = a.finalizeNativeAuthorization(login.UserID, login.AccountID)
+	a.finishNativeQRLogin(login.ID, account, err)
+}
+
+func (a *App) finishNativeQRLogin(loginID string, account NativeAccount, runErr error) {
+	a.mu.Lock()
 	login := a.qrLogins[loginID]
 	if login == nil {
 		a.mu.Unlock()
-		return nativeQRLoginResult{}, errors.New("QR 登录流程不存在或已过期")
+		return
 	}
-	if login.Polling {
-		result := nativeQRLoginSnapshot(login)
-		a.mu.Unlock()
-		return result, nil
-	}
-	login.Polling = true
-	defer func() {
-		a.mu.Lock()
-		if current := a.qrLogins[loginID]; current != nil {
-			current.Polling = false
+	if runErr != nil {
+		login.Status = "error"
+		login.Error = compactError(runErr)
+		if native := a.native[nativeAccountKey(login.UserID, login.AccountID)]; native != nil {
+			native.Status = "failed"
+			native.Error = login.Error
+			native.UpdatedAt = now()
+			_ = a.saveNativeLocked()
 		}
-		a.mu.Unlock()
-	}()
-	snapshot, err := a.nativeAccountSnapshotLocked(login.UserID, login.AccountID)
-	if err != nil {
-		a.mu.Unlock()
-		return nativeQRLoginResult{}, err
+	} else {
+		login.Status = "authorized"
+		login.Error = ""
+		login.Done = true
+		login.Account = account
 	}
-	token := append([]byte(nil), login.Token...)
-	apiHash := login.APIHash
-	expires := login.Expires
+	login.UpdatedAt = time.Now()
+	result := nativeQRLoginSnapshot(login)
 	a.mu.Unlock()
-
-	if len(token) == 0 || time.Now().After(expires.Add(-15*time.Second)) {
-		fresh, err := a.exportNativeQRToken(snapshot, apiHash)
-		if err != nil {
-			return nativeQRLoginResult{}, err
-		}
-		a.mu.Lock()
-		login := a.qrLogins[loginID]
-		if login == nil {
-			a.mu.Unlock()
-			return nativeQRLoginResult{}, errors.New("QR 登录流程已取消")
-		}
-		login.Token = fresh.Token
-		login.URL = qrLoginURL(fresh.Token)
-		login.QRImage = qrPNGDataURL(login.URL)
-		login.Expires = time.Unix(int64(fresh.Expires), 0)
-		login.Status = "waiting-scan"
-		login.UpdatedAt = time.Now()
-		result := nativeQRLoginResult{LoginID: login.ID, URL: login.URL, QRImage: login.QRImage, Status: login.Status, Expires: login.Expires.Format(time.RFC3339)}
-		a.mu.Unlock()
-		return result, nil
+	select {
+	case login.Ready <- result:
+	default:
 	}
-
-	client, err := a.newTelegramClient(snapshot, apiHash)
-	if err != nil {
-		return nativeQRLoginResult{}, err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	var account NativeAccount
-	var response nativeQRLoginResult
-	err = client.Run(ctx, func(ctx context.Context) error {
-		status, err := client.Auth().Status(ctx)
-		if err == nil && status.Authorized {
-			account, err = a.finalizeNativeAuthorization(snapshot.UserID, snapshot.AccountID)
-			if err != nil {
-				return err
-			}
-			response = nativeQRLoginResult{Account: account, LoginID: loginID, Status: "authorized", Done: true}
-			return nil
-		}
-		result, err := client.API().AuthImportLoginToken(ctx, token)
-		if err != nil {
-			if strings.Contains(err.Error(), "AUTH_TOKEN_EXPIRED") {
-				return err
-			}
-			if strings.Contains(err.Error(), "SESSION_PASSWORD_NEEDED") {
-				return fmt.Errorf("QR 登录遇到两步验证，请临时使用验证码登录完成 Go session")
-			}
-			return err
-		}
-		switch value := result.(type) {
-		case *tg.AuthLoginTokenSuccess:
-			_ = value
-			account, err = a.finalizeNativeAuthorization(snapshot.UserID, snapshot.AccountID)
-			if err != nil {
-				return err
-			}
-			response = nativeQRLoginResult{Account: account, LoginID: loginID, Status: "authorized", Done: true}
-			return nil
-		case *tg.AuthLoginTokenMigrateTo:
-			log.Printf("native qr login requires DC migration to %d for %s/%s", value.DCID, snapshot.UserID, snapshot.AccountID)
-			if err := client.MigrateTo(ctx, value.DCID); err != nil {
-				return fmt.Errorf("QR 登录迁移到 Telegram DC %d 失败：%w", value.DCID, err)
-			}
-			imported, err := client.API().AuthImportLoginToken(ctx, value.Token)
-			if err != nil {
-				return fmt.Errorf("QR 登录迁移后导入 token 失败：%w", err)
-			}
-			success, ok := imported.(*tg.AuthLoginTokenSuccess)
-			if !ok {
-				return fmt.Errorf("QR 登录迁移后返回未知响应：%T", imported)
-			}
-			_ = success
-			account, err = a.finalizeNativeAuthorization(snapshot.UserID, snapshot.AccountID)
-			if err != nil {
-				return err
-			}
-			response = nativeQRLoginResult{Account: account, LoginID: loginID, Status: "authorized", Done: true}
-			return nil
-		case *tg.AuthLoginToken:
-			a.mu.Lock()
-			if login := a.qrLogins[loginID]; login != nil {
-				login.Token = value.Token
-				login.URL = qrLoginURL(value.Token)
-				login.QRImage = qrPNGDataURL(login.URL)
-				login.Expires = time.Unix(int64(value.Expires), 0)
-				login.Status = "waiting-scan"
-				login.UpdatedAt = time.Now()
-				response = nativeQRLoginResult{LoginID: login.ID, URL: login.URL, QRImage: login.QRImage, Status: login.Status, Expires: login.Expires.Format(time.RFC3339)}
-			}
-			a.mu.Unlock()
-			return nil
-		default:
-			return fmt.Errorf("未知 QR 登录响应：%T", result)
-		}
-	})
-	if err != nil {
-		if strings.Contains(err.Error(), "AUTH_TOKEN_EXPIRED") {
-			a.mu.Lock()
-			if login := a.qrLogins[loginID]; login != nil {
-				login.Expires = time.Time{}
-				login.Status = "waiting-scan"
-				login.Error = ""
-				response = nativeQRLoginSnapshot(login)
-			}
-			a.mu.Unlock()
-			return response, nil
-		}
-		if transientQRLoginError(err) {
-			log.Printf("native QR login transient poll failure for %s: %v", loginID, err)
-			a.mu.Lock()
-			if login := a.qrLogins[loginID]; login != nil {
-				login.Status = "waiting-scan"
-				login.Error = ""
-				login.UpdatedAt = time.Now()
-				response = nativeQRLoginSnapshot(login)
-			}
-			a.mu.Unlock()
-			return response, nil
-		}
-		a.mu.Lock()
-		if login := a.qrLogins[loginID]; login != nil {
-			login.Status = "error"
-			login.Error = compactError(err)
-			login.UpdatedAt = time.Now()
-			response = nativeQRLoginResult{LoginID: login.ID, URL: login.URL, QRImage: login.QRImage, Status: login.Status, Error: login.Error, Expires: login.Expires.Format(time.RFC3339)}
-		}
-		a.mu.Unlock()
-		if response.LoginID != "" {
-			return response, nil
-		}
-		return nativeQRLoginResult{}, err
-	}
-	if response.Done {
-		a.mu.Lock()
-		delete(a.qrLogins, loginID)
-		a.mu.Unlock()
-	}
-	return response, nil
 }
 
 func nativeQRLoginSnapshot(login *NativeQRLogin) nativeQRLoginResult {
@@ -2448,86 +2369,18 @@ func nativeQRLoginSnapshot(login *NativeQRLogin) nativeQRLoginResult {
 		return nativeQRLoginResult{}
 	}
 	result := nativeQRLoginResult{
+		Account: login.Account,
 		LoginID: login.ID,
 		URL:     login.URL,
 		QRImage: login.QRImage,
 		Status:  login.Status,
 		Error:   login.Error,
+		Done:    login.Done,
 	}
 	if !login.Expires.IsZero() {
 		result.Expires = login.Expires.Format(time.RFC3339)
 	}
 	return result
-}
-
-func transientQRLoginError(err error) bool {
-	if err == nil {
-		return false
-	}
-	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "engine was closed") ||
-		strings.Contains(message, "rpcdorequest") ||
-		strings.Contains(message, "retry limit reached") ||
-		strings.Contains(message, "timeout") ||
-		strings.Contains(message, "connection")
-}
-
-func (a *App) exportNativeQRToken(account NativeAccount, apiHash string) (*tg.AuthLoginToken, error) {
-	client, err := a.newTelegramClient(account, apiHash)
-	if err != nil {
-		return nil, err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
-	defer cancel()
-	var token *tg.AuthLoginToken
-	err = client.Run(ctx, func(ctx context.Context) error {
-		status, err := client.Auth().Status(ctx)
-		if err == nil && status.Authorized {
-			return errors.New("Go 原生账号已授权，无需重新扫码")
-		}
-		result, err := client.API().AuthExportLoginToken(ctx, &tg.AuthExportLoginTokenRequest{
-			APIID:     account.APIID,
-			APIHash:   apiHash,
-			ExceptIDs: []int64{},
-		})
-		if err != nil {
-			return err
-		}
-		switch value := result.(type) {
-		case *tg.AuthLoginToken:
-			token = value
-			return nil
-		case *tg.AuthLoginTokenMigrateTo:
-			log.Printf("native qr export requires DC migration to %d for %s/%s", value.DCID, account.UserID, account.AccountID)
-			if err := client.MigrateTo(ctx, value.DCID); err != nil {
-				return fmt.Errorf("QR token 迁移到 Telegram DC %d 失败：%w", value.DCID, err)
-			}
-			imported, err := client.API().AuthImportLoginToken(ctx, value.Token)
-			if err != nil {
-				return fmt.Errorf("QR token 迁移后导入失败：%w", err)
-			}
-			if success, ok := imported.(*tg.AuthLoginTokenSuccess); ok {
-				_ = success
-				return errors.New("Go 原生账号已授权")
-			}
-			return fmt.Errorf("QR token 迁移后返回未知响应：%T", imported)
-		case *tg.AuthLoginTokenSuccess:
-			return errors.New("Go 原生账号已授权")
-		default:
-			return fmt.Errorf("未知 QR token 响应：%T", result)
-		}
-	})
-	if err != nil {
-		return nil, err
-	}
-	if token == nil || len(token.Token) == 0 {
-		return nil, errors.New("Telegram 未返回 QR 登录 token")
-	}
-	return token, nil
-}
-
-func qrLoginURL(token []byte) string {
-	return "tg://login?token=" + base64.RawURLEncoding.EncodeToString(token)
 }
 
 func qrPNGDataURL(value string) string {

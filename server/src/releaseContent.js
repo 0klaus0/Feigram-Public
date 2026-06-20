@@ -14,6 +14,20 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.46",
+    title: "Feigram 2.0.46 更新",
+    version: "2.0.46",
+    level: "success",
+    createdAt: "2026-06-20T19:30:00.000Z",
+    body: [
+      "修复 Telegram 手机端扫码成功后，Go 原生账号仍被显示为 needs-relogin 的状态覆盖问题。",
+      "Go 扫码登录改用 gotd 官方持久连接流程：二维码生成、扫码确认、DC 迁移和 session 落盘全部在同一个 MTProto 引擎中完成。",
+      "前端状态轮询现在只读取登录进度，不再反复创建 gotd 连接或导入同一个 token。",
+      "Go 原生 session 与 Feigram 主聊天 GramJS session 完全隔离，Go 账号同步不会再修改主聊天授权。",
+      "若旧版本已导致主聊天显示账号登录失效，升级后请在账号管理中重新登录一次 Telegram。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.45",
     title: "Feigram 2.0.45 更新",
     version: "2.0.45",

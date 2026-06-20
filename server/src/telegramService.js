@@ -860,8 +860,7 @@ async function syncGoNativeAccount(account) {
     phone: account.phone || "",
     displayName: account.label || account.username || account.phone || account.id,
     apiId,
-    apiHash,
-    status: "needs-relogin"
+    apiHash
   });
 }
 
