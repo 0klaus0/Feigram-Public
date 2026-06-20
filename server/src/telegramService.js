@@ -45,6 +45,8 @@ const MIN_HEALTHY_SPEED_BPS = 128 * 1024;
 const FAST_ZERO_SPEED_DEGRADE_MS = 45 * 1000;
 const IDLE_SPEED_RESET_MS = 20 * 1000;
 const DIALOG_FETCH_LIMIT = 500;
+const LOGIN_CODE_TTL_MS = 5 * 60 * 1000;
+const LOGIN_PASSWORD_TTL_MS = 10 * 60 * 1000;
 
 function stableId(prefix, ...parts) {
   return `${prefix}_${crypto.createHash("sha1").update(parts.map((part) => String(part ?? "")).join("|")).digest("hex").slice(0, 24)}`;
@@ -933,27 +935,45 @@ async function resetTelegramClient(accountId) {
 }
 
 async function startLogin(userId, { label, phoneNumber }) {
+  for (const [id, pending] of pendingLogins.entries()) {
+    if (pending.userId === userId && pending.phoneNumber === phoneNumber) {
+      await discardPendingLogin(id);
+    }
+  }
   const { apiId, apiHash } = await telegramConfig();
   const client = await createClient("");
-  const sent = await withTimeout(
-    client.sendCode({ apiId, apiHash }, phoneNumber),
-    20000,
-    "发送验证码超时，请检查 Telegram API 配置和网络"
-  );
+  let sent;
+  try {
+    sent = await withTimeout(
+      client.sendCode({ apiId, apiHash }, phoneNumber),
+      20000,
+      "发送验证码超时，请检查 Telegram API 配置和网络"
+    );
+  } catch (error) {
+    try {
+      await client.disconnect();
+    } catch {}
+    throw error;
+  }
   const loginId = safeId("login");
   pendingLogins.set(loginId, {
     client,
     userId,
     label: label || phoneNumber,
     phoneNumber,
-    phoneCodeHash: sent.phoneCodeHash
+    phoneCodeHash: sent.phoneCodeHash,
+    expiresAt: Date.now() + LOGIN_CODE_TTL_MS
   });
-  return { loginId, isCodeViaApp: sent.isCodeViaApp };
+  return { loginId, isCodeViaApp: sent.isCodeViaApp, expiresAt: new Date(Date.now() + LOGIN_CODE_TTL_MS).toISOString() };
 }
 
 async function completeCode({ loginId, code }, io) {
   const pending = pendingLogins.get(loginId);
   if (!pending) throw Object.assign(new Error("登录流程已过期，请重新发送验证码"), { status: 400 });
+  if (Date.now() > Number(pending.expiresAt || 0)) {
+    await discardPendingLogin(loginId);
+    throw Object.assign(new Error("验证码已过期，请重新发送验证码"), { status: 400, code: "PHONE_CODE_EXPIRED" });
+  }
   try {
     await pending.client.invoke(new Api.auth.SignIn({
       phoneNumber: pending.phoneNumber,
@@ -962,7 +982,15 @@ async function completeCode({ loginId, code }, io) {
     }));
   } catch (error) {
     if (error.message && error.message.includes("SESSION_PASSWORD_NEEDED")) {
+      pending.expiresAt = Date.now() + LOGIN_PASSWORD_TTL_MS;
       return { passwordRequired: true };
+    }
+    if (/PHONE_CODE_EXPIRED|PHONE_CODE_HASH_EXPIRED/i.test(String(error.message || error))) {
+      await discardPendingLogin(loginId);
+      throw Object.assign(new Error("验证码已过期，请重新发送验证码"), { status: 400, code: "PHONE_CODE_EXPIRED" });
+    }
+    if (/PHONE_CODE_INVALID/i.test(String(error.message || error))) {
+      throw Object.assign(new Error("验证码不正确，请检查后重试"), { status: 400, code: "PHONE_CODE_INVALID" });
     }
     throw error;
   }
@@ -972,6 +1000,10 @@ async function completeCode({ loginId, code }, io) {
 async function completePassword({ loginId, password }, io) {
   const pending = pendingLogins.get(loginId);
   if (!pending) throw Object.assign(new Error("登录流程已过期，请重新开始"), { status: 400 });
+  if (Date.now() > Number(pending.expiresAt || 0)) {
+    await discardPendingLogin(loginId);
+    throw Object.assign(new Error("登录流程已过期，请重新开始"), { status: 400 });
+  }
   const { apiId, apiHash } = await telegramConfig();
   await pending.client.signInWithPassword({ apiId, apiHash }, {
     password: async () => password,
@@ -980,6 +1012,15 @@ async function completePassword({ loginId, password }, io) {
     }
   });
   return saveLoggedInClient(loginId, io);
+}
+
+async function discardPendingLogin(loginId) {
+  const pending = pendingLogins.get(loginId);
+  pendingLogins.delete(loginId);
+  if (!pending?.client) return;
+  try {
+    await pending.client.disconnect();
+  } catch {}
 }
 
 async function saveLoggedInClient(loginId, io) {

@@ -14,6 +14,20 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.47",
+    title: "Feigram 2.0.47 更新",
+    version: "2.0.47",
+    level: "success",
+    createdAt: "2026-06-20T19:20:00.000Z",
+    body: [
+      "修复主 Telegram 账号登录遇到 PHONE_CODE_EXPIRED 后仍停留在旧验证码会话的问题。",
+      "验证码和两步验证流程增加本地有效期；过期后会断开并清理临时 Telegram client。",
+      "登录弹窗新增重新发送验证码按钮，新验证码会使用新的 phoneCodeHash，不再重复提交旧会话。",
+      "PHONE_CODE_EXPIRED、PHONE_CODE_HASH_EXPIRED 和 PHONE_CODE_INVALID 现在显示明确中文提示。",
+      "验证码输入框支持系统一次性验证码自动填充。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.46",
     title: "Feigram 2.0.46 更新",
     version: "2.0.46",

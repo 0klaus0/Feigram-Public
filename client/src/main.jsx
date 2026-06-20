@@ -322,6 +322,7 @@ function AuthGate({ onReady }) {
       onReady(result.token, result.user);
     } catch (err) {
       setError(err.message);
+      if (/验证码.*过期|PHONE_CODE_EXPIRED/i.test(err.message)) setCode("");
     } finally {
       setBusy(false);
     }
@@ -376,15 +377,18 @@ function AccountLogin({ socket, onDone }) {
   }
 
   async function start(event) {
-    event.preventDefault();
+    event?.preventDefault();
     setBusy(true);
     setError("");
     try {
       const data = await call("login:start", { label, phoneNumber });
       setLoginId(data.loginId);
+      setCode("");
+      setPassword("");
       setStep("code");
     } catch (err) {
       setError(err.message);
+      if (/验证码.*过期|PHONE_CODE_EXPIRED/i.test(err.message)) setCode("");
     } finally {
       setBusy(false);
     }
@@ -403,6 +407,7 @@ function AccountLogin({ socket, onDone }) {
       }
     } catch (err) {
       setError(err.message);
+      if (/验证码.*过期|PHONE_CODE_EXPIRED/i.test(err.message)) setCode("");
     } finally {
       setBusy(false);
     }
@@ -436,8 +441,9 @@ function AccountLogin({ socket, onDone }) {
           <button className="primary" disabled={busy}><Send size={18} />{busy ? "发送中" : "发送验证码"}</button>
         </form>}
         {step === "code" && <form onSubmit={submitCode} className="stack">
-          <label><span>验证码</span><input value={code} onChange={(e) => setCode(e.target.value)} required /></label>
+          <label><span>验证码</span><input value={code} onChange={(e) => setCode(e.target.value)} inputMode="numeric" autoComplete="one-time-code" required /></label>
           <button className="primary" disabled={busy}><Send size={18} />{busy ? "验证中" : "完成登录"}</button>
+          <button type="button" className="secondary" disabled={busy} onClick={start}>重新发送验证码</button>
         </form>}
         {step === "password" && <form onSubmit={submitPassword} className="stack">
           <label><span>两步验证密码</span><input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required /></label>
