@@ -658,7 +658,8 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
   useEffect(() => {
     if (!nativeQr?.loginId || nativeQr.done || nativeQr.status === "error") return undefined;
     let cancelled = false;
-    const timer = window.setInterval(async () => {
+    let timer = null;
+    const poll = async () => {
       try {
         const result = await api(`/api/admin/native-accounts/${nativeQr.accountId}/login/qr-status`, {
           method: "POST",
@@ -671,12 +672,15 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
           setDownloaderState(await api("/api/admin/downloader").catch(() => downloaderState));
         }
       } catch (err) {
-        if (!cancelled) setNativeQr((current) => current ? { ...current, status: "error", error: err.message } : current);
+        if (!cancelled) setNativeQr((current) => current ? { ...current, status: "waiting-scan", error: "Telegram 连接波动，正在自动重试" } : current);
+      } finally {
+        if (!cancelled) timer = window.setTimeout(poll, 4000);
       }
-    }, 2500);
+    };
+    timer = window.setTimeout(poll, 1200);
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      if (timer) window.clearTimeout(timer);
     };
   }, [nativeQr?.loginId, nativeQr?.accountId, nativeQr?.done, nativeQr?.status]);
 
@@ -752,14 +756,16 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
           {canAdmin && <button className={cx(tab === "diagnostics" && "active")} onClick={() => { setTab("diagnostics"); loadDiagnostics(); }}>运行诊断</button>}
         </div>
         {error && <p className="error">{error}</p>}
-        {nativeQr && <div className="qr-login-panel">
-          <button className="close mini-close" type="button" onClick={() => setNativeQr(null)} title="关闭"><X size={16} /></button>
-          <h3>Telegram App 扫码登录 Go</h3>
-          <p>{nativeQr.title || "Telegram 账号"} · {nativeQr.done ? "已授权" : nativeQr.status === "error" ? "登录异常" : "请用 Telegram 手机客户端扫描二维码"}</p>
-          {nativeQr.qrImage && !nativeQr.done && <img src={nativeQr.qrImage} alt="Telegram QR login" />}
-          {nativeQr.done && <p className="success">Go 原生 MTProto session 已生成，正在刷新健康状态。</p>}
-          {nativeQr.error && <p className="error">{nativeQr.error}</p>}
-          {nativeQr.expires && !nativeQr.done && <small>二维码有效期：{formatTime(nativeQr.expires)}，过期会自动刷新。</small>}
+        {nativeQr && <div className="qr-modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setNativeQr(null)}>
+          <div className="qr-login-panel" role="dialog" aria-modal="true" aria-label="Telegram App 扫码登录 Go">
+            <button className="close mini-close" type="button" onClick={() => setNativeQr(null)} title="关闭"><X size={18} /></button>
+            <h3>Telegram App 扫码登录 Go</h3>
+            <p>{nativeQr.title || "Telegram 账号"} · {nativeQr.done ? "已授权" : nativeQr.status === "error" ? "登录异常" : "请用 Telegram 手机客户端扫描二维码"}</p>
+            {nativeQr.qrImage && !nativeQr.done && <img src={nativeQr.qrImage} alt="Telegram QR login" />}
+            {nativeQr.done && <p className="success">Go 原生 MTProto session 已生成，请关闭弹窗后连续执行两次健康检查。</p>}
+            {nativeQr.error && <p className="error">{nativeQr.error}</p>}
+            {nativeQr.expires && !nativeQr.done && <small>二维码有效期：{formatTime(nativeQr.expires)}，过期会自动刷新。</small>}
+          </div>
         </div>}
         {tab === "accounts" && <div className="account-admin">
           {canAdmin && <>

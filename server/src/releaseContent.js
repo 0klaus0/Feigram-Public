@@ -14,6 +14,20 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.45",
+    title: "Feigram 2.0.45 更新",
+    version: "2.0.45",
+    level: "success",
+    createdAt: "2026-06-20T17:45:00.000Z",
+    body: [
+      "修复二维码状态轮询重叠启动多个 gotd client，导致 rpcDoRequest: engine was closed 的问题。",
+      "Go 服务对同一二维码采用单飞轮询；连接切换、超时和短暂断线会自动重试，不再直接终止扫码流程。",
+      "native 账号未通过健康检查时，已有下载任务会自动切换 HTTP 桥接继续续传；升级时也会修复旧的 session 未就绪失败任务。",
+      "修复永久 error 任务被调度器每秒重复启动的问题；只有 queued 任务会自动执行，可恢复错误继续使用退避重试。",
+      "二维码改为独立居中弹窗：桌面显示 320px 二维码，移动端自适应，无需在管理员后台滚动查找。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.44",
     title: "Feigram 2.0.44 更新",
     version: "2.0.44",

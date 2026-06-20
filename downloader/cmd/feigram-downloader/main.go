@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	version         = "0.8.1"
+	version         = "0.8.2"
 	defaultPartSize = 1024 * 1024
 )
 
@@ -151,6 +151,7 @@ type NativeQRLogin struct {
 	QRImage   string
 	Status    string
 	Error     string
+	Polling   bool
 	Expires   time.Time
 	CreatedAt time.Time
 	UpdatedAt time.Time
@@ -293,6 +294,12 @@ func (a *App) load() error {
 			task.SpeedBps = 0
 			task.Error = "Go 下载服务重启，已等待续传"
 		}
+		if task.Status == "error" && strings.Contains(task.Error, "session 未就绪") && task.SourceURL != "" {
+			task.Status = "queued"
+			task.Transport = "http-bridge"
+			task.RetryAfter = 0
+			task.Error = "升级后已自动切换 HTTP 回退并等待续传"
+		}
 		if task.Status != "downloading" && task.Status != "running" {
 			task.SpeedBps = 0
 		}
@@ -400,7 +407,7 @@ func (a *App) pumpOnce() bool {
 		if len(a.running) >= limit {
 			break
 		}
-		if task.Status != "queued" && task.Status != "error" {
+		if task.Status != "queued" {
 			continue
 		}
 		if task.FilePath == "" {
@@ -500,6 +507,19 @@ var errCancelled = errors.New("cancelled")
 func (a *App) download(task *Task, cancel <-chan struct{}) error {
 	switch a.taskTransport(*task) {
 	case "native-mtproto":
+		account, err := a.nativeAccountSnapshot(task.UserID, task.AccountID)
+		if err != nil || !nativeAccountEligible(account) {
+			if task.SourceURL != "" {
+				a.updateTask(task.ID, func(t *Task) {
+					t.Transport = "http-bridge"
+					t.Error = "Go 原生账号检查未通过，已自动切换 HTTP 回退"
+					t.UpdatedAt = now()
+				})
+				task.Transport = "http-bridge"
+				log.Printf("task %s native account unavailable, fallback to HTTP bridge", task.ID)
+				return a.downloadHTTPBridge(task, cancel)
+			}
+		}
 		return a.downloadNativeMTProto(task, cancel)
 	default:
 		return a.downloadHTTPBridge(task, cancel)
@@ -2259,6 +2279,19 @@ func (a *App) pollNativeQRLogin(loginID string) (nativeQRLoginResult, error) {
 		a.mu.Unlock()
 		return nativeQRLoginResult{}, errors.New("QR 登录流程不存在或已过期")
 	}
+	if login.Polling {
+		result := nativeQRLoginSnapshot(login)
+		a.mu.Unlock()
+		return result, nil
+	}
+	login.Polling = true
+	defer func() {
+		a.mu.Lock()
+		if current := a.qrLogins[loginID]; current != nil {
+			current.Polling = false
+		}
+		a.mu.Unlock()
+	}()
 	snapshot, err := a.nativeAccountSnapshotLocked(login.UserID, login.AccountID)
 	if err != nil {
 		a.mu.Unlock()
@@ -2367,7 +2400,27 @@ func (a *App) pollNativeQRLogin(loginID string) (nativeQRLoginResult, error) {
 	})
 	if err != nil {
 		if strings.Contains(err.Error(), "AUTH_TOKEN_EXPIRED") {
-			return a.pollNativeQRLogin(loginID)
+			a.mu.Lock()
+			if login := a.qrLogins[loginID]; login != nil {
+				login.Expires = time.Time{}
+				login.Status = "waiting-scan"
+				login.Error = ""
+				response = nativeQRLoginSnapshot(login)
+			}
+			a.mu.Unlock()
+			return response, nil
+		}
+		if transientQRLoginError(err) {
+			log.Printf("native QR login transient poll failure for %s: %v", loginID, err)
+			a.mu.Lock()
+			if login := a.qrLogins[loginID]; login != nil {
+				login.Status = "waiting-scan"
+				login.Error = ""
+				login.UpdatedAt = time.Now()
+				response = nativeQRLoginSnapshot(login)
+			}
+			a.mu.Unlock()
+			return response, nil
 		}
 		a.mu.Lock()
 		if login := a.qrLogins[loginID]; login != nil {
@@ -2388,6 +2441,35 @@ func (a *App) pollNativeQRLogin(loginID string) (nativeQRLoginResult, error) {
 		a.mu.Unlock()
 	}
 	return response, nil
+}
+
+func nativeQRLoginSnapshot(login *NativeQRLogin) nativeQRLoginResult {
+	if login == nil {
+		return nativeQRLoginResult{}
+	}
+	result := nativeQRLoginResult{
+		LoginID: login.ID,
+		URL:     login.URL,
+		QRImage: login.QRImage,
+		Status:  login.Status,
+		Error:   login.Error,
+	}
+	if !login.Expires.IsZero() {
+		result.Expires = login.Expires.Format(time.RFC3339)
+	}
+	return result
+}
+
+func transientQRLoginError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "engine was closed") ||
+		strings.Contains(message, "rpcdorequest") ||
+		strings.Contains(message, "retry limit reached") ||
+		strings.Contains(message, "timeout") ||
+		strings.Contains(message, "connection")
 }
 
 func (a *App) exportNativeQRToken(account NativeAccount, apiHash string) (*tg.AuthLoginToken, error) {
