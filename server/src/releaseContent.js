@@ -14,6 +14,21 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.50",
+    title: "Feigram 2.0.50 更新",
+    version: "2.0.50",
+    level: "success",
+    createdAt: "2026-06-21T18:20:00.000Z",
+    body: [
+      "修复 Go 原生健康检查在样本查找后出现 context deadline exceeded 的问题。",
+      "授权检查、Telegram 媒体样本发现和真实文件读取现在使用互不挤占的阶段时限。",
+      "首次健康检查优先通过 Telegram 媒体搜索寻找视频或文档，失败后才回退扫描最近会话。",
+      "已发现的健康样本会随加密 Go 账号状态保存，后续检查可直接读取，不再重复扫描会话。",
+      "Node 到 Go 的健康检查请求超时同步延长，避免界面提前报告 Go 服务无响应。",
+      "Go 下载服务版本更新为 0.9.3。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.49",
     title: "Feigram 2.0.49 更新",
     version: "2.0.49",

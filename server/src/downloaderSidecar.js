@@ -67,7 +67,8 @@ function upsertNativeAccount(account) {
 
 function checkNativeAccount(userId, accountId) {
   return safe(async () => request(`/api/native/accounts/${encodeURIComponent(userId)}/${encodeURIComponent(accountId)}/health`, {
-    method: "POST"
+    method: "POST",
+    timeoutMs: 160000
   }));
 }
 

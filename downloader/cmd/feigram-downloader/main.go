@@ -34,7 +34,7 @@ import (
 )
 
 const (
-	version         = "0.9.2"
+	version         = "0.9.3"
 	defaultPartSize = 1024 * 1024
 )
 
@@ -103,23 +103,24 @@ type NativePeerLocation struct {
 }
 
 type NativeAccount struct {
-	UserID               string `json:"userId"`
-	AccountID            string `json:"accountId"`
-	Phone                string `json:"phone"`
-	DisplayName          string `json:"displayName"`
-	APIID                int    `json:"apiId"`
-	APIHash              string `json:"apiHash"`
-	Status               string `json:"status"`
-	Ready                bool   `json:"ready"`
-	Session              string `json:"session"`
-	Error                string `json:"error"`
-	HealthPasses         int    `json:"healthPasses"`
-	LastHealthBytes      int    `json:"lastHealthBytes"`
-	LastHealthDC         int    `json:"lastHealthDc"`
-	LastHealthDurationMS int64  `json:"lastHealthDurationMs"`
-	CreatedAt            string `json:"createdAt"`
-	UpdatedAt            string `json:"updatedAt"`
-	CheckedAt            string `json:"checkedAt"`
+	UserID               string             `json:"userId"`
+	AccountID            string             `json:"accountId"`
+	Phone                string             `json:"phone"`
+	DisplayName          string             `json:"displayName"`
+	APIID                int                `json:"apiId"`
+	APIHash              string             `json:"apiHash"`
+	Status               string             `json:"status"`
+	Ready                bool               `json:"ready"`
+	Session              string             `json:"session"`
+	Error                string             `json:"error"`
+	HealthPasses         int                `json:"healthPasses"`
+	LastHealthBytes      int                `json:"lastHealthBytes"`
+	LastHealthDC         int                `json:"lastHealthDc"`
+	LastHealthDurationMS int64              `json:"lastHealthDurationMs"`
+	HealthFile           NativeFileLocation `json:"healthFile,omitempty"`
+	CreatedAt            string             `json:"createdAt"`
+	UpdatedAt            string             `json:"updatedAt"`
+	CheckedAt            string             `json:"checkedAt"`
 }
 
 type NativeLogin struct {
@@ -1910,26 +1911,36 @@ func (a *App) nativeHealthCheck(account NativeAccount) (NativeAccount, error) {
 		account.Error = err.Error()
 		return a.saveNativeAccount(account)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 140*time.Second)
 	defer cancel()
 	err = client.Run(ctx, func(ctx context.Context) error {
-		status, err := client.Auth().Status(ctx)
+		authCtx, authCancel := context.WithTimeout(ctx, 15*time.Second)
+		status, err := client.Auth().Status(authCtx)
+		authCancel()
 		if err != nil {
-			return err
+			return fmt.Errorf("检查 gotd session 授权状态：%w", err)
 		}
 		if !status.Authorized {
 			return errors.New("gotd session 未授权，请重新登录")
 		}
 		sample := a.nativeSampleTask(account.UserID, account.AccountID)
+		if sample == nil && nativeFileUsable(account.HealthFile) {
+			sample = &Task{MessageID: account.HealthFile.MessageID, Kind: account.HealthFile.Kind, Size: account.HealthFile.Size, NativeFile: account.HealthFile}
+		}
 		if sample == nil {
-			sample, err = nativeSampleTaskFromDialogs(ctx, client.API())
+			discoveryCtx, discoveryCancel := context.WithTimeout(ctx, 55*time.Second)
+			sample, err = nativeSampleTaskFromTelegram(discoveryCtx, client.API())
+			discoveryCancel()
 			if err != nil {
-				return fmt.Errorf("无法从 Telegram 最近会话找到健康检查文件：%w", err)
+				return fmt.Errorf("无法从 Telegram 找到健康检查文件：%w", err)
 			}
+			account.HealthFile = sample.NativeFile
 		}
 		sample.UserID = account.UserID
 		sample.AccountID = account.AccountID
-		bytesRead, dc, duration, err := a.readNativeSample(ctx, client, *sample)
+		readCtx, readCancel := context.WithTimeout(ctx, 60*time.Second)
+		bytesRead, dc, duration, err := a.readNativeSample(readCtx, client, *sample)
+		readCancel()
 		if err != nil {
 			return fmt.Errorf("Go 原生文件抽样读取失败：%w", classifyNativeReadError(err))
 		}
@@ -1948,7 +1959,11 @@ func (a *App) nativeHealthCheck(account NativeAccount) (NativeAccount, error) {
 		} else {
 			account.Status = "failed"
 		}
-		account.Error = compactError(err)
+		if errors.Is(err, context.DeadlineExceeded) {
+			account.Error = "Go 健康检查超时：Telegram 连接、样本查找或文件读取超过阶段时限，请稍后重试"
+		} else {
+			account.Error = compactError(err)
+		}
 		return a.saveNativeAccount(account)
 	}
 	if account.Ready && account.HealthPasses == 0 {
@@ -1976,19 +1991,60 @@ func (a *App) nativeSampleTask(userID, accountID string) *Task {
 	return nil
 }
 
-func nativeSampleTaskFromDialogs(ctx context.Context, api *tg.Client) (*Task, error) {
-	result, err := api.MessagesGetDialogs(ctx, &tg.MessagesGetDialogsRequest{
-		Limit:      100,
+func nativeFileUsable(file NativeFileLocation) bool {
+	return file.FileID != "" && file.AccessHash != "" && file.FileReference != "" && file.DCID > 0
+}
+
+func nativeSampleTaskFromTelegram(ctx context.Context, api *tg.Client) (*Task, error) {
+	filters := []tg.MessagesFilterClass{&tg.InputMessagesFilterVideo{}, &tg.InputMessagesFilterDocument{}}
+	var searchErrors []string
+	for _, filter := range filters {
+		searchCtx, cancel := context.WithTimeout(ctx, 18*time.Second)
+		result, err := api.MessagesSearchGlobal(searchCtx, &tg.MessagesSearchGlobalRequest{
+			Q:          "",
+			Filter:     filter,
+			OffsetPeer: &tg.InputPeerEmpty{},
+			Limit:      20,
+		})
+		cancel()
+		if err != nil {
+			searchErrors = append(searchErrors, compactError(err))
+			continue
+		}
+		modified, ok := result.AsModified()
+		if !ok {
+			searchErrors = append(searchErrors, fmt.Sprintf("unexpected search result: %T", result))
+			continue
+		}
+		if sample := nativeSampleTaskFromMessages(modified.GetMessages()); sample != nil {
+			return sample, nil
+		}
+	}
+
+	dialogCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	result, err := api.MessagesGetDialogs(dialogCtx, &tg.MessagesGetDialogsRequest{
+		Limit:      40,
 		OffsetPeer: &tg.InputPeerEmpty{},
 	})
 	if err != nil {
+		if len(searchErrors) > 0 {
+			return nil, fmt.Errorf("媒体搜索失败（%s），会话回退也失败：%w", strings.Join(searchErrors, "; "), classifyNativeReadError(err))
+		}
 		return nil, classifyNativeReadError(err)
 	}
 	modified, ok := result.AsModified()
 	if !ok {
 		return nil, fmt.Errorf("unexpected dialogs result: %T", result)
 	}
-	for _, item := range modified.GetMessages() {
+	if sample := nativeSampleTaskFromMessages(modified.GetMessages()); sample != nil {
+		return sample, nil
+	}
+	return nil, errors.New("Telegram 媒体搜索和最近 40 个会话都没有可读取的文档或视频")
+}
+
+func nativeSampleTaskFromMessages(items []tg.MessageClass) *Task {
+	for _, item := range items {
 		message, ok := item.(*tg.Message)
 		if !ok {
 			continue
@@ -2020,9 +2076,9 @@ func nativeSampleTaskFromDialogs(ctx context.Context, api *tg.Client) (*Task, er
 				MimeType:      document.MimeType,
 				UpdatedAt:     now(),
 			},
-		}, nil
+		}
 	}
-	return nil, errors.New("最近 100 个会话没有可读取的 Telegram 文档或视频")
+	return nil
 }
 
 func (a *App) readNativeSample(ctx context.Context, client *telegram.Client, task Task) (int, int, time.Duration, error) {
@@ -2111,6 +2167,7 @@ func (a *App) saveNativeAccount(account NativeAccount) (NativeAccount, error) {
 	existing.LastHealthBytes = account.LastHealthBytes
 	existing.LastHealthDC = account.LastHealthDC
 	existing.LastHealthDurationMS = account.LastHealthDurationMS
+	existing.HealthFile = account.HealthFile
 	existing.CheckedAt = account.CheckedAt
 	existing.UpdatedAt = now()
 	if err := a.saveNativeLocked(); err != nil {
@@ -2129,6 +2186,7 @@ func (a *App) finalizeNativeAuthorization(userID, accountID string) (NativeAccou
 			account.LastHealthBytes = 0
 			account.LastHealthDC = 0
 			account.LastHealthDurationMS = 0
+			account.HealthFile = NativeFileLocation{}
 			account.Status = "session-imported"
 			account.Error = "Go 原生账号已授权，请连续完成 2 次真实文件健康检查"
 			account.CheckedAt = ""
@@ -2298,6 +2356,7 @@ func (a *App) startNativeQRLogin(userID, accountID string, apiID int, apiHash st
 	account.LastHealthBytes = 0
 	account.LastHealthDC = 0
 	account.LastHealthDurationMS = 0
+	account.HealthFile = NativeFileLocation{}
 	account.Status = "qr-waiting"
 	account.Error = ""
 	account.UpdatedAt = now()
