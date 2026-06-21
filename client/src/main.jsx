@@ -957,7 +957,7 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
                 </div>
               );
             })}
-            {!silentCaches.length && <div className="empty">暂无群视频后台缓存任务</div>}
+            {!silentCaches.length && <div className="empty">暂无缓存任务</div>}
           </div>
         </div>}
         {canAdmin && tab === "privacy" && <form className="stack" onSubmit={saveSettings}>

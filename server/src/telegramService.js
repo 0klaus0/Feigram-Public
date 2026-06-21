@@ -2629,6 +2629,7 @@ function normalizeGoDownloadTask(task) {
     speedBps: Number(task.speedBps || 0),
     source: task.source || "manual",
     autoCache: Boolean(task.autoCache || task.source === "auto"),
+    transport: task.transport || "http-bridge",
     order: Number(task.order || 0),
     error: task.error || "",
     createdAt: task.createdAt,
@@ -2728,7 +2729,7 @@ async function listGoDownloadTasks(userId) {
 async function listGoSilentCacheTasks(userId) {
   const tasks = await goAllTasks().catch(() => []);
   return tasks
-    .filter((task) => task.userId === userId && task.status !== "cancelled" && (task.autoCache || task.source === "auto"))
+    .filter((task) => task.userId === userId && task.status !== "cancelled")
     .sort((a, b) => {
       const orderDiff = Number(a.order || 0) - Number(b.order || 0);
       if (orderDiff) return orderDiff;
@@ -2741,9 +2742,11 @@ async function goSilentCacheState(userId) {
   const state = await downloaderSidecar.state();
   const config = state?.config || {};
   const tasks = (Array.isArray(state?.tasks) ? state.tasks : [])
-    .filter((task) => task.userId === userId && task.status !== "cancelled" && (task.autoCache || task.source === "auto"))
+    .filter((task) => task.userId === userId && task.status !== "cancelled")
     .sort((a, b) => Number(a.order || 0) - Number(b.order || 0))
     .map(normalizeGoSilentTask);
+  const taskTransports = new Set(tasks.map((task) => task.transport).filter(Boolean));
+  const activeTransport = taskTransports.has("native-mtproto") ? "native-mtproto" : (config.transport || state?.transport || "http-bridge");
   return {
     enabled: config.enabled !== false,
     rateLimitBps: Number(config.rateLimitBps || 0),
@@ -2751,7 +2754,7 @@ async function goSilentCacheState(userId) {
     configuredConcurrency: Math.max(1, Number(config.concurrency || 1)),
     effectiveConcurrency: Number(state?.running || 0),
     mode: config.mode || "conservative",
-    transport: config.transport || state?.transport || "http-bridge",
+    transport: activeTransport,
     running: tasks.filter((task) => task.status === "running").length,
     tasks,
     engine: "go-sidecar"

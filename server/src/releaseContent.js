@@ -14,6 +14,21 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.56",
+    title: "Feigram 2.0.56 更新",
+    version: "2.0.56",
+    level: "success",
+    createdAt: "2026-06-22T00:10:00.000Z",
+    body: [
+      "修复同一 Go auth key 并发执行跨 DC export/import 导致 AUTH_BYTES_INVALID 的问题。",
+      "全局仍可并发多个账号，但同一 Telegram 账号固定单任务执行，健康检查和下载也使用同一账号互斥锁。",
+      "AUTH_BYTES_INVALID、retry limit reached 和意外 file incomplete 会自动退避并断点续传。",
+      "任务记录显示已完成但本地文件缺失或不完整时，重新点击缓存会自动重新排队。",
+      "管理后台缓存信息统一展示手动缓存和群组自动缓存任务。",
+      "Go 下载服务版本更新为 0.9.9。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.55",
     title: "Feigram 2.0.55 更新",
     version: "2.0.55",

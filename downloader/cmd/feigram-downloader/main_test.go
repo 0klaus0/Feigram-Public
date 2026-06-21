@@ -105,6 +105,46 @@ func TestReconcileLegacyTaskWithPeerMetadata(t *testing.T) {
 	}
 }
 
+func TestCompletedTaskWithMissingFileIsRequeued(t *testing.T) {
+	filePath := t.TempDir() + "/missing.mp4"
+	app := &App{tasks: map[string]*Task{
+		"missing": {
+			ID: "missing", UserID: "user-1", AccountID: "account-1",
+			Status: "completed", FilePath: filePath, PartPath: filePath + ".part", Size: 1024,
+		},
+	}}
+	task := app.upsertTaskLocked(Task{
+		ID: "missing", UserID: "user-1", AccountID: "account-1",
+		FilePath: filePath, Size: 1024,
+	})
+	if task.Status != "queued" {
+		t.Fatalf("expected missing completed file to be requeued, got %+v", task)
+	}
+}
+
+func TestRecoverableNativeTaskErrors(t *testing.T) {
+	for _, message := range []string{"AUTH_BYTES_INVALID", "retry limit reached after 5 attempts", "file incomplete: 1 / 2"} {
+		if !recoverableNativeTaskError(assertError(message)) {
+			t.Fatalf("expected %q to be recoverable", message)
+		}
+	}
+}
+
+func TestNativeAccountRunningLocked(t *testing.T) {
+	app := &App{
+		tasks: map[string]*Task{
+			"running": {ID: "running", UserID: "user-1", AccountID: "account-1"},
+		},
+		running: map[string]chan struct{}{"running": make(chan struct{})},
+	}
+	if !app.nativeAccountRunningLocked(Task{UserID: "user-1", AccountID: "account-1"}) {
+		t.Fatal("expected same account to be detected as running")
+	}
+	if app.nativeAccountRunningLocked(Task{UserID: "user-1", AccountID: "account-2"}) {
+		t.Fatal("different account should remain eligible for global concurrency")
+	}
+}
+
 type assertError string
 
 func (e assertError) Error() string { return string(e) }

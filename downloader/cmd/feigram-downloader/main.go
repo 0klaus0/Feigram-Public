@@ -34,7 +34,7 @@ import (
 )
 
 const (
-	version         = "0.9.8"
+	version         = "0.9.9"
 	defaultPartSize = 1024 * 1024
 )
 
@@ -210,6 +210,7 @@ type App struct {
 	logins     map[string]*NativeLogin
 	qrLogins   map[string]*NativeQRLogin
 	running    map[string]chan struct{}
+	nativeOps  map[string]*sync.Mutex
 	client     *http.Client
 }
 
@@ -231,11 +232,12 @@ func main() {
 			Transport:    "http-bridge",
 			UpdatedAt:    now(),
 		},
-		tasks:    map[string]*Task{},
-		native:   map[string]*NativeAccount{},
-		logins:   map[string]*NativeLogin{},
-		qrLogins: map[string]*NativeQRLogin{},
-		running:  map[string]chan struct{}{},
+		tasks:     map[string]*Task{},
+		native:    map[string]*NativeAccount{},
+		logins:    map[string]*NativeLogin{},
+		qrLogins:  map[string]*NativeQRLogin{},
+		running:   map[string]chan struct{}{},
+		nativeOps: map[string]*sync.Mutex{},
 		client: &http.Client{
 			Timeout: 0,
 			Transport: &http.Transport{
@@ -304,6 +306,12 @@ func (a *App) load() error {
 			task.Transport = "http-bridge"
 			task.RetryAfter = 0
 			task.Error = "升级后已自动切换 HTTP 回退并等待续传"
+		}
+		if task.Status == "error" && recoverableNativeTaskError(errors.New(task.Error)) {
+			task.Status = "queued"
+			task.SpeedBps = 0
+			task.RetryAfter = 0
+			task.Error = "升级后已修复同账号并发，正在等待断点续传"
 		}
 		if task.Status != "downloading" && task.Status != "running" {
 			task.SpeedBps = 0
@@ -431,6 +439,9 @@ func (a *App) pumpOnce() bool {
 			continue
 		}
 		if _, ok := a.running[task.ID]; ok {
+			continue
+		}
+		if a.taskTransport(task) == "native-mtproto" && a.nativeAccountRunningLocked(task) {
 			continue
 		}
 		cancel := make(chan struct{})
@@ -674,6 +685,9 @@ func (a *App) downloadNativeMTProto(task *Task, cancel <-chan struct{}) error {
 	if !account.Ready || account.Session == "" {
 		return fmt.Errorf("Go 原生 MTProto session 未就绪，请先在管理后台完成 Go 重新登录和健康检查")
 	}
+	opMu := a.nativeAccountOperationMutex(task.UserID, task.AccountID)
+	opMu.Lock()
+	defer opMu.Unlock()
 	apiHash, err := a.nativeAPIHash(account)
 	if err != nil {
 		return err
@@ -1540,6 +1554,20 @@ func (a *App) upsertTaskLocked(input Task) Task {
 		existing.RetryAfter = 0
 	}
 	existing.UpdatedAt = now()
+	if existing.Status == "completed" {
+		stat, statErr := os.Stat(existing.FilePath)
+		if statErr != nil || !complete(stat.Size(), existing.Size) {
+			existing.Status = "queued"
+			existing.Error = "本地缓存文件不存在或不完整，已重新排队"
+			existing.SpeedBps = 0
+			existing.RetryAfter = 0
+			if partStat, partErr := os.Stat(existing.PartPath); partErr == nil {
+				existing.Downloaded = partStat.Size()
+			} else {
+				existing.Downloaded = 0
+			}
+		}
+	}
 	return *existing
 }
 
@@ -1910,6 +1938,9 @@ func (a *App) nativeHealthCheck(account NativeAccount) (NativeAccount, error) {
 		account.Error = "Go 原生 MTProto session 尚未创建，请先执行 Go 重新登录"
 		return a.saveNativeAccount(account)
 	}
+	opMu := a.nativeAccountOperationMutex(account.UserID, account.AccountID)
+	opMu.Lock()
+	defer opMu.Unlock()
 	apiHash, err := a.nativeAPIHash(account)
 	if err != nil {
 		account.Ready = false
@@ -2113,6 +2144,28 @@ func (a *App) nativeSampleTask(userID, accountID string) *Task {
 
 func nativeFileUsable(file NativeFileLocation) bool {
 	return file.FileID != "" && file.AccessHash != "" && file.FileReference != "" && file.DCID > 0
+}
+
+func (a *App) nativeAccountOperationMutex(userID, accountID string) *sync.Mutex {
+	key := nativeAccountKey(userID, accountID)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if lock := a.nativeOps[key]; lock != nil {
+		return lock
+	}
+	lock := &sync.Mutex{}
+	a.nativeOps[key] = lock
+	return lock
+}
+
+func (a *App) nativeAccountRunningLocked(task Task) bool {
+	for id := range a.running {
+		runningTask := a.tasks[id]
+		if runningTask != nil && runningTask.UserID == task.UserID && runningTask.AccountID == task.AccountID {
+			return true
+		}
+	}
+	return false
 }
 
 func nativeTaskRefreshable(task Task) bool {
@@ -2979,6 +3032,9 @@ func transientSourceError(err error) bool {
 		"flood_wait",
 		"dc_migrate",
 		"_migrate",
+		"auth_bytes_invalid",
+		"retry limit reached",
+		"file incomplete",
 	}
 	for _, marker := range markers {
 		if strings.Contains(text, marker) {
@@ -2986,6 +3042,16 @@ func transientSourceError(err error) bool {
 		}
 	}
 	return false
+}
+
+func recoverableNativeTaskError(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "auth_bytes_invalid") ||
+		strings.Contains(text, "retry limit reached") ||
+		strings.Contains(text, "file incomplete")
 }
 
 func sourceAuthenticationError(err error) bool {
