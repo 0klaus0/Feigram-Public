@@ -34,7 +34,7 @@ import (
 )
 
 const (
-	version         = "0.9.1"
+	version         = "0.9.2"
 	defaultPartSize = 1024 * 1024
 )
 
@@ -716,6 +716,7 @@ func (a *App) downloadNativeMTProto(task *Task, cancel <-chan struct{}) error {
 	}
 	ctx, stop := context.WithCancel(context.Background())
 	defer stop()
+	primaryDC := a.nativePrimaryDC(ctx, account)
 	go func() {
 		select {
 		case <-cancel:
@@ -738,10 +739,13 @@ func (a *App) downloadNativeMTProto(task *Task, cancel <-chan struct{}) error {
 		}
 		defer closeMedia()
 		switchToMediaDC := func(dc int) error {
-			if dc <= 0 {
+			if dc <= 0 || dc == primaryDC {
 				fileAPI = metadataAPI
 				closeMedia()
-				fileDC = 0
+				fileDC = dc
+				if dc > 0 {
+					log.Printf("task %s file DC %d matches primary DC; using existing Telegram connection", task.ID, dc)
+				}
 				return nil
 			}
 			if mediaInvoker != nil && fileDC == dc {
@@ -1871,6 +1875,18 @@ func (a *App) newTelegramClient(account NativeAccount, apiHash string) (*telegra
 	return telegram.NewClient(account.APIID, apiHash, options), nil
 }
 
+func (a *App) nativePrimaryDC(ctx context.Context, account NativeAccount) int {
+	loader := session.Loader{Storage: nativeSessionStorage{app: a, userID: account.UserID, accountID: account.AccountID}}
+	data, err := loader.Load(ctx)
+	if err != nil || data == nil {
+		return 0
+	}
+	if data.DC > 0 {
+		return data.DC
+	}
+	return data.Config.ThisDC
+}
+
 func (a *App) nativeHealthCheck(account NativeAccount) (NativeAccount, error) {
 	account.CheckedAt = now()
 	if account.Session == "" {
@@ -1911,6 +1927,8 @@ func (a *App) nativeHealthCheck(account NativeAccount) (NativeAccount, error) {
 				return fmt.Errorf("无法从 Telegram 最近会话找到健康检查文件：%w", err)
 			}
 		}
+		sample.UserID = account.UserID
+		sample.AccountID = account.AccountID
 		bytesRead, dc, duration, err := a.readNativeSample(ctx, client, *sample)
 		if err != nil {
 			return fmt.Errorf("Go 原生文件抽样读取失败：%w", classifyNativeReadError(err))
@@ -2030,13 +2048,21 @@ func (a *App) readNativeSample(ctx context.Context, client *telegram.Client, tas
 	}
 	fileAPI := metadataAPI
 	var mediaInvoker telegram.CloseInvoker
-	if file.DCID > 0 {
+	primaryDC := 0
+	if task.UserID != "" && task.AccountID != "" {
+		if account, snapshotErr := a.nativeAccountSnapshot(task.UserID, task.AccountID); snapshotErr == nil {
+			primaryDC = a.nativePrimaryDC(ctx, account)
+		}
+	}
+	if file.DCID > 0 && file.DCID != primaryDC {
 		mediaInvoker, err = client.MediaOnly(ctx, file.DCID, 1)
 		if err != nil {
 			return 0, file.DCID, time.Since(started), fmt.Errorf("connect Telegram media DC %d: %w", file.DCID, err)
 		}
 		defer mediaInvoker.Close()
 		fileAPI = tg.NewClient(mediaInvoker)
+	} else if file.DCID > 0 {
+		log.Printf("health sample file DC %d matches primary DC; using existing Telegram connection", file.DCID)
 	}
 	result, err := fileAPI.UploadGetFile(ctx, &tg.UploadGetFileRequest{
 		Location: &tg.InputDocumentFileLocation{

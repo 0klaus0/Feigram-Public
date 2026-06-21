@@ -14,6 +14,20 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.49",
+    title: "Feigram 2.0.49 更新",
+    version: "2.0.49",
+    level: "success",
+    createdAt: "2026-06-21T17:20:00.000Z",
+    body: [
+      "修复 Go 原生健康检查连接 Telegram media DC 时返回 DC_ID_INVALID 的问题。",
+      "根因是文件 DC 与 gotd 主 session DC 相同，旧逻辑仍尝试向同一个 DC 导出授权。",
+      "健康抽样读取现在会解析加密 gotd session 的主 DC；同 DC 直接复用现有 MTProto 连接，跨 DC 才建立 media 连接。",
+      "相同规则已同步到正式 Go 原生大文件下载管线，避免健康检查通过后下载阶段再次触发同类错误。",
+      "Go 下载服务版本更新为 0.9.2。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.48",
     title: "Feigram 2.0.48 更新",
     version: "2.0.48",
