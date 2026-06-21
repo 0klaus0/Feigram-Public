@@ -27,8 +27,8 @@ export FEIGRAM_DOWNLOADER_URL="http://127.0.0.1:${DOWNLOADER_PORT}"
 export FEIGRAM_DOWNLOADER_LOG="$DOWNLOADER_LOG_FILE"
 export FEIGRAM_DOWNLOADER_SECRET_FILE="${DATA_HOME}/data/app-secret"
 export APP_EDITION="Feigram 2.0 fnOS Client Edition"
-export APP_VERSION="2.0.52"
-export APP_CHANGELOG="Go 原生文件读取迁移到 gotd 独立 data pool：同 DC 使用主 DC 文件池，跨 DC 使用标准 DC 授权迁移，避免 upload.getFile 阻塞主连接。"
+export APP_VERSION="2.0.53"
+export APP_CHANGELOG="修复管理员后台操作提示撑大和遮挡布局；Go 健康检查通过后自动将具备原生元数据的旧 HTTP 任务迁移到 native-mtproto 并保留断点续传。"
 export NODE_ENV="production"
 
 is_running() {

@@ -1405,14 +1405,25 @@ textarea {
   padding-right: 4px;
 }
 
-.admin-modal > form,
-.admin-modal > .account-admin,
-.admin-modal > .user-list,
-.admin-modal > .stack {
+.admin-body {
   align-content: start;
   min-height: 0;
   overflow: auto;
   padding-right: 4px;
+}
+
+.admin-body > form,
+.admin-body > .account-admin,
+.admin-body > .user-list,
+.admin-body > .stack {
+  align-content: start;
+  min-height: 0;
+}
+
+.admin-status-message {
+  margin: 0 0 12px;
+  min-height: 40px;
+  width: 100%;
 }
 
 .hint {

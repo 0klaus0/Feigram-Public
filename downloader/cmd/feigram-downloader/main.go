@@ -34,7 +34,7 @@ import (
 )
 
 const (
-	version         = "0.9.5"
+	version         = "0.9.6"
 	defaultPartSize = 1024 * 1024
 )
 
@@ -1994,7 +1994,54 @@ func (a *App) nativeHealthCheck(account NativeAccount) (NativeAccount, error) {
 	if account.Error == "" {
 		account.Error = "Go 原生 MTProto session 健康"
 	}
-	return a.saveNativeAccount(account)
+	saved, saveErr := a.saveNativeAccount(account)
+	if saveErr != nil {
+		return saved, saveErr
+	}
+	if saved.Ready {
+		migrated, migrateErr := a.promoteAccountTasksToNative(saved.UserID, saved.AccountID)
+		if migrateErr != nil {
+			saved.Error = fmt.Sprintf("Go session 健康，但迁移旧任务失败：%v", migrateErr)
+			return a.saveNativeAccount(saved)
+		}
+		if migrated > 0 {
+			saved.Error = fmt.Sprintf("Go session 健康，已将 %d 个旧 HTTP 任务迁移到原生 MTProto 队列", migrated)
+			return a.saveNativeAccount(saved)
+		}
+	}
+	return saved, nil
+}
+
+func (a *App) promoteAccountTasksToNative(userID, accountID string) (int, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	migrated := 0
+	for id, task := range a.tasks {
+		if task.UserID != userID || task.AccountID != accountID || !nativeFileUsable(task.NativeFile) {
+			continue
+		}
+		if _, running := a.running[id]; running || task.Status == "completed" || task.Status == "cancelled" {
+			continue
+		}
+		if normalizeTransport(task.Transport) == "native-mtproto" && task.Status == "queued" {
+			continue
+		}
+		task.Transport = "native-mtproto"
+		task.Status = "queued"
+		task.Error = ""
+		task.SpeedBps = 0
+		task.RetryAfter = 0
+		task.UpdatedAt = now()
+		migrated++
+	}
+	if migrated == 0 {
+		return 0, nil
+	}
+	if err := a.saveLocked(); err != nil {
+		return 0, err
+	}
+	log.Printf("promoted %d legacy HTTP tasks to native MTProto for account %s/%s", migrated, userID, accountID)
+	return migrated, nil
 }
 
 func (a *App) nativeSampleTask(userID, accountID string) *Task {

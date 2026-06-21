@@ -799,8 +799,9 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
           {canAdmin && <button className={cx(tab === "privacy" && "active")} onClick={() => setTab("privacy")}>隐私设置</button>}
           {canAdmin && <button className={cx(tab === "diagnostics" && "active")} onClick={() => { setTab("diagnostics"); loadDiagnostics(); }}>运行诊断</button>}
         </div>
-        {error && <p className="error">{error}</p>}
-        {actionNotice && !error && <p className="action-notice" role="status">{pendingAction && <LoaderCircle className="button-spinner" size={16} />}{actionNotice}</p>}
+        <div className="admin-body">
+        {error && <p className="error admin-status-message">{error}</p>}
+        {tab === "accounts" && actionNotice && !error && <p className="action-notice admin-status-message" role="status">{pendingAction && <LoaderCircle className="button-spinner" size={16} />}{actionNotice}</p>}
         {nativeQr && <div className="qr-modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setNativeQr(null)}>
           <div className="qr-login-panel" role="dialog" aria-modal="true" aria-label="Telegram App 扫码登录 Go">
             <button className="close mini-close" type="button" onClick={() => setNativeQr(null)} title="关闭"><X size={18} /></button>
@@ -1096,6 +1097,7 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
           {diagnostics?.logTail && <pre className="log-tail system-log-tail">{diagnostics.logTail}</pre>}
           {diagnostics?.downloaderLogTail && <pre className="log-tail system-log-tail">{diagnostics.downloaderLogTail}</pre>}
         </div>}
+        </div>
       </div>
     </div>
   );
