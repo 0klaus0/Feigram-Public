@@ -34,7 +34,7 @@ import (
 )
 
 const (
-	version         = "0.9.3"
+	version         = "0.9.4"
 	defaultPartSize = 1024 * 1024
 )
 
@@ -1911,9 +1911,11 @@ func (a *App) nativeHealthCheck(account NativeAccount) (NativeAccount, error) {
 		account.Error = err.Error()
 		return a.saveNativeAccount(account)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 140*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Second)
 	defer cancel()
+	phase := "连接 Telegram"
 	err = client.Run(ctx, func(ctx context.Context) error {
+		phase = "验证账号授权"
 		authCtx, authCancel := context.WithTimeout(ctx, 15*time.Second)
 		status, err := client.Auth().Status(authCtx)
 		authCancel()
@@ -1923,11 +1925,22 @@ func (a *App) nativeHealthCheck(account NativeAccount) (NativeAccount, error) {
 		if !status.Authorized {
 			return errors.New("gotd session 未授权，请重新登录")
 		}
-		sample := a.nativeSampleTask(account.UserID, account.AccountID)
-		if sample == nil && nativeFileUsable(account.HealthFile) {
+		phase = "选择健康检查文件"
+		var sample *Task
+		if nativeFileUsable(account.HealthFile) {
 			sample = &Task{MessageID: account.HealthFile.MessageID, Kind: account.HealthFile.Kind, Size: account.HealthFile.Size, NativeFile: account.HealthFile}
 		}
 		if sample == nil {
+			sample = a.nativeSampleTask(account.UserID, account.AccountID)
+			if sample != nil {
+				account.HealthFile = sample.NativeFile
+				// Health checks only need a current file location. Avoid a competing
+				// message refetch while normal downloads are using the same account.
+				sample = &Task{MessageID: account.HealthFile.MessageID, Kind: account.HealthFile.Kind, Size: account.HealthFile.Size, NativeFile: account.HealthFile}
+			}
+		}
+		if sample == nil {
+			phase = "查找 Telegram 媒体样本"
 			discoveryCtx, discoveryCancel := context.WithTimeout(ctx, 55*time.Second)
 			sample, err = nativeSampleTaskFromTelegram(discoveryCtx, client.API())
 			discoveryCancel()
@@ -1938,7 +1951,8 @@ func (a *App) nativeHealthCheck(account NativeAccount) (NativeAccount, error) {
 		}
 		sample.UserID = account.UserID
 		sample.AccountID = account.AccountID
-		readCtx, readCancel := context.WithTimeout(ctx, 60*time.Second)
+		phase = "读取 Telegram 文件分片"
+		readCtx, readCancel := context.WithTimeout(ctx, 90*time.Second)
 		bytesRead, dc, duration, err := a.readNativeSample(readCtx, client, *sample)
 		readCancel()
 		if err != nil {
@@ -1960,7 +1974,7 @@ func (a *App) nativeHealthCheck(account NativeAccount) (NativeAccount, error) {
 			account.Status = "failed"
 		}
 		if errors.Is(err, context.DeadlineExceeded) {
-			account.Error = "Go 健康检查超时：Telegram 连接、样本查找或文件读取超过阶段时限，请稍后重试"
+			account.Error = fmt.Sprintf("Go 健康检查在“%s”阶段超时，请检查 Telegram 网络连通性后重试", phase)
 		} else {
 			account.Error = compactError(err)
 		}
@@ -1982,13 +1996,16 @@ func (a *App) nativeHealthCheck(account NativeAccount) (NativeAccount, error) {
 func (a *App) nativeSampleTask(userID, accountID string) *Task {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	var selected *Task
 	for _, task := range a.tasks {
 		if task.UserID == userID && task.AccountID == accountID && task.NativeFile.FileID != "" && task.NativeFile.AccessHash != "" && task.NativeFile.FileReference != "" {
 			copy := *task
-			return &copy
+			if selected == nil || (copy.Size > 0 && (selected.Size <= 0 || copy.Size < selected.Size)) {
+				selected = &copy
+			}
 		}
 	}
-	return nil
+	return selected
 }
 
 func nativeFileUsable(file NativeFileLocation) bool {

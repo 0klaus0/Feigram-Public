@@ -7,6 +7,7 @@ import {
   ExternalLink,
   Folder,
   Info,
+  LoaderCircle,
   LogOut,
   MessageSquare,
   Moon,
@@ -30,6 +31,23 @@ import "./styles/app.css";
 
 function cx(...items) {
   return items.filter(Boolean).join(" ");
+}
+
+function useGlobalButtonFeedback() {
+  useEffect(() => {
+    const timers = new WeakMap();
+    const handleClick = (event) => {
+      const button = event.target.closest?.("button");
+      if (!button || button.disabled) return;
+      button.classList.remove("click-feedback");
+      void button.offsetWidth;
+      button.classList.add("click-feedback");
+      window.clearTimeout(timers.get(button));
+      timers.set(button, window.setTimeout(() => button.classList.remove("click-feedback"), 420));
+    };
+    document.addEventListener("click", handleClick);
+    return () => document.removeEventListener("click", handleClick);
+  }, []);
 }
 
 function formatTime(value) {
@@ -493,6 +511,8 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
   const [selectedSilentIds, setSelectedSilentIds] = useState([]);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState("");
+  const [pendingAction, setPendingAction] = useState("");
+  const [actionNotice, setActionNotice] = useState("");
   const selectedSilentSet = useMemo(() => new Set(selectedSilentIds), [selectedSilentIds]);
 
   useEffect(() => {
@@ -602,6 +622,8 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
 
   async function checkNativeAccount(accountId) {
     setError("");
+    setActionNotice("健康检查已启动，正在连接 Telegram 并读取真实文件分片…");
+    setPendingAction(`health:${accountId}`);
     const result = await api(`/api/admin/native-accounts/${accountId}/health`, { method: "POST" }).catch((err) => {
       setError(err.message);
       return null;
@@ -609,13 +631,19 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
     if (result) {
       setNativeAccounts((items) => items.map((item) => item.accountId === result.accountId ? result : item));
       setDownloaderState(await api("/api/admin/downloader").catch(() => downloaderState));
+      setActionNotice(result.ready ? "健康检查通过，Go 原生文件读取正常。" : `健康检查完成：${result.error || result.status || "等待下一次检查"}`);
+    } else {
+      setActionNotice("");
     }
+    setPendingAction("");
   }
 
   async function reloginNativeAccount(item) {
     setError("");
     const phone = prompt("输入用于 Go 原生 MTProto 登录的手机号", item.phone || "");
     if (!phone) return;
+    setPendingAction(`fallback:${item.accountId}`);
+    setActionNotice("正在启动验证码兜底登录…");
     try {
       const started = await api(`/api/admin/native-accounts/${item.accountId}/login/start`, {
         method: "POST",
@@ -646,18 +674,28 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
         setNativeAccounts((items) => items.map((entry) => entry.accountId === result.account.accountId ? result.account : entry));
       }
       setDownloaderState(await api("/api/admin/downloader").catch(() => downloaderState));
+      setActionNotice("验证码兜底登录已完成。");
     } catch (err) {
       setError(err.message);
+      setActionNotice("");
+    } finally {
+      setPendingAction("");
     }
   }
 
   async function startNativeQrLogin(item) {
     setError("");
+    setActionNotice("正在生成 Telegram 扫码登录二维码…");
+    setPendingAction(`qr:${item.accountId}`);
     try {
       const started = await api(`/api/admin/native-accounts/${item.accountId}/login/qr-start`, { method: "POST", body: JSON.stringify({}) });
       setNativeQr({ ...started, accountId: item.accountId, title: item.displayName || item.phone || item.accountId });
+      setActionNotice("二维码已生成，请使用 Telegram 手机客户端扫码。");
     } catch (err) {
       setError(err.message);
+      setActionNotice("");
+    } finally {
+      setPendingAction("");
     }
   }
 
@@ -762,6 +800,7 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
           {canAdmin && <button className={cx(tab === "diagnostics" && "active")} onClick={() => { setTab("diagnostics"); loadDiagnostics(); }}>运行诊断</button>}
         </div>
         {error && <p className="error">{error}</p>}
+        {actionNotice && !error && <p className="action-notice" role="status">{pendingAction && <LoaderCircle className="button-spinner" size={16} />}{actionNotice}</p>}
         {nativeQr && <div className="qr-modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setNativeQr(null)}>
           <div className="qr-login-panel" role="dialog" aria-modal="true" aria-label="Telegram App 扫码登录 Go">
             <button className="close mini-close" type="button" onClick={() => setNativeQr(null)} title="关闭"><X size={18} /></button>
@@ -817,9 +856,9 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
                   </small>}
                 </div>
                 <button className="icon-button" onClick={() => onAccountChange(account.id)}>{account.id === accountId ? "当前" : "切换"}</button>
-                {canAdmin && <button className="icon-button" type="button" onClick={() => startNativeQrLogin(native || { accountId: account.id, displayName: account.displayName || account.label, phone: account.phoneNumber })}>扫码登录 Go</button>}
-                {canAdmin && <button className="icon-button" type="button" onClick={() => native ? checkNativeAccount(account.id) : refreshNativeAccounts()}>健康检查</button>}
-                {canAdmin && <button className="icon-button" type="button" onClick={() => reloginNativeAccount(native || { accountId: account.id, phone: account.phoneNumber, displayName: account.displayName || account.label })}>验证码兜底</button>}
+                {canAdmin && <button className="icon-button" type="button" aria-busy={pendingAction === `qr:${account.id}`} disabled={Boolean(pendingAction)} onClick={() => startNativeQrLogin(native || { accountId: account.id, displayName: account.displayName || account.label, phone: account.phoneNumber })}>{pendingAction === `qr:${account.id}` && <LoaderCircle className="button-spinner" size={15} />}{pendingAction === `qr:${account.id}` ? "启动中" : "扫码登录 Go"}</button>}
+                {canAdmin && <button className="icon-button" type="button" aria-busy={pendingAction === `health:${account.id}`} disabled={Boolean(pendingAction)} onClick={() => native ? checkNativeAccount(account.id) : refreshNativeAccounts()}>{pendingAction === `health:${account.id}` && <LoaderCircle className="button-spinner" size={15} />}{pendingAction === `health:${account.id}` ? "检查中" : "健康检查"}</button>}
+                {canAdmin && <button className="icon-button" type="button" aria-busy={pendingAction === `fallback:${account.id}`} disabled={Boolean(pendingAction)} onClick={() => reloginNativeAccount(native || { accountId: account.id, phone: account.phoneNumber, displayName: account.displayName || account.label })}>{pendingAction === `fallback:${account.id}` && <LoaderCircle className="button-spinner" size={15} />}{pendingAction === `fallback:${account.id}` ? "登录中" : "验证码兜底"}</button>}
                 <button className="icon-button danger-button" onClick={() => onAccountLogout(account.id)}><LogOut size={16} />退出</button>
               </div>;
             })}
@@ -1248,6 +1287,7 @@ function ChatInfoPanel({ open, accountId, chat, details, loading, autoCache, aut
 }
 
 function App() {
+  useGlobalButtonFeedback();
   const [token, setTokenState] = useState(getToken());
   const [me, setMe] = useState(null);
   const [theme, setTheme] = useState(localStorage.getItem("feigrame.theme") || "dark");

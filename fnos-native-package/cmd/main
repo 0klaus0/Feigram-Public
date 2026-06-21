@@ -27,8 +27,8 @@ export FEIGRAM_DOWNLOADER_URL="http://127.0.0.1:${DOWNLOADER_PORT}"
 export FEIGRAM_DOWNLOADER_LOG="$DOWNLOADER_LOG_FILE"
 export FEIGRAM_DOWNLOADER_SECRET_FILE="${DATA_HOME}/data/app-secret"
 export APP_EDITION="Feigram 2.0 fnOS Client Edition"
-export APP_VERSION="2.0.50"
-export APP_CHANGELOG="修复 Go 健康检查查找样本耗尽统一超时后出现 context deadline exceeded；认证、样本发现和真实文件读取改用独立阶段时限，并缓存健康样本。"
+export APP_VERSION="2.0.51"
+export APP_CHANGELOG="健康检查优先复用缓存样本并选择最小文件，超时提示精确到执行阶段；所有按钮新增按压反馈，Go 登录与健康检查显示处理中状态和结果。"
 export NODE_ENV="production"
 
 is_running() {
