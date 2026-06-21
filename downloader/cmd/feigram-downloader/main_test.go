@@ -81,6 +81,30 @@ func TestReconcileDoesNotRestartNativeError(t *testing.T) {
 	}
 }
 
+func TestReconcileLegacyTaskWithPeerMetadata(t *testing.T) {
+	app := &App{
+		tasks: map[string]*Task{
+			"legacy-peer": {
+				ID: "legacy-peer", UserID: "user-1", AccountID: "account-1",
+				Transport: "http-bridge", Status: "error", MessageID: 42,
+				NativePeer: NativePeerLocation{Type: "channel", ID: "100", AccessHash: "200"},
+			},
+		},
+		native: map[string]*NativeAccount{}, running: map[string]chan struct{}{},
+	}
+	app.native[nativeAccountKey("user-1", "account-1")] = &NativeAccount{
+		UserID: "user-1", AccountID: "account-1", Ready: true, HealthPasses: 2,
+		Session: "session", APIID: 1, APIHash: "hash",
+	}
+
+	if got := app.reconcileReadyLegacyTasksLocked(); got != 1 {
+		t.Fatalf("expected peer metadata task to migrate, got %d", got)
+	}
+	if app.tasks["legacy-peer"].Transport != "native-mtproto" {
+		t.Fatalf("legacy peer task was not migrated: %+v", app.tasks["legacy-peer"])
+	}
+}
+
 type assertError string
 
 func (e assertError) Error() string { return string(e) }

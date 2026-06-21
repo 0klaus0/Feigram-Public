@@ -34,7 +34,7 @@ import (
 )
 
 const (
-	version         = "0.9.7"
+	version         = "0.9.8"
 	defaultPartSize = 1024 * 1024
 )
 
@@ -667,9 +667,6 @@ func (a *App) downloadNativeMTProto(task *Task, cancel <-chan struct{}) error {
 	if task.PartPath == "" {
 		task.PartPath = task.FilePath + ".part"
 	}
-	if task.NativeFile.FileID == "" || task.NativeFile.AccessHash == "" || task.NativeFile.FileReference == "" {
-		return fmt.Errorf("Go 原生 MTProto 缺少 file location 元数据，无法调用 upload.getFile")
-	}
 	account, err := a.nativeAccountSnapshot(task.UserID, task.AccountID)
 	if err != nil {
 		return err
@@ -704,22 +701,6 @@ func (a *App) downloadNativeMTProto(task *Task, cancel <-chan struct{}) error {
 	}
 	defer file.Close()
 
-	fileID, err := strconv.ParseInt(task.NativeFile.FileID, 10, 64)
-	if err != nil {
-		return fmt.Errorf("invalid native file id: %w", err)
-	}
-	accessHash, err := strconv.ParseInt(task.NativeFile.AccessHash, 10, 64)
-	if err != nil {
-		return fmt.Errorf("invalid native access hash: %w", err)
-	}
-	fileReference, err := base64.StdEncoding.DecodeString(task.NativeFile.FileReference)
-	if err != nil {
-		return fmt.Errorf("invalid native file reference: %w", err)
-	}
-	if task.NativeFile.DCID > 0 {
-		account.Status = "healthy"
-	}
-
 	client, err := a.newTelegramClient(account, apiHash)
 	if err != nil {
 		return err
@@ -736,6 +717,26 @@ func (a *App) downloadNativeMTProto(task *Task, cancel <-chan struct{}) error {
 	}()
 	runErr := client.Run(ctx, func(ctx context.Context) error {
 		metadataAPI := client.API()
+		if !nativeFileUsable(task.NativeFile) {
+			refreshed, refreshErr := a.refreshNativeFileLocationFromTelegram(ctx, metadataAPI, *task)
+			if refreshErr != nil {
+				return fmt.Errorf("Go 原生任务缺少 file location，消息重取失败：%w", refreshErr)
+			}
+			task.NativeFile = refreshed
+			log.Printf("task %s rebuilt native file location from Telegram message %d", task.ID, task.MessageID)
+		}
+		fileID, parseErr := strconv.ParseInt(task.NativeFile.FileID, 10, 64)
+		if parseErr != nil {
+			return fmt.Errorf("invalid native file id: %w", parseErr)
+		}
+		accessHash, parseErr := strconv.ParseInt(task.NativeFile.AccessHash, 10, 64)
+		if parseErr != nil {
+			return fmt.Errorf("invalid native access hash: %w", parseErr)
+		}
+		fileReference, parseErr := base64.StdEncoding.DecodeString(task.NativeFile.FileReference)
+		if parseErr != nil {
+			return fmt.Errorf("invalid native file reference: %w", parseErr)
+		}
 		fileAPI := metadataAPI
 		fileDC := task.NativeFile.DCID
 		var fileInvoker telegram.CloseInvoker
@@ -2038,7 +2039,7 @@ func (a *App) promoteAccountTasksToNative(userID, accountID string) (int, error)
 func (a *App) promoteAccountTasksToNativeLocked(userID, accountID string) int {
 	migrated := 0
 	for id, task := range a.tasks {
-		if task.UserID != userID || task.AccountID != accountID || !nativeFileUsable(task.NativeFile) {
+		if task.UserID != userID || task.AccountID != accountID || !nativeTaskRefreshable(*task) {
 			continue
 		}
 		if _, running := a.running[id]; running || task.Status == "completed" || task.Status == "cancelled" {
@@ -2077,7 +2078,7 @@ func (a *App) promoteTaskToNativeIfReady(taskID string) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	task := a.tasks[taskID]
-	if task == nil || !nativeFileUsable(task.NativeFile) {
+	if task == nil || !nativeTaskRefreshable(*task) {
 		return false
 	}
 	account := a.native[nativeAccountKey(task.UserID, task.AccountID)]
@@ -2112,6 +2113,23 @@ func (a *App) nativeSampleTask(userID, accountID string) *Task {
 
 func nativeFileUsable(file NativeFileLocation) bool {
 	return file.FileID != "" && file.AccessHash != "" && file.FileReference != "" && file.DCID > 0
+}
+
+func nativeTaskRefreshable(task Task) bool {
+	if nativeFileUsable(task.NativeFile) {
+		return true
+	}
+	if task.MessageID <= 0 || strings.TrimSpace(task.NativePeer.ID) == "" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(task.NativePeer.Type)) {
+	case "channel", "user":
+		return strings.TrimSpace(task.NativePeer.AccessHash) != ""
+	case "chat":
+		return true
+	default:
+		return false
+	}
 }
 
 func nativeSampleTaskFromTelegram(ctx context.Context, api *tg.Client) (*Task, error) {

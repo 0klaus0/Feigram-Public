@@ -14,6 +14,20 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.55",
+    title: "Feigram 2.0.55 更新",
+    version: "2.0.55",
+    level: "success",
+    createdAt: "2026-06-21T21:55:00.000Z",
+    body: [
+      "修复旧 HTTP 任务因缺少完整 native file location 而无法被 Go 原生接管的问题。",
+      "只要任务保留 Telegram peer 和 messageId，调度器就会将旧 401 任务迁移到 native-mtproto。",
+      "下载开始前由 Go 原生重取 Telegram 消息，自动重建 fileId、accessHash、fileReference 和 media DC。",
+      "旧任务不再依赖已经失效的 Node / GramJS 登录即可从已有 .part 位置继续下载。",
+      "Go 下载服务版本更新为 0.9.8。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.54",
     title: "Feigram 2.0.54 更新",
     version: "2.0.54",

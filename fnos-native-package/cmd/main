@@ -27,8 +27,8 @@ export FEIGRAM_DOWNLOADER_URL="http://127.0.0.1:${DOWNLOADER_PORT}"
 export FEIGRAM_DOWNLOADER_LOG="$DOWNLOADER_LOG_FILE"
 export FEIGRAM_DOWNLOADER_SECRET_FILE="${DATA_HOME}/data/app-secret"
 export APP_EDITION="Feigram 2.0 fnOS Client Edition"
-export APP_VERSION="2.0.54"
-export APP_CHANGELOG="持续对账并迁移健康账号的旧 HTTP 任务；HTTP 401 自动切换 Go 原生续传；预期媒体 404 不再刷屏后台错误日志。"
+export APP_VERSION="2.0.55"
+export APP_CHANGELOG="旧任务缺少 file location 时由 Go 原生重取 Telegram 消息并重建元数据；无需有效 Node 登录即可接管旧 HTTP 401 任务。"
 export NODE_ENV="production"
 
 is_running() {
