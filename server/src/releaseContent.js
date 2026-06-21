@@ -14,6 +14,20 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.54",
+    title: "Feigram 2.0.54 更新",
+    version: "2.0.54",
+    level: "success",
+    createdAt: "2026-06-21T21:20:00.000Z",
+    body: [
+      "Go 原生健康检查通过后，调度器会持续对账旧 HTTP 桥接任务，不再只在健康检查完成瞬间迁移。",
+      "升级或重启时会自动把具备原生文件元数据的失败和排队任务切换到 native-mtproto，并保留已有 .part 进度。",
+      "HTTP 媒体源返回 401 或账号登录失效时，会立即由健康的 Go 原生账号接管并继续下载。",
+      "头像缺失、会话已删除和消息没有可播放媒体等预期 404 不再刷屏后台错误日志。",
+      "Go 下载服务版本更新为 0.9.7。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.53",
     title: "Feigram 2.0.53 更新",
     version: "2.0.53",

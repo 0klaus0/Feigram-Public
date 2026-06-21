@@ -393,9 +393,16 @@ io.on("connection", (socket) => {
   });
 });
 
-app.use((error, _req, res, _next) => {
-  console.error(error);
-  res.status(error.status || 500).json({ error: error.message || "服务器错误" });
+app.use((error, req, res, _next) => {
+  const status = Number(error.status || 500);
+  // Missing avatars and messages without playable media are expected client
+  // fallbacks. Keep them out of the server error log so real failures stand out.
+  if (status >= 500) {
+    console.error(error);
+  } else if (status !== 404) {
+    console.warn(`${req.method} ${req.originalUrl}: ${status} ${error.message || "请求失败"}`);
+  }
+  res.status(status).json({ error: error.message || "服务器错误" });
 });
 
 ensureStore()

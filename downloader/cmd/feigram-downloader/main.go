@@ -34,7 +34,7 @@ import (
 )
 
 const (
-	version         = "0.9.6"
+	version         = "0.9.7"
 	defaultPartSize = 1024 * 1024
 )
 
@@ -313,6 +313,10 @@ func (a *App) load() error {
 	if err := a.loadNativeLocked(); err != nil {
 		log.Printf("load native sessions: %v", err)
 	}
+	if migrated := a.reconcileReadyLegacyTasksLocked(); migrated > 0 {
+		log.Printf("startup promoted %d legacy HTTP tasks to native MTProto", migrated)
+		return a.saveLocked()
+	}
 	return nil
 }
 
@@ -399,6 +403,7 @@ func (a *App) pumpOnce() bool {
 	if !a.config.Enabled {
 		return false
 	}
+	migrated := a.reconcileReadyLegacyTasksLocked()
 	limit := a.config.Concurrency
 	if a.config.Mode != "fast" {
 		limit = 1
@@ -436,7 +441,7 @@ func (a *App) pumpOnce() bool {
 		started = true
 		go a.runTask(task.ID, cancel)
 	}
-	if started {
+	if started || migrated > 0 {
 		_ = a.saveLocked()
 	}
 	return started
@@ -465,6 +470,10 @@ func (a *App) runTask(id string, cancel <-chan struct{}) {
 					t.UpdatedAt = now()
 				})
 				return
+			}
+			if sourceAuthenticationError(err) && a.promoteTaskToNativeIfReady(id) {
+				log.Printf("task %s HTTP source authorization expired; switched to native MTProto and resumed", id)
+				continue
 			}
 			if transientSourceError(err) {
 				delay := retryDelay(task.RetryCount + 1)
@@ -2015,25 +2024,7 @@ func (a *App) nativeHealthCheck(account NativeAccount) (NativeAccount, error) {
 func (a *App) promoteAccountTasksToNative(userID, accountID string) (int, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	migrated := 0
-	for id, task := range a.tasks {
-		if task.UserID != userID || task.AccountID != accountID || !nativeFileUsable(task.NativeFile) {
-			continue
-		}
-		if _, running := a.running[id]; running || task.Status == "completed" || task.Status == "cancelled" {
-			continue
-		}
-		if normalizeTransport(task.Transport) == "native-mtproto" && task.Status == "queued" {
-			continue
-		}
-		task.Transport = "native-mtproto"
-		task.Status = "queued"
-		task.Error = ""
-		task.SpeedBps = 0
-		task.RetryAfter = 0
-		task.UpdatedAt = now()
-		migrated++
-	}
+	migrated := a.promoteAccountTasksToNativeLocked(userID, accountID)
 	if migrated == 0 {
 		return 0, nil
 	}
@@ -2042,6 +2033,66 @@ func (a *App) promoteAccountTasksToNative(userID, accountID string) (int, error)
 	}
 	log.Printf("promoted %d legacy HTTP tasks to native MTProto for account %s/%s", migrated, userID, accountID)
 	return migrated, nil
+}
+
+func (a *App) promoteAccountTasksToNativeLocked(userID, accountID string) int {
+	migrated := 0
+	for id, task := range a.tasks {
+		if task.UserID != userID || task.AccountID != accountID || !nativeFileUsable(task.NativeFile) {
+			continue
+		}
+		if _, running := a.running[id]; running || task.Status == "completed" || task.Status == "cancelled" {
+			continue
+		}
+		// Native failures need explicit handling. Reconciliation only upgrades
+		// legacy HTTP tasks and must not retry a permanent native error forever.
+		if normalizeTransport(task.Transport) == "native-mtproto" {
+			continue
+		}
+		task.Transport = "native-mtproto"
+		task.Status = "queued"
+		task.Error = ""
+		task.SpeedBps = 0
+		task.RetryCount = 0
+		task.RetryAfter = 0
+		task.UpdatedAt = now()
+		migrated++
+	}
+	return migrated
+}
+
+// Reconcile on every scheduler pass so migration is not tied to the browser
+// staying open for the health-check response.
+func (a *App) reconcileReadyLegacyTasksLocked() int {
+	migrated := 0
+	for _, account := range a.native {
+		if nativeAccountEligible(*account) {
+			migrated += a.promoteAccountTasksToNativeLocked(account.UserID, account.AccountID)
+		}
+	}
+	return migrated
+}
+
+func (a *App) promoteTaskToNativeIfReady(taskID string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	task := a.tasks[taskID]
+	if task == nil || !nativeFileUsable(task.NativeFile) {
+		return false
+	}
+	account := a.native[nativeAccountKey(task.UserID, task.AccountID)]
+	if account == nil || !nativeAccountEligible(*account) {
+		return false
+	}
+	task.Transport = "native-mtproto"
+	task.Status = "queued"
+	task.Error = ""
+	task.SpeedBps = 0
+	task.RetryCount = 0
+	task.RetryAfter = 0
+	task.UpdatedAt = now()
+	_ = a.saveLocked()
+	return true
 }
 
 func (a *App) nativeSampleTask(userID, accountID string) *Task {
@@ -2917,6 +2968,16 @@ func transientSourceError(err error) bool {
 		}
 	}
 	return false
+}
+
+func sourceAuthenticationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "source returned 401") ||
+		strings.Contains(text, "账号登录已失效") ||
+		strings.Contains(text, "auth_key_unregistered")
 }
 
 func retryDelay(count int) time.Duration {
