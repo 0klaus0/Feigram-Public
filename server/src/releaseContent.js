@@ -14,6 +14,21 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.52",
+    title: "Feigram 2.0.52 更新",
+    version: "2.0.52",
+    level: "success",
+    createdAt: "2026-06-21T20:00:00.000Z",
+    body: [
+      "修复 Go 健康检查在读取 Telegram 文件分片阶段长期无响应的问题。",
+      "文件 RPC 不再占用 gotd 主业务连接；同 DC 改用独立 client.Pool data 连接。",
+      "跨 DC 文件读取改用 gotd 标准 client.DC 连接池，由 gotd 完成 export/import 授权迁移。",
+      "健康检查与正式 Go 原生大文件下载统一使用新的文件连接策略。",
+      "超时信息会保留 upload.getFile 和目标 DC 上下文，便于继续诊断。",
+      "Go 下载服务版本更新为 0.9.5。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.51",
     title: "Feigram 2.0.51 更新",
     version: "2.0.51",

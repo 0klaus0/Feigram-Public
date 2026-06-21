@@ -27,8 +27,8 @@ export FEIGRAM_DOWNLOADER_URL="http://127.0.0.1:${DOWNLOADER_PORT}"
 export FEIGRAM_DOWNLOADER_LOG="$DOWNLOADER_LOG_FILE"
 export FEIGRAM_DOWNLOADER_SECRET_FILE="${DATA_HOME}/data/app-secret"
 export APP_EDITION="Feigram 2.0 fnOS Client Edition"
-export APP_VERSION="2.0.51"
-export APP_CHANGELOG="健康检查优先复用缓存样本并选择最小文件，超时提示精确到执行阶段；所有按钮新增按压反馈，Go 登录与健康检查显示处理中状态和结果。"
+export APP_VERSION="2.0.52"
+export APP_CHANGELOG="Go 原生文件读取迁移到 gotd 独立 data pool：同 DC 使用主 DC 文件池，跨 DC 使用标准 DC 授权迁移，避免 upload.getFile 阻塞主连接。"
 export NODE_ENV="production"
 
 is_running() {

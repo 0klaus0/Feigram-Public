@@ -34,7 +34,7 @@ import (
 )
 
 const (
-	version         = "0.9.4"
+	version         = "0.9.5"
 	defaultPartSize = 1024 * 1024
 )
 
@@ -729,46 +729,35 @@ func (a *App) downloadNativeMTProto(task *Task, cancel <-chan struct{}) error {
 		metadataAPI := client.API()
 		fileAPI := metadataAPI
 		fileDC := task.NativeFile.DCID
-		var mediaInvoker telegram.CloseInvoker
-		closeMedia := func() {
-			if mediaInvoker != nil {
-				if err := mediaInvoker.Close(); err != nil {
-					log.Printf("task %s close media DC %d invoker: %v", task.ID, fileDC, err)
+		var fileInvoker telegram.CloseInvoker
+		closeFileInvoker := func() {
+			if fileInvoker != nil {
+				if err := fileInvoker.Close(); err != nil {
+					log.Printf("task %s close file DC %d invoker: %v", task.ID, fileDC, err)
 				}
-				mediaInvoker = nil
+				fileInvoker = nil
 			}
 		}
-		defer closeMedia()
-		switchToMediaDC := func(dc int) error {
-			if dc <= 0 || dc == primaryDC {
-				fileAPI = metadataAPI
-				closeMedia()
-				fileDC = dc
-				if dc > 0 {
-					log.Printf("task %s file DC %d matches primary DC; using existing Telegram connection", task.ID, dc)
-				}
+		defer closeFileInvoker()
+		switchToFileDC := func(dc int) error {
+			if fileInvoker != nil && fileDC == dc {
 				return nil
 			}
-			if mediaInvoker != nil && fileDC == dc {
-				return nil
-			}
-			closeMedia()
-			invoker, err := client.MediaOnly(ctx, dc, 1)
+			closeFileInvoker()
+			invoker, err := nativeFilePool(ctx, client, dc, primaryDC, 1)
 			if err != nil {
 				fileAPI = metadataAPI
 				fileDC = 0
-				return fmt.Errorf("connect Telegram media DC %d: %w", dc, err)
+				return fmt.Errorf("connect Telegram file DC %d: %w", dc, err)
 			}
-			mediaInvoker = invoker
+			fileInvoker = invoker
 			fileAPI = tg.NewClient(invoker)
 			fileDC = dc
-			log.Printf("task %s using Telegram media DC %d for native upload.getFile", task.ID, dc)
+			log.Printf("task %s using dedicated Telegram file pool for DC %d (primary DC %d)", task.ID, dc, primaryDC)
 			return nil
 		}
-		if fileDC > 0 {
-			if err := switchToMediaDC(fileDC); err != nil {
-				log.Printf("task %s media DC %d unavailable, fallback current DC: %v", task.ID, fileDC, err)
-			}
+		if err := switchToFileDC(fileDC); err != nil {
+			return classifyNativeReadError(err)
 		}
 		lastBytes := downloaded
 		lastTick := time.Now()
@@ -825,7 +814,7 @@ func (a *App) downloadNativeMTProto(task *Task, cancel <-chan struct{}) error {
 					}
 					task.NativeFile = refreshed
 					if refreshed.DCID > 0 && refreshed.DCID != fileDC {
-						if err := switchToMediaDC(refreshed.DCID); err != nil {
+						if err := switchToFileDC(refreshed.DCID); err != nil {
 							return classifyNativeReadError(err)
 						}
 					}
@@ -834,7 +823,7 @@ func (a *App) downloadNativeMTProto(task *Task, cancel <-chan struct{}) error {
 				}
 				if migrateDC := migrationDC(err); migrateDC > 0 {
 					log.Printf("task %s got Telegram DC migration request to %d at offset %d: %v", task.ID, migrateDC, downloaded, err)
-					if err := switchToMediaDC(migrateDC); err != nil {
+					if err := switchToFileDC(migrateDC); err != nil {
 						return classifyNativeReadError(err)
 					}
 					continue
@@ -1888,6 +1877,21 @@ func (a *App) nativePrimaryDC(ctx context.Context, account NativeAccount) int {
 	return data.Config.ThisDC
 }
 
+func nativeFilePool(ctx context.Context, client *telegram.Client, dc, primaryDC int, max int64) (telegram.CloseInvoker, error) {
+	if dc <= 0 || dc == primaryDC {
+		invoker, err := client.Pool(max)
+		if err != nil {
+			return nil, fmt.Errorf("create primary DC %d file pool: %w", primaryDC, err)
+		}
+		return invoker, nil
+	}
+	invoker, err := client.DC(ctx, dc, max)
+	if err != nil {
+		return nil, fmt.Errorf("create DC %d file pool from primary DC %d: %w", dc, primaryDC, err)
+	}
+	return invoker, nil
+}
+
 func (a *App) nativeHealthCheck(account NativeAccount) (NativeAccount, error) {
 	account.CheckedAt = now()
 	if account.Session == "" {
@@ -1974,7 +1978,7 @@ func (a *App) nativeHealthCheck(account NativeAccount) (NativeAccount, error) {
 			account.Status = "failed"
 		}
 		if errors.Is(err, context.DeadlineExceeded) {
-			account.Error = fmt.Sprintf("Go 健康检查在“%s”阶段超时，请检查 Telegram 网络连通性后重试", phase)
+			account.Error = fmt.Sprintf("Go 健康检查在“%s”阶段超时：%s", phase, compactError(err))
 		} else {
 			account.Error = compactError(err)
 		}
@@ -2120,23 +2124,20 @@ func (a *App) readNativeSample(ctx context.Context, client *telegram.Client, tas
 		return 0, file.DCID, time.Since(started), err
 	}
 	fileAPI := metadataAPI
-	var mediaInvoker telegram.CloseInvoker
+	var fileInvoker telegram.CloseInvoker
 	primaryDC := 0
 	if task.UserID != "" && task.AccountID != "" {
 		if account, snapshotErr := a.nativeAccountSnapshot(task.UserID, task.AccountID); snapshotErr == nil {
 			primaryDC = a.nativePrimaryDC(ctx, account)
 		}
 	}
-	if file.DCID > 0 && file.DCID != primaryDC {
-		mediaInvoker, err = client.MediaOnly(ctx, file.DCID, 1)
-		if err != nil {
-			return 0, file.DCID, time.Since(started), fmt.Errorf("connect Telegram media DC %d: %w", file.DCID, err)
-		}
-		defer mediaInvoker.Close()
-		fileAPI = tg.NewClient(mediaInvoker)
-	} else if file.DCID > 0 {
-		log.Printf("health sample file DC %d matches primary DC; using existing Telegram connection", file.DCID)
+	fileInvoker, err = nativeFilePool(ctx, client, file.DCID, primaryDC, 1)
+	if err != nil {
+		return 0, file.DCID, time.Since(started), fmt.Errorf("打开 Telegram 文件连接：%w", err)
 	}
+	defer fileInvoker.Close()
+	fileAPI = tg.NewClient(fileInvoker)
+	log.Printf("health sample using dedicated Telegram file pool for DC %d (primary DC %d)", file.DCID, primaryDC)
 	result, err := fileAPI.UploadGetFile(ctx, &tg.UploadGetFileRequest{
 		Location: &tg.InputDocumentFileLocation{
 			ID:            fileID,
@@ -2147,7 +2148,7 @@ func (a *App) readNativeSample(ctx context.Context, client *telegram.Client, tas
 		Limit:  64 * 1024,
 	})
 	if err != nil {
-		return 0, file.DCID, time.Since(started), err
+		return 0, file.DCID, time.Since(started), fmt.Errorf("DC %d upload.getFile 读取 64KB 分片：%w", file.DCID, err)
 	}
 	chunk, ok := result.(*tg.UploadFile)
 	if !ok {
