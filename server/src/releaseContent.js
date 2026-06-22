@@ -14,6 +14,21 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.57",
+    title: "Feigram 2.0.57 更新",
+    version: "2.0.57",
+    level: "success",
+    createdAt: "2026-06-22T09:10:00.000Z",
+    body: [
+      "修复 Telegram 临时返回空文件分片时被误判为下载结束，导致任务在几十 MB 处反复 file incomplete 的问题。",
+      "空分片会在同一任务和同一 DC 连接内原位重试，并自动重取消息刷新 fileReference，避免任务轮转引发授权风暴。",
+      "FLOOD_WAIT 与 FLOOD_PREMIUM_WAIT 会按 Telegram 返回秒数加安全余量自动退避，不再进入永久失败。",
+      "upload.getFile 正式下载与健康检查均启用 precise 文件读取。",
+      "修复 Node 元数据回退调用不存在的 safeFileName，导致 fileReference 刷新返回 500 的问题。",
+      "Go 下载服务版本更新为 0.10.0。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.56",
     title: "Feigram 2.0.56 更新",
     version: "2.0.56",

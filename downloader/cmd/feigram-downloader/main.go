@@ -34,11 +34,12 @@ import (
 )
 
 const (
-	version         = "0.9.9"
+	version         = "0.10.0"
 	defaultPartSize = 1024 * 1024
 )
 
 var migrateRe = regexp.MustCompile(`(?:FILE|PHONE|NETWORK|USER)?_?MIGRATE_([0-9]+)`)
+var floodWaitRe = regexp.MustCompile(`(?i)FLOOD(?:_PREMIUM)?_WAIT[^0-9]*([0-9]+)`)
 
 type Config struct {
 	Enabled      bool   `json:"enabled"`
@@ -488,6 +489,9 @@ func (a *App) runTask(id string, cancel <-chan struct{}) {
 			}
 			if transientSourceError(err) {
 				delay := retryDelay(task.RetryCount + 1)
+				if telegramDelay := floodWaitDelay(err); telegramDelay > 0 {
+					delay = telegramDelay
+				}
 				a.updateTask(id, func(t *Task) {
 					t.Status = "queued"
 					t.SpeedBps = 0
@@ -787,6 +791,8 @@ func (a *App) downloadNativeMTProto(task *Task, cancel <-chan struct{}) error {
 		lastTick := time.Now()
 		windowStart := time.Now()
 		var windowBytes int64
+		emptyReads := 0
+		refreshedAfterEmpty := false
 		a.updateTask(task.ID, func(t *Task) {
 			t.Downloaded = downloaded
 			t.Size = max64(t.Size, task.Size)
@@ -814,6 +820,7 @@ func (a *App) downloadNativeMTProto(task *Task, cancel <-chan struct{}) error {
 				FileReference: fileReference,
 			}
 			resp, err := fileAPI.UploadGetFile(ctx, &tg.UploadGetFileRequest{
+				Precise:  true,
 				Location: location,
 				Offset:   downloaded,
 				Limit:    limit,
@@ -859,8 +866,52 @@ func (a *App) downloadNativeMTProto(task *Task, cancel <-chan struct{}) error {
 				return fmt.Errorf("Go 原生 MTProto 暂不支持 CDN redirect 响应：%T", resp)
 			}
 			if len(chunk.Bytes) == 0 {
-				break
+				if task.Size <= 0 || downloaded >= task.Size {
+					break
+				}
+				emptyReads++
+				if emptyReads == 3 && !refreshedAfterEmpty {
+					refreshed, refreshErr := a.refreshNativeFileLocationFromTelegram(ctx, metadataAPI, *task)
+					if refreshErr == nil {
+						fileID, err = strconv.ParseInt(refreshed.FileID, 10, 64)
+						if err != nil {
+							return fmt.Errorf("invalid empty-retry file id: %w", err)
+						}
+						accessHash, err = strconv.ParseInt(refreshed.AccessHash, 10, 64)
+						if err != nil {
+							return fmt.Errorf("invalid empty-retry access hash: %w", err)
+						}
+						fileReference, err = base64.StdEncoding.DecodeString(refreshed.FileReference)
+						if err != nil {
+							return fmt.Errorf("invalid empty-retry file reference: %w", err)
+						}
+						task.NativeFile = refreshed
+						refreshedAfterEmpty = true
+						if refreshed.DCID > 0 && refreshed.DCID != fileDC {
+							if err := switchToFileDC(refreshed.DCID); err != nil {
+								return classifyNativeReadError(err)
+							}
+						}
+						log.Printf("task %s refreshed file location after empty chunk at offset %d", task.ID, downloaded)
+					} else {
+						log.Printf("task %s could not refresh after empty chunk at offset %d: %v", task.ID, downloaded, refreshErr)
+					}
+				}
+				if emptyReads >= 6 {
+					return fmt.Errorf("empty file chunk at offset %d after %d retries", downloaded, emptyReads)
+				}
+				wait := time.Duration(emptyReads) * time.Second
+				timer := time.NewTimer(wait)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return errCancelled
+				case <-timer.C:
+				}
+				continue
 			}
+			emptyReads = 0
+			refreshedAfterEmpty = false
 			if _, err := file.Write(chunk.Bytes); err != nil {
 				return err
 			}
@@ -2308,6 +2359,7 @@ func (a *App) readNativeSample(ctx context.Context, client *telegram.Client, tas
 	fileAPI = tg.NewClient(fileInvoker)
 	log.Printf("health sample using dedicated Telegram file pool for DC %d (primary DC %d)", file.DCID, primaryDC)
 	result, err := fileAPI.UploadGetFile(ctx, &tg.UploadGetFileRequest{
+		Precise: true,
 		Location: &tg.InputDocumentFileLocation{
 			ID:            fileID,
 			AccessHash:    accessHash,
@@ -2853,7 +2905,7 @@ func classifyNativeReadError(err error) error {
 	switch {
 	case strings.Contains(msg, "FILE_REFERENCE_EXPIRED"):
 		return fmt.Errorf("FILE_REFERENCE_EXPIRED: 原生 fileReference 已过期，需要刷新消息元数据后自动续传")
-	case strings.Contains(msg, "FLOOD_WAIT"):
+	case strings.Contains(msg, "FLOOD_WAIT") || strings.Contains(msg, "FLOOD_PREMIUM_WAIT"):
 		return fmt.Errorf("FLOOD_WAIT: Telegram 要求等待后重试：%w", err)
 	case strings.Contains(msg, "_MIGRATE_"):
 		return fmt.Errorf("DC_MIGRATE: Telegram 要求切换 DC 后重试：%w", err)
@@ -3035,6 +3087,8 @@ func transientSourceError(err error) bool {
 		"auth_bytes_invalid",
 		"retry limit reached",
 		"file incomplete",
+		"empty file chunk",
+		"flood_premium_wait",
 	}
 	for _, marker := range markers {
 		if strings.Contains(text, marker) {
@@ -3051,7 +3105,10 @@ func recoverableNativeTaskError(err error) bool {
 	text := strings.ToLower(err.Error())
 	return strings.Contains(text, "auth_bytes_invalid") ||
 		strings.Contains(text, "retry limit reached") ||
-		strings.Contains(text, "file incomplete")
+		strings.Contains(text, "file incomplete") ||
+		strings.Contains(text, "empty file chunk") ||
+		strings.Contains(text, "flood_wait") ||
+		strings.Contains(text, "flood_premium_wait")
 }
 
 func sourceAuthenticationError(err error) bool {
@@ -3073,6 +3130,23 @@ func retryDelay(count int) time.Duration {
 		return 5 * time.Minute
 	}
 	return delay
+}
+
+func floodWaitDelay(err error) time.Duration {
+	if err == nil {
+		return 0
+	}
+	match := floodWaitRe.FindStringSubmatch(err.Error())
+	if len(match) != 2 {
+		return 0
+	}
+	seconds, parseErr := strconv.Atoi(match[1])
+	if parseErr != nil || seconds < 0 {
+		return 0
+	}
+	// Telegram's value is the minimum. Add a small safety margin so the next
+	// export/import request does not land on the same server-side window.
+	return time.Duration(seconds+2) * time.Second
 }
 
 func formatDuration(duration time.Duration) string {

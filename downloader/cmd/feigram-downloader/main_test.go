@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestReconcileReadyLegacyTasks(t *testing.T) {
 	app := &App{
@@ -123,9 +126,24 @@ func TestCompletedTaskWithMissingFileIsRequeued(t *testing.T) {
 }
 
 func TestRecoverableNativeTaskErrors(t *testing.T) {
-	for _, message := range []string{"AUTH_BYTES_INVALID", "retry limit reached after 5 attempts", "file incomplete: 1 / 2"} {
+	for _, message := range []string{"AUTH_BYTES_INVALID", "retry limit reached after 5 attempts", "file incomplete: 1 / 2", "FLOOD_PREMIUM_WAIT (3)", "empty file chunk"} {
 		if !recoverableNativeTaskError(assertError(message)) {
 			t.Fatalf("expected %q to be recoverable", message)
+		}
+	}
+}
+
+func TestFloodWaitDelay(t *testing.T) {
+	for _, test := range []struct {
+		message string
+		want    time.Duration
+	}{
+		{"FLOOD_WAIT (5)", 7 * time.Second},
+		{"rpc error 420: FLOOD_PREMIUM_WAIT (3)", 5 * time.Second},
+		{"TIMEOUT", 0},
+	} {
+		if got := floodWaitDelay(assertError(test.message)); got != test.want {
+			t.Fatalf("floodWaitDelay(%q) = %s, want %s", test.message, got, test.want)
 		}
 	}
 }

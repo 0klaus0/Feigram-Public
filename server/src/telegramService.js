@@ -2704,7 +2704,7 @@ async function mediaNativeMetadata(userId, accountId, peerId, messageId) {
   const contentType = message.photo ? "image/jpeg" : message.document?.mimeType || "";
   const kind = mediaKind(message, contentType);
   const file = message.file || {};
-  const fileName = safeFileName(file.name || message.document?.mimeType || `telegram-${messageId}`);
+  const fileName = safeName(file.name || message.document?.mimeType || `telegram-${messageId}`);
   return {
     accountId,
     peerId,
