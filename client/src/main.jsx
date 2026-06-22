@@ -513,6 +513,7 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
   const [saved, setSaved] = useState("");
   const [pendingAction, setPendingAction] = useState("");
   const [actionNotice, setActionNotice] = useState("");
+  const visibleSilentCaches = useMemo(() => silentCaches.filter((task) => task.status !== "completed"), [silentCaches]);
   const selectedSilentSet = useMemo(() => new Set(selectedSilentIds), [selectedSilentIds]);
 
   useEffect(() => {
@@ -531,8 +532,8 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
   }, [open, initialTab]);
 
   useEffect(() => {
-    setSelectedSilentIds((ids) => ids.filter((id) => silentCaches.some((task) => task.id === id)));
-  }, [silentCaches]);
+    setSelectedSilentIds((ids) => ids.filter((id) => visibleSilentCaches.some((task) => task.id === id)));
+  }, [visibleSilentCaches]);
 
   async function refresh() {
     setError("");
@@ -916,15 +917,15 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
             <span><b>运行</b>{silentCacheState.running || 0} / {silentCacheState.effectiveConcurrency || silentCacheState.concurrency || 1}</span>
             <span><b>并发设置</b>{silentCacheState.configuredConcurrency || silentCacheState.concurrency || 1}</span>
             <span><b>传输层</b>{silentCacheState.transport === "native-mtproto" ? "Go 原生 MTProto" : "HTTP 回退"}</span>
-            <span><b>任务数</b>{silentCaches.length}</span>
+            <span><b>任务数</b>{visibleSilentCaches.length}</span>
           </div>
           <div className="silent-cache-bulk">
-            <button type="button" className="icon-button" onClick={() => setSelectedSilentIds(silentCaches.filter((task) => task.status !== "completed").map((task) => task.id))}>全选当前</button>
+            <button type="button" className="icon-button" onClick={() => setSelectedSilentIds(visibleSilentCaches.map((task) => task.id))}>全选当前</button>
             <button type="button" className="icon-button" onClick={() => setSelectedSilentIds([])} disabled={!selectedSilentIds.length}>清空选择</button>
             <button type="button" className="icon-button danger-button" onClick={cancelSelectedSilentCaches} disabled={!selectedSilentIds.length}>取消选中{selectedSilentIds.length ? ` (${selectedSilentIds.length})` : ""}</button>
           </div>
           <div className="silent-cache-list">
-            {silentCaches.map((task) => {
+            {visibleSilentCaches.map((task) => {
               const progress = task.size ? Math.min(100, Math.round((Number(task.downloaded || 0) / Number(task.size)) * 100)) : 0;
               const statusText = task.status === "running" || task.status === "downloading" ? "下载中" : task.status === "queued" ? "排队中" : task.status === "paused" ? "已暂停" : task.status === "completed" ? "已完成" : task.status === "cancelled" ? "已取消" : "失败";
               return (
@@ -957,7 +958,7 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
                 </div>
               );
             })}
-            {!silentCaches.length && <div className="empty">暂无缓存任务</div>}
+            {!visibleSilentCaches.length && <div className="empty">暂无缓存任务</div>}
           </div>
         </div>}
         {canAdmin && tab === "privacy" && <form className="stack" onSubmit={saveSettings}>

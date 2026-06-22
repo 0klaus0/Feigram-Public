@@ -133,6 +133,17 @@ func TestRecoverableNativeTaskErrors(t *testing.T) {
 	}
 }
 
+func TestNativeFilePoolBroken(t *testing.T) {
+	for _, message := range []string{"engine forcibly closed: context canceled", "retry limit reached after 5 attempts", "AUTH_BYTES_INVALID"} {
+		if !nativeFilePoolBroken(assertError(message)) {
+			t.Fatalf("expected %q to rebuild the file pool", message)
+		}
+	}
+	if nativeFilePoolBroken(assertError("FILE_REFERENCE_EXPIRED")) {
+		t.Fatal("file reference refresh should not rebuild a healthy file pool")
+	}
+}
+
 func TestFloodWaitDelay(t *testing.T) {
 	for _, test := range []struct {
 		message string

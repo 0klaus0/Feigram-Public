@@ -34,7 +34,7 @@ import (
 )
 
 const (
-	version         = "0.11.1"
+	version         = "0.12.0"
 	defaultPartSize = 1024 * 1024
 )
 
@@ -847,7 +847,7 @@ func (a *App) downloadNativeMTProto(task *Task, cancel <-chan struct{}) error {
 				if ctx.Err() != nil {
 					return errCancelled
 				}
-				if nativeRuntimeBroken(err) && fileDC > 0 && fileDC != runtime.primaryDC && engineRetries < 2 {
+				if nativeFilePoolBroken(err) && fileDC > 0 && fileDC != runtime.primaryDC && engineRetries < 2 {
 					engineRetries++
 					runtime.resetFileAPI(fileDC)
 					fileAPI = nil
@@ -1980,9 +1980,9 @@ func (a *App) newTelegramClient(account NativeAccount, apiHash string) (*telegra
 	options := telegram.Options{
 		SessionStorage:   nativeSessionStorage{app: a, userID: account.UserID, accountID: account.AccountID},
 		NoUpdates:        true,
-		MigrationTimeout: 30 * time.Second,
-		RetryInterval:    time.Second,
-		MaxRetries:       5,
+		MigrationTimeout: 90 * time.Second,
+		RetryInterval:    2 * time.Second,
+		MaxRetries:       12,
 	}
 	if account.Session == "" {
 		options.SessionStorage = nativeSessionStorage{app: a, userID: account.UserID, accountID: account.AccountID}
@@ -3121,6 +3121,17 @@ func nativeRuntimeBroken(err error) bool {
 		}
 	}
 	return false
+}
+
+func nativeFilePoolBroken(err error) bool {
+	if nativeRuntimeBroken(err) {
+		return true
+	}
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "retry limit reached") || strings.Contains(text, "auth_bytes_invalid")
 }
 
 func migrationDC(err error) int {

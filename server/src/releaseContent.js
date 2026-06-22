@@ -14,6 +14,21 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.60",
+    title: "Feigram 2.0.60 更新",
+    version: "2.0.60",
+    level: "success",
+    createdAt: "2026-06-22T15:10:00.000Z",
+    body: [
+      "飞牛桌面图标名称由 Feigram Public 改为 feigram。",
+      "缓存完成后自动从管理后台缓存信息列表移除，同时保留本地文件和聊天中的已缓存状态。",
+      "Go Telegram 传输层从 gotd v0.100.0 升级到兼容 FPK 构建链的 v0.115.0，接入更新的跨 DC 授权、连接和重试实现。",
+      "跨 DC 返回 retry limit reached、AUTH_BYTES_INVALID 或 engine closed 时会销毁旧文件 pool 并重新建立。",
+      "连接重试上限由 5 次提高到 12 次，迁移阶段允许更长网络恢复时间。",
+      "Go 下载服务版本更新为 0.12.0。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.59",
     title: "Feigram 2.0.59 更新",
     version: "2.0.59",
