@@ -126,7 +126,7 @@ func TestCompletedTaskWithMissingFileIsRequeued(t *testing.T) {
 }
 
 func TestRecoverableNativeTaskErrors(t *testing.T) {
-	for _, message := range []string{"AUTH_BYTES_INVALID", "retry limit reached after 5 attempts", "file incomplete: 1 / 2", "FLOOD_PREMIUM_WAIT (3)", "empty file chunk"} {
+	for _, message := range []string{"AUTH_BYTES_INVALID", "retry limit reached after 5 attempts", "file incomplete: 1 / 2", "FLOOD_PREMIUM_WAIT (3)", "empty file chunk", "engine was closed", "Not connected"} {
 		if !recoverableNativeTaskError(assertError(message)) {
 			t.Fatalf("expected %q to be recoverable", message)
 		}
@@ -140,6 +140,7 @@ func TestFloodWaitDelay(t *testing.T) {
 	}{
 		{"FLOOD_WAIT (5)", 7 * time.Second},
 		{"rpc error 420: FLOOD_PREMIUM_WAIT (3)", 5 * time.Second},
+		{"connect Telegram file DC 1: rpc error code 420: FLOOD_WAIT (141)", 143 * time.Second},
 		{"TIMEOUT", 0},
 	} {
 		if got := floodWaitDelay(assertError(test.message)); got != test.want {

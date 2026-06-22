@@ -14,6 +14,21 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.58",
+    title: "Feigram 2.0.58 更新",
+    version: "2.0.58",
+    level: "success",
+    createdAt: "2026-06-22T08:30:00.000Z",
+    body: [
+      "重构 Go 原生下载连接生命周期：每个 Telegram 账号使用一个常驻 MTProto 引擎，不再为每个任务重复登录和关闭连接。",
+      "媒体 DC 文件连接会在同一账号内复用，避免反复 export/import authorization 引发 engine was closed 和 FloodWait。",
+      "修复 FLOOD_WAIT (141) 被错误解析为 DC 1、实际只等待 3 秒的问题；现在按 Telegram 返回时长加安全余量冻结整个账号队列。",
+      "engine was closed、Not connected 和 broken pipe 会重建账号运行时并断点续传，不再进入永久失败。",
+      "升级后旧的 engine was closed 失败任务会自动重新排队，已有 .part 文件继续保留。",
+      "Go 下载服务版本更新为 0.11.0。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.57",
     title: "Feigram 2.0.57 更新",
     version: "2.0.57",

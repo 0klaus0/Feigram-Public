@@ -34,12 +34,13 @@ import (
 )
 
 const (
-	version         = "0.10.0"
+	version         = "0.11.0"
 	defaultPartSize = 1024 * 1024
 )
 
 var migrateRe = regexp.MustCompile(`(?:FILE|PHONE|NETWORK|USER)?_?MIGRATE_([0-9]+)`)
 var floodWaitRe = regexp.MustCompile(`(?i)FLOOD(?:_PREMIUM)?_WAIT[^0-9]*([0-9]+)`)
+var floodWaitRPCRe = regexp.MustCompile(`(?i)FLOOD(?:_PREMIUM)?_WAIT.*\(([0-9]+)\)`)
 
 type Config struct {
 	Enabled      bool   `json:"enabled"`
@@ -212,7 +213,25 @@ type App struct {
 	qrLogins   map[string]*NativeQRLogin
 	running    map[string]chan struct{}
 	nativeOps  map[string]*sync.Mutex
+	nativeWait map[string]int64
+	runtimes   map[string]*nativeRuntime
 	client     *http.Client
+}
+
+type nativeRuntime struct {
+	mu        sync.Mutex
+	key       string
+	signature string
+	client    *telegram.Client
+	ctx       context.Context
+	cancel    context.CancelFunc
+	ready     chan struct{}
+	done      chan struct{}
+	readyOnce sync.Once
+	err       error
+	primaryDC int
+	invokers  map[int]telegram.CloseInvoker
+	fileAPIs  map[int]*tg.Client
 }
 
 func main() {
@@ -233,12 +252,14 @@ func main() {
 			Transport:    "http-bridge",
 			UpdatedAt:    now(),
 		},
-		tasks:     map[string]*Task{},
-		native:    map[string]*NativeAccount{},
-		logins:    map[string]*NativeLogin{},
-		qrLogins:  map[string]*NativeQRLogin{},
-		running:   map[string]chan struct{}{},
-		nativeOps: map[string]*sync.Mutex{},
+		tasks:      map[string]*Task{},
+		native:     map[string]*NativeAccount{},
+		logins:     map[string]*NativeLogin{},
+		qrLogins:   map[string]*NativeQRLogin{},
+		running:    map[string]chan struct{}{},
+		nativeOps:  map[string]*sync.Mutex{},
+		nativeWait: map[string]int64{},
+		runtimes:   map[string]*nativeRuntime{},
 		client: &http.Client{
 			Timeout: 0,
 			Transport: &http.Transport{
@@ -439,6 +460,9 @@ func (a *App) pumpOnce() bool {
 		if task.RetryAfter > nowUnix {
 			continue
 		}
+		if a.taskTransport(task) == "native-mtproto" && a.nativeWait[nativeAccountKey(task.UserID, task.AccountID)] > nowUnix {
+			continue
+		}
 		if _, ok := a.running[task.ID]; ok {
 			continue
 		}
@@ -491,6 +515,7 @@ func (a *App) runTask(id string, cancel <-chan struct{}) {
 				delay := retryDelay(task.RetryCount + 1)
 				if telegramDelay := floodWaitDelay(err); telegramDelay > 0 {
 					delay = telegramDelay
+					a.setNativeAccountWait(task.UserID, task.AccountID, time.Now().Add(delay))
 				}
 				a.updateTask(id, func(t *Task) {
 					t.Status = "queued"
@@ -719,13 +744,8 @@ func (a *App) downloadNativeMTProto(task *Task, cancel <-chan struct{}) error {
 	}
 	defer file.Close()
 
-	client, err := a.newTelegramClient(account, apiHash)
-	if err != nil {
-		return err
-	}
 	ctx, stop := context.WithCancel(context.Background())
 	defer stop()
-	primaryDC := a.nativePrimaryDC(ctx, account)
 	go func() {
 		select {
 		case <-cancel:
@@ -733,8 +753,12 @@ func (a *App) downloadNativeMTProto(task *Task, cancel <-chan struct{}) error {
 		case <-ctx.Done():
 		}
 	}()
-	runErr := client.Run(ctx, func(ctx context.Context) error {
-		metadataAPI := client.API()
+	runtime, err := a.acquireNativeRuntime(ctx, account, apiHash)
+	if err != nil {
+		return classifyNativeReadError(err)
+	}
+	runErr := func(ctx context.Context) error {
+		metadataAPI := runtime.api()
 		if !nativeFileUsable(task.NativeFile) {
 			refreshed, refreshErr := a.refreshNativeFileLocationFromTelegram(ctx, metadataAPI, *task)
 			if refreshErr != nil {
@@ -755,33 +779,21 @@ func (a *App) downloadNativeMTProto(task *Task, cancel <-chan struct{}) error {
 		if parseErr != nil {
 			return fmt.Errorf("invalid native file reference: %w", parseErr)
 		}
-		fileAPI := metadataAPI
+		var fileAPI *tg.Client
 		fileDC := task.NativeFile.DCID
-		var fileInvoker telegram.CloseInvoker
-		closeFileInvoker := func() {
-			if fileInvoker != nil {
-				if err := fileInvoker.Close(); err != nil {
-					log.Printf("task %s close file DC %d invoker: %v", task.ID, fileDC, err)
-				}
-				fileInvoker = nil
-			}
-		}
-		defer closeFileInvoker()
 		switchToFileDC := func(dc int) error {
-			if fileInvoker != nil && fileDC == dc {
+			if fileAPI != nil && fileDC == dc {
 				return nil
 			}
-			closeFileInvoker()
-			invoker, err := nativeFilePool(ctx, client, dc, primaryDC, 1)
+			api, err := runtime.fileAPI(dc)
 			if err != nil {
 				fileAPI = metadataAPI
 				fileDC = 0
 				return fmt.Errorf("connect Telegram file DC %d: %w", dc, err)
 			}
-			fileInvoker = invoker
-			fileAPI = tg.NewClient(invoker)
+			fileAPI = api
 			fileDC = dc
-			log.Printf("task %s using dedicated Telegram file pool for DC %d (primary DC %d)", task.ID, dc, primaryDC)
+			log.Printf("task %s reusing Telegram file pool for DC %d (primary DC %d)", task.ID, dc, runtime.primaryDC)
 			return nil
 		}
 		if err := switchToFileDC(fileDC); err != nil {
@@ -938,8 +950,11 @@ func (a *App) downloadNativeMTProto(task *Task, cancel <-chan struct{}) error {
 			}
 		}
 		return nil
-	})
+	}(ctx)
 	if runErr != nil {
+		if nativeRuntimeBroken(runErr) {
+			a.invalidateNativeRuntime(task.UserID, task.AccountID)
+		}
 		return runErr
 	}
 	if err := file.Close(); err != nil {
@@ -1954,6 +1969,147 @@ func (a *App) newTelegramClient(account NativeAccount, apiHash string) (*telegra
 	return telegram.NewClient(account.APIID, apiHash, options), nil
 }
 
+func nativeRuntimeSignature(account NativeAccount) string {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%d|%s|%s", account.APIID, account.APIHash, account.Session)))
+	return hex.EncodeToString(sum[:])
+}
+
+func (a *App) acquireNativeRuntime(ctx context.Context, account NativeAccount, apiHash string) (*nativeRuntime, error) {
+	key := nativeAccountKey(account.UserID, account.AccountID)
+	signature := nativeRuntimeSignature(account)
+	primaryDC := a.nativePrimaryDC(ctx, account)
+
+	a.mu.Lock()
+	runtime := a.runtimes[key]
+	if runtime != nil && runtime.signature != signature {
+		runtime.cancel()
+		runtime = nil
+	}
+	if runtime != nil {
+		select {
+		case <-runtime.done:
+			runtime = nil
+		default:
+		}
+	}
+	if runtime == nil {
+		client, err := a.newTelegramClient(account, apiHash)
+		if err != nil {
+			a.mu.Unlock()
+			return nil, err
+		}
+		runtimeCtx, cancel := context.WithCancel(context.Background())
+		runtime = &nativeRuntime{
+			key:       key,
+			signature: signature,
+			client:    client,
+			ctx:       runtimeCtx,
+			cancel:    cancel,
+			ready:     make(chan struct{}),
+			done:      make(chan struct{}),
+			primaryDC: primaryDC,
+			invokers:  map[int]telegram.CloseInvoker{},
+			fileAPIs:  map[int]*tg.Client{},
+		}
+		a.runtimes[key] = runtime
+		go a.runNativeRuntime(runtime)
+	}
+	a.mu.Unlock()
+
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-runtime.done:
+		runtime.mu.Lock()
+		err := runtime.err
+		runtime.mu.Unlock()
+		if err == nil {
+			err = errors.New("Telegram MTProto engine was closed")
+		}
+		return nil, err
+	case <-runtime.ready:
+	}
+
+	select {
+	case <-runtime.done:
+		runtime.mu.Lock()
+		err := runtime.err
+		runtime.mu.Unlock()
+		if err == nil {
+			err = errors.New("Telegram MTProto engine was closed")
+		}
+		return nil, err
+	default:
+		return runtime, nil
+	}
+}
+
+func (a *App) runNativeRuntime(runtime *nativeRuntime) {
+	err := runtime.client.Run(runtime.ctx, func(runCtx context.Context) error {
+		runtime.mu.Lock()
+		runtime.ctx = runCtx
+		runtime.mu.Unlock()
+		runtime.readyOnce.Do(func() { close(runtime.ready) })
+		<-runCtx.Done()
+		return nil
+	})
+
+	runtime.mu.Lock()
+	for dc, invoker := range runtime.invokers {
+		if closeErr := invoker.Close(); closeErr != nil {
+			log.Printf("native runtime %s close DC %d pool: %v", runtime.key, dc, closeErr)
+		}
+	}
+	runtime.invokers = map[int]telegram.CloseInvoker{}
+	runtime.fileAPIs = map[int]*tg.Client{}
+	runtime.err = err
+	runtime.mu.Unlock()
+	runtime.readyOnce.Do(func() { close(runtime.ready) })
+	close(runtime.done)
+	if err != nil && !errors.Is(err, context.Canceled) {
+		log.Printf("native runtime %s stopped: %v", runtime.key, err)
+	}
+}
+
+func (a *App) invalidateNativeRuntime(userID, accountID string) {
+	key := nativeAccountKey(userID, accountID)
+	a.mu.Lock()
+	runtime := a.runtimes[key]
+	delete(a.runtimes, key)
+	a.mu.Unlock()
+	if runtime != nil {
+		runtime.cancel()
+	}
+}
+
+func (runtime *nativeRuntime) api() *tg.Client {
+	return runtime.client.API()
+}
+
+func (runtime *nativeRuntime) fileAPI(dc int) (*tg.Client, error) {
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	select {
+	case <-runtime.done:
+		if runtime.err != nil {
+			return nil, runtime.err
+		}
+		return nil, errors.New("Telegram MTProto engine was closed")
+	default:
+	}
+	if api := runtime.fileAPIs[dc]; api != nil {
+		return api, nil
+	}
+	invoker, err := nativeFilePool(runtime.ctx, runtime.client, dc, runtime.primaryDC, 1)
+	if err != nil {
+		return nil, err
+	}
+	runtime.invokers[dc] = invoker
+	api := tg.NewClient(invoker)
+	runtime.fileAPIs[dc] = api
+	return api, nil
+}
+
 func (a *App) nativePrimaryDC(ctx context.Context, account NativeAccount) int {
 	loader := session.Loader{Storage: nativeSessionStorage{app: a, userID: account.UserID, accountID: account.AccountID}}
 	data, err := loader.Load(ctx)
@@ -2000,20 +2156,20 @@ func (a *App) nativeHealthCheck(account NativeAccount) (NativeAccount, error) {
 		_, _ = a.saveNativeAccount(account)
 		return account, err
 	}
-	client, err := a.newTelegramClient(account, apiHash)
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Second)
+	defer cancel()
+	runtime, err := a.acquireNativeRuntime(ctx, account, apiHash)
 	if err != nil {
 		account.Ready = false
 		account.Status = "failed"
 		account.Error = err.Error()
 		return a.saveNativeAccount(account)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Second)
-	defer cancel()
 	phase := "连接 Telegram"
-	err = client.Run(ctx, func(ctx context.Context) error {
+	err = func(ctx context.Context) error {
 		phase = "验证账号授权"
 		authCtx, authCancel := context.WithTimeout(ctx, 15*time.Second)
-		status, err := client.Auth().Status(authCtx)
+		status, err := runtime.client.Auth().Status(authCtx)
 		authCancel()
 		if err != nil {
 			return fmt.Errorf("检查 gotd session 授权状态：%w", err)
@@ -2038,7 +2194,7 @@ func (a *App) nativeHealthCheck(account NativeAccount) (NativeAccount, error) {
 		if sample == nil {
 			phase = "查找 Telegram 媒体样本"
 			discoveryCtx, discoveryCancel := context.WithTimeout(ctx, 55*time.Second)
-			sample, err = nativeSampleTaskFromTelegram(discoveryCtx, client.API())
+			sample, err = nativeSampleTaskFromTelegram(discoveryCtx, runtime.api())
 			discoveryCancel()
 			if err != nil {
 				return fmt.Errorf("无法从 Telegram 找到健康检查文件：%w", err)
@@ -2049,7 +2205,7 @@ func (a *App) nativeHealthCheck(account NativeAccount) (NativeAccount, error) {
 		sample.AccountID = account.AccountID
 		phase = "读取 Telegram 文件分片"
 		readCtx, readCancel := context.WithTimeout(ctx, 90*time.Second)
-		bytesRead, dc, duration, err := a.readNativeSample(readCtx, client, *sample)
+		bytesRead, dc, duration, err := a.readNativeSample(readCtx, runtime, *sample)
 		readCancel()
 		if err != nil {
 			return fmt.Errorf("Go 原生文件抽样读取失败：%w", classifyNativeReadError(err))
@@ -2059,8 +2215,11 @@ func (a *App) nativeHealthCheck(account NativeAccount) (NativeAccount, error) {
 		account.LastHealthDurationMS = duration.Milliseconds()
 		account.Error = fmt.Sprintf("健康检查已从 Telegram DC %d 读取 %d 字节，耗时 %d ms", dc, bytesRead, duration.Milliseconds())
 		return nil
-	})
+	}(ctx)
 	if err != nil {
+		if nativeRuntimeBroken(err) {
+			a.invalidateNativeRuntime(account.UserID, account.AccountID)
+		}
 		account.Ready = false
 		account.HealthPasses = 0
 		message := strings.ToUpper(err.Error())
@@ -2209,6 +2368,15 @@ func (a *App) nativeAccountOperationMutex(userID, accountID string) *sync.Mutex 
 	return lock
 }
 
+func (a *App) setNativeAccountWait(userID, accountID string, until time.Time) {
+	key := nativeAccountKey(userID, accountID)
+	a.mu.Lock()
+	if until.Unix() > a.nativeWait[key] {
+		a.nativeWait[key] = until.Unix()
+	}
+	a.mu.Unlock()
+}
+
 func (a *App) nativeAccountRunningLocked(task Task) bool {
 	for id := range a.running {
 		runningTask := a.tasks[id]
@@ -2322,9 +2490,9 @@ func nativeSampleTaskFromMessages(items []tg.MessageClass) *Task {
 	return nil
 }
 
-func (a *App) readNativeSample(ctx context.Context, client *telegram.Client, task Task) (int, int, time.Duration, error) {
+func (a *App) readNativeSample(ctx context.Context, runtime *nativeRuntime, task Task) (int, int, time.Duration, error) {
 	started := time.Now()
-	metadataAPI := client.API()
+	metadataAPI := runtime.api()
 	if refreshed, err := a.refreshNativeFileLocationFromTelegram(ctx, metadataAPI, task); err == nil {
 		task.NativeFile = refreshed
 	} else if strings.Contains(err.Error(), "已被删除") {
@@ -2343,21 +2511,11 @@ func (a *App) readNativeSample(ctx context.Context, client *telegram.Client, tas
 	if err != nil {
 		return 0, file.DCID, time.Since(started), err
 	}
-	fileAPI := metadataAPI
-	var fileInvoker telegram.CloseInvoker
-	primaryDC := 0
-	if task.UserID != "" && task.AccountID != "" {
-		if account, snapshotErr := a.nativeAccountSnapshot(task.UserID, task.AccountID); snapshotErr == nil {
-			primaryDC = a.nativePrimaryDC(ctx, account)
-		}
-	}
-	fileInvoker, err = nativeFilePool(ctx, client, file.DCID, primaryDC, 1)
+	fileAPI, err := runtime.fileAPI(file.DCID)
 	if err != nil {
 		return 0, file.DCID, time.Since(started), fmt.Errorf("打开 Telegram 文件连接：%w", err)
 	}
-	defer fileInvoker.Close()
-	fileAPI = tg.NewClient(fileInvoker)
-	log.Printf("health sample using dedicated Telegram file pool for DC %d (primary DC %d)", file.DCID, primaryDC)
+	log.Printf("health sample reusing Telegram file pool for DC %d (primary DC %d)", file.DCID, runtime.primaryDC)
 	result, err := fileAPI.UploadGetFile(ctx, &tg.UploadGetFileRequest{
 		Precise: true,
 		Location: &tg.InputDocumentFileLocation{
@@ -2914,6 +3072,20 @@ func classifyNativeReadError(err error) error {
 	}
 }
 
+func nativeRuntimeBroken(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	markers := []string{"engine was closed", "not connected", "connection closed", "broken pipe", "connection reset"}
+	for _, marker := range markers {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 func migrationDC(err error) int {
 	if err == nil {
 		return 0
@@ -3089,6 +3261,7 @@ func transientSourceError(err error) bool {
 		"file incomplete",
 		"empty file chunk",
 		"flood_premium_wait",
+		"engine was closed",
 	}
 	for _, marker := range markers {
 		if strings.Contains(text, marker) {
@@ -3108,7 +3281,10 @@ func recoverableNativeTaskError(err error) bool {
 		strings.Contains(text, "file incomplete") ||
 		strings.Contains(text, "empty file chunk") ||
 		strings.Contains(text, "flood_wait") ||
-		strings.Contains(text, "flood_premium_wait")
+		strings.Contains(text, "flood_premium_wait") ||
+		strings.Contains(text, "engine was closed") ||
+		strings.Contains(text, "not connected") ||
+		strings.Contains(text, "broken pipe")
 }
 
 func sourceAuthenticationError(err error) bool {
@@ -3136,7 +3312,10 @@ func floodWaitDelay(err error) time.Duration {
 	if err == nil {
 		return 0
 	}
-	match := floodWaitRe.FindStringSubmatch(err.Error())
+	match := floodWaitRPCRe.FindStringSubmatch(err.Error())
+	if len(match) != 2 {
+		match = floodWaitRe.FindStringSubmatch(err.Error())
+	}
 	if len(match) != 2 {
 		return 0
 	}
