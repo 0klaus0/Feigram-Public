@@ -14,6 +14,21 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.59",
+    title: "Feigram 2.0.59 更新",
+    version: "2.0.59",
+    level: "success",
+    createdAt: "2026-06-22T14:20:00.000Z",
+    body: [
+      "修复 gotd 网络重连后继续复用已关闭文件 pool，导致 engine forcibly closed: context canceled 的问题。",
+      "账号主 DC 文件读取直接复用常驻主连接，不再额外创建容易失效的同 DC pool。",
+      "跨 DC 文件 pool 断线后会原位丢弃并重建；重建失败时重启账号运行时并保留断点。",
+      "engine forcibly closed 会作为临时网络错误自动续传，不再把任务标成永久失败。",
+      "账号运行时断线后会冻结队列 15 秒再恢复，避免整列任务连续失败。",
+      "Go 下载服务版本更新为 0.11.1。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.58",
     title: "Feigram 2.0.58 更新",
     version: "2.0.58",

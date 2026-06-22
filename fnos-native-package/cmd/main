@@ -27,8 +27,8 @@ export FEIGRAM_DOWNLOADER_URL="http://127.0.0.1:${DOWNLOADER_PORT}"
 export FEIGRAM_DOWNLOADER_LOG="$DOWNLOADER_LOG_FILE"
 export FEIGRAM_DOWNLOADER_SECRET_FILE="${DATA_HOME}/data/app-secret"
 export APP_EDITION="Feigram 2.0 fnOS Client Edition"
-export APP_VERSION="2.0.58"
-export APP_CHANGELOG="Go 原生下载改为账号级常驻 MTProto 引擎与跨 DC 连接复用，修复 engine was closed 和 FloodWait 退避错误。"
+export APP_VERSION="2.0.59"
+export APP_CHANGELOG="修复 gotd 重连后缓存死亡文件 pool 导致 engine forcibly closed；主 DC 直连，跨 DC 自动重建并断点续传。"
 export NODE_ENV="production"
 
 is_running() {

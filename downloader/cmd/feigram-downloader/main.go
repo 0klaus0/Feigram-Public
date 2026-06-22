@@ -34,7 +34,7 @@ import (
 )
 
 const (
-	version         = "0.11.0"
+	version         = "0.11.1"
 	defaultPartSize = 1024 * 1024
 )
 
@@ -516,6 +516,11 @@ func (a *App) runTask(id string, cancel <-chan struct{}) {
 				if telegramDelay := floodWaitDelay(err); telegramDelay > 0 {
 					delay = telegramDelay
 					a.setNativeAccountWait(task.UserID, task.AccountID, time.Now().Add(delay))
+				} else if nativeRuntimeBroken(err) {
+					if delay < 15*time.Second {
+						delay = 15 * time.Second
+					}
+					a.setNativeAccountWait(task.UserID, task.AccountID, time.Now().Add(delay))
 				}
 				a.updateTask(id, func(t *Task) {
 					t.Status = "queued"
@@ -805,6 +810,7 @@ func (a *App) downloadNativeMTProto(task *Task, cancel <-chan struct{}) error {
 		var windowBytes int64
 		emptyReads := 0
 		refreshedAfterEmpty := false
+		engineRetries := 0
 		a.updateTask(task.ID, func(t *Task) {
 			t.Downloaded = downloaded
 			t.Size = max64(t.Size, task.Size)
@@ -838,6 +844,20 @@ func (a *App) downloadNativeMTProto(task *Task, cancel <-chan struct{}) error {
 				Limit:    limit,
 			})
 			if err != nil {
+				if ctx.Err() != nil {
+					return errCancelled
+				}
+				if nativeRuntimeBroken(err) && fileDC > 0 && fileDC != runtime.primaryDC && engineRetries < 2 {
+					engineRetries++
+					runtime.resetFileAPI(fileDC)
+					fileAPI = nil
+					if reconnectErr := switchToFileDC(fileDC); reconnectErr == nil {
+						log.Printf("task %s rebuilt Telegram DC %d file pool after engine closure at offset %d", task.ID, fileDC, downloaded)
+						continue
+					} else {
+						return classifyNativeReadError(reconnectErr)
+					}
+				}
 				if strings.Contains(err.Error(), "FILE_REFERENCE_EXPIRED") {
 					refreshed, refreshErr := a.refreshNativeFileLocation(ctx, metadataAPI, task.ID)
 					if refreshErr != nil {
@@ -873,6 +893,7 @@ func (a *App) downloadNativeMTProto(task *Task, cancel <-chan struct{}) error {
 				}
 				return classifyNativeReadError(err)
 			}
+			engineRetries = 0
 			chunk, ok := resp.(*tg.UploadFile)
 			if !ok {
 				return fmt.Errorf("Go 原生 MTProto 暂不支持 CDN redirect 响应：%T", resp)
@@ -2097,6 +2118,12 @@ func (runtime *nativeRuntime) fileAPI(dc int) (*tg.Client, error) {
 		return nil, errors.New("Telegram MTProto engine was closed")
 	default:
 	}
+	// The account already owns a long-lived primary DC engine. Creating an
+	// additional Pool for the same DC adds another lifecycle that can be closed
+	// independently during reconnects, leaving a stale cached invoker behind.
+	if dc <= 0 || dc == runtime.primaryDC {
+		return runtime.client.API(), nil
+	}
 	if api := runtime.fileAPIs[dc]; api != nil {
 		return api, nil
 	}
@@ -2108,6 +2135,16 @@ func (runtime *nativeRuntime) fileAPI(dc int) (*tg.Client, error) {
 	api := tg.NewClient(invoker)
 	runtime.fileAPIs[dc] = api
 	return api, nil
+}
+
+func (runtime *nativeRuntime) resetFileAPI(dc int) {
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if invoker := runtime.invokers[dc]; invoker != nil {
+		_ = invoker.Close()
+	}
+	delete(runtime.invokers, dc)
+	delete(runtime.fileAPIs, dc)
 }
 
 func (a *App) nativePrimaryDC(ctx context.Context, account NativeAccount) int {
@@ -3077,7 +3114,7 @@ func nativeRuntimeBroken(err error) bool {
 		return false
 	}
 	text := strings.ToLower(err.Error())
-	markers := []string{"engine was closed", "not connected", "connection closed", "broken pipe", "connection reset"}
+	markers := []string{"engine was closed", "engine forcibly closed", "not connected", "connection closed", "broken pipe", "connection reset"}
 	for _, marker := range markers {
 		if strings.Contains(text, marker) {
 			return true
@@ -3262,6 +3299,7 @@ func transientSourceError(err error) bool {
 		"empty file chunk",
 		"flood_premium_wait",
 		"engine was closed",
+		"engine forcibly closed",
 	}
 	for _, marker := range markers {
 		if strings.Contains(text, marker) {
@@ -3283,6 +3321,7 @@ func recoverableNativeTaskError(err error) bool {
 		strings.Contains(text, "flood_wait") ||
 		strings.Contains(text, "flood_premium_wait") ||
 		strings.Contains(text, "engine was closed") ||
+		strings.Contains(text, "engine forcibly closed") ||
 		strings.Contains(text, "not connected") ||
 		strings.Contains(text, "broken pipe")
 }

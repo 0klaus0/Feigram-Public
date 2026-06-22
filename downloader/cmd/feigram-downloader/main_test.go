@@ -126,7 +126,7 @@ func TestCompletedTaskWithMissingFileIsRequeued(t *testing.T) {
 }
 
 func TestRecoverableNativeTaskErrors(t *testing.T) {
-	for _, message := range []string{"AUTH_BYTES_INVALID", "retry limit reached after 5 attempts", "file incomplete: 1 / 2", "FLOOD_PREMIUM_WAIT (3)", "empty file chunk", "engine was closed", "Not connected"} {
+	for _, message := range []string{"AUTH_BYTES_INVALID", "retry limit reached after 5 attempts", "file incomplete: 1 / 2", "FLOOD_PREMIUM_WAIT (3)", "empty file chunk", "engine was closed", "engine forcibly closed: context canceled", "Not connected"} {
 		if !recoverableNativeTaskError(assertError(message)) {
 			t.Fatalf("expected %q to be recoverable", message)
 		}
