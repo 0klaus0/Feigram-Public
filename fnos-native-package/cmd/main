@@ -14,6 +14,7 @@ PORT="${wizard_app_port:-3088}"
 DOWNLOADER_PORT="${FEIGRAM_DOWNLOADER_PORT:-3090}"
 
 export APP_PORT="$PORT"
+export FEIGRAM_APP_URL="http://127.0.0.1:${PORT}"
 export APP_PASSWORD="${wizard_app_password}"
 export PUBLIC_BASE_URL="${wizard_public_base_url:-http://127.0.0.1:${PORT}}"
 export TELEGRAM_API_ID="${wizard_telegram_api_id}"
@@ -27,8 +28,8 @@ export FEIGRAM_DOWNLOADER_URL="http://127.0.0.1:${DOWNLOADER_PORT}"
 export FEIGRAM_DOWNLOADER_LOG="$DOWNLOADER_LOG_FILE"
 export FEIGRAM_DOWNLOADER_SECRET_FILE="${DATA_HOME}/data/app-secret"
 export APP_EDITION="Feigram 2.0 fnOS Client Edition"
-export APP_VERSION="2.0.66"
-export APP_CHANGELOG="Telegram 主连接改用 TCP 443，并为连续故障的 Go 原生任务增加保留断点的自动回退。"
+export APP_VERSION="2.0.67"
+export APP_CHANGELOG="修复旧任务经 FN Connect 访问内部媒体接口；本机桥接强制直连并拦截 HTML 权限页。"
 export NODE_ENV="production"
 
 is_running() {

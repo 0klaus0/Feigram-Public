@@ -2,9 +2,44 @@ package main
 
 import (
 	"errors"
+	"net/http"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestNormalizeInternalMediaURL(t *testing.T) {
+	t.Setenv("FEIGRAM_APP_URL", "http://127.0.0.1:3088")
+	got := normalizeInternalMediaURL("https://example.com/api/internal/media/user/account/peer/1?token=secret")
+	want := "http://127.0.0.1:3088/api/internal/media/user/account/peer/1?token=secret"
+	if got != want {
+		t.Fatalf("normalizeInternalMediaURL() = %q, want %q", got, want)
+	}
+	external := "https://example.com/files/video.mp4"
+	if got := normalizeInternalMediaURL(external); got != external {
+		t.Fatalf("external URL was unexpectedly rewritten: %q", got)
+	}
+}
+
+func TestMediaSourceProxyBypassesLoopback(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "http://proxy.example:8080")
+	requestURL, _ := url.Parse("http://127.0.0.1:3088/api/internal/media/test")
+	proxyURL, err := mediaSourceProxy(&http.Request{URL: requestURL})
+	if err != nil || proxyURL != nil {
+		t.Fatalf("loopback request should bypass proxy, got proxy=%v err=%v", proxyURL, err)
+	}
+}
+
+func TestMediaSourceResponseErrorSanitizesHTML(t *testing.T) {
+	err := mediaSourceResponseError(http.StatusForbidden, "text/html", []byte("<!doctype html><title>FN Connect 访问提示</title><p>暂无权限访问该服务</p>"))
+	if got := err.Error(); got != "source returned 403: FN Connect 无权限访问本机媒体接口" {
+		t.Fatalf("unexpected sanitized error: %q", got)
+	}
+	if strings.Contains(err.Error(), "<!doctype") {
+		t.Fatal("HTML body leaked into the task error")
+	}
+}
 
 func TestReconcileReadyLegacyTasks(t *testing.T) {
 	app := &App{

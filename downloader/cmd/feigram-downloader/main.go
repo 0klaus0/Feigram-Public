@@ -37,7 +37,7 @@ import (
 )
 
 const (
-	version         = "0.13.3"
+	version         = "0.13.4"
 	defaultPartSize = 1024 * 1024
 	minPartSize     = 4 * 1024
 	maxPartSize     = 1024 * 1024
@@ -273,7 +273,7 @@ func main() {
 		client: &http.Client{
 			Timeout: 0,
 			Transport: &http.Transport{
-				Proxy:               http.ProxyFromEnvironment,
+				Proxy:               mediaSourceProxy,
 				MaxIdleConns:        32,
 				MaxIdleConnsPerHost: 16,
 				IdleConnTimeout:     90 * time.Second,
@@ -640,7 +640,8 @@ func (a *App) downloadHTTPBridge(task *Task, cancel <-chan struct{}) error {
 		downloaded = 0
 	}
 
-	req, err := http.NewRequest(http.MethodGet, task.SourceURL, nil)
+	sourceURL := normalizeInternalMediaURL(task.SourceURL)
+	req, err := http.NewRequest(http.MethodGet, sourceURL, nil)
 	if err != nil {
 		return err
 	}
@@ -652,13 +653,17 @@ func (a *App) downloadHTTPBridge(task *Task, cancel <-chan struct{}) error {
 		return err
 	}
 	defer resp.Body.Close()
+	if responseIsHTML(resp) {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return mediaSourceResponseError(resp.StatusCode, resp.Header.Get("Content-Type"), body)
+	}
 	if resp.StatusCode == http.StatusOK && downloaded > 0 {
 		_ = os.Remove(task.PartPath)
 		downloaded = 0
 	}
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return fmt.Errorf("source returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return mediaSourceResponseError(resp.StatusCode, resp.Header.Get("Content-Type"), body)
 	}
 	if task.Size <= 0 && resp.ContentLength > 0 {
 		task.Size = downloaded + resp.ContentLength
@@ -734,6 +739,63 @@ func (a *App) downloadHTTPBridge(task *Task, cancel <-chan struct{}) error {
 		return err
 	}
 	return nil
+}
+
+func normalizeInternalMediaURL(raw string) string {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Path == "" || !strings.HasPrefix(parsed.Path, "/api/internal/media") {
+		return raw
+	}
+	base := strings.TrimSpace(os.Getenv("FEIGRAM_APP_URL"))
+	if base == "" {
+		port := strings.TrimSpace(os.Getenv("APP_PORT"))
+		if port == "" {
+			port = "3088"
+		}
+		base = "http://127.0.0.1:" + port
+	}
+	local, err := url.Parse(base)
+	if err != nil || local.Scheme == "" || local.Host == "" {
+		return raw
+	}
+	parsed.Scheme = local.Scheme
+	parsed.Host = local.Host
+	parsed.User = nil
+	return parsed.String()
+}
+
+func mediaSourceProxy(req *http.Request) (*url.URL, error) {
+	host := req.URL.Hostname()
+	if host == "localhost" || net.ParseIP(host).IsLoopback() {
+		return nil, nil
+	}
+	return http.ProxyFromEnvironment(req)
+}
+
+func responseIsHTML(resp *http.Response) bool {
+	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
+	return strings.Contains(contentType, "text/html") || strings.Contains(contentType, "application/xhtml")
+}
+
+func mediaSourceResponseError(status int, contentType string, body []byte) error {
+	text := strings.TrimSpace(string(body))
+	lower := strings.ToLower(text)
+	isHTML := strings.Contains(strings.ToLower(contentType), "html") ||
+		strings.Contains(lower, "<!doctype html") || strings.Contains(lower, "<html")
+	if isHTML {
+		if strings.Contains(text, "FN Connect") || strings.Contains(text, "暂无权限") {
+			return fmt.Errorf("source returned %d: FN Connect 无权限访问本机媒体接口", status)
+		}
+		return fmt.Errorf("source returned %d: 媒体接口返回 HTML 页面", status)
+	}
+	if text == "" {
+		text = http.StatusText(status)
+	}
+	runes := []rune(text)
+	if len(runes) > 180 {
+		text = string(runes[:180]) + "..."
+	}
+	return fmt.Errorf("source returned %d: %s", status, text)
 }
 
 func (a *App) downloadNativeMTProto(task *Task, cancel <-chan struct{}) error {

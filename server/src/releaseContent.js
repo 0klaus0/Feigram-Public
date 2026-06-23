@@ -14,6 +14,21 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.67",
+    title: "Feigram 2.0.67 更新",
+    version: "2.0.67",
+    level: "success",
+    createdAt: "2026-06-23T09:45:00.000Z",
+    body: [
+      "修复旧缓存任务通过 FN Connect 地址访问内部媒体接口，导致返回无权限 HTML 页的问题。",
+      "Go 下载服务会把持久化任务中的内部媒体地址自动迁移到 127.0.0.1。",
+      "本机媒体请求强制绕过系统代理和 v2rayA，避免回环流量被错误转发。",
+      "媒体接口返回 HTML 时会在写入前中止，并显示简短错误，不再污染 .part 文件或撑大界面。",
+      "现有任务和断点会保留，无需清空缓存列表。",
+      "Go 下载服务版本更新为 0.13.4。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.66",
     title: "Feigram 2.0.66 更新",
     version: "2.0.66",
