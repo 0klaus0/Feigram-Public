@@ -14,6 +14,20 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.65",
+    title: "Feigram 2.0.65 更新",
+    version: "2.0.65",
+    level: "success",
+    createdAt: "2026-06-23T06:30:00.000Z",
+    body: [
+      "修复跨 DC 文件 pool 断线后连带销毁账号主 MTProto runtime，造成整列任务反复重建连接的问题。",
+      "DC1 等媒体文件连接故障现在只重建对应文件 pool，保持主 DC 会话和授权持续在线。",
+      "仅当主 runtime 确实停止或主 DC 本身失败时，才重建整个账号连接。",
+      "保留既有断点续传、FILE_REFERENCE 刷新与等待退避策略。",
+      "Go 下载服务版本更新为 0.13.2。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.64",
     title: "Feigram 2.0.64 更新",
     version: "2.0.64",

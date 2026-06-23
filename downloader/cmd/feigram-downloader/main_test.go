@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"testing"
 	"time"
 )
@@ -231,6 +232,19 @@ func TestMarkTaskDownloadingClearsRetryState(t *testing.T) {
 	markTaskDownloading(task)
 	if task.Status != "downloading" || task.Error != "" || task.RetryAfter != 0 || task.SpeedBps != 0 {
 		t.Fatalf("retry state was not cleared when task started: %+v", task)
+	}
+}
+
+func TestShouldInvalidateNativeRuntimeKeepsPrimaryAliveForCrossDCFailure(t *testing.T) {
+	err := errors.New("invoke pool: rpcDoRequest: retryUntilAck: engine forcibly closed: context canceled")
+	if shouldInvalidateNativeRuntime(err, 1, 5, false) {
+		t.Fatal("cross-DC file pool failure must not invalidate the healthy primary runtime")
+	}
+	if !shouldInvalidateNativeRuntime(err, 5, 5, false) {
+		t.Fatal("primary DC failure must invalidate the runtime")
+	}
+	if !shouldInvalidateNativeRuntime(err, 1, 5, true) {
+		t.Fatal("a stopped runtime must be invalidated regardless of the file DC")
 	}
 }
 

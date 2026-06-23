@@ -37,7 +37,7 @@ import (
 )
 
 const (
-	version         = "0.13.1"
+	version         = "0.13.2"
 	defaultPartSize = 1024 * 1024
 	minPartSize     = 4 * 1024
 	maxPartSize     = 1024 * 1024
@@ -782,6 +782,7 @@ func (a *App) downloadNativeMTProto(task *Task, cancel <-chan struct{}) error {
 	if err != nil {
 		return classifyNativeReadError(err)
 	}
+	activeFileDC := task.NativeFile.DCID
 	runErr := func(ctx context.Context) error {
 		metadataAPI := runtime.api()
 		if !nativeFileUsable(task.NativeFile) {
@@ -818,6 +819,7 @@ func (a *App) downloadNativeMTProto(task *Task, cancel <-chan struct{}) error {
 			}
 			fileAPI = api
 			fileDC = dc
+			activeFileDC = dc
 			log.Printf("task %s reusing Telegram file pool for DC %d (primary DC %d)", task.ID, dc, runtime.primaryDC)
 			return nil
 		}
@@ -992,7 +994,12 @@ func (a *App) downloadNativeMTProto(task *Task, cancel <-chan struct{}) error {
 	}(ctx)
 	if runErr != nil {
 		if nativeRuntimeBroken(runErr) {
-			a.invalidateNativeRuntime(task.UserID, task.AccountID)
+			if shouldInvalidateNativeRuntime(runErr, activeFileDC, runtime.primaryDC, runtime.stopped()) {
+				a.invalidateNativeRuntime(task.UserID, task.AccountID)
+			} else {
+				runtime.resetFileAPI(activeFileDC)
+				log.Printf("task %s discarded broken Telegram DC %d file pool without closing primary DC %d runtime", task.ID, activeFileDC, runtime.primaryDC)
+			}
 		}
 		return runErr
 	}
@@ -2215,6 +2222,15 @@ func (runtime *nativeRuntime) api() *tg.Client {
 	return runtime.client.API()
 }
 
+func (runtime *nativeRuntime) stopped() bool {
+	select {
+	case <-runtime.done:
+		return true
+	default:
+		return false
+	}
+}
+
 func (runtime *nativeRuntime) fileAPI(dc int) (*tg.Client, error) {
 	runtime.mu.Lock()
 	defer runtime.mu.Unlock()
@@ -3232,6 +3248,16 @@ func nativeRuntimeBroken(err error) bool {
 		}
 	}
 	return false
+}
+
+func shouldInvalidateNativeRuntime(err error, fileDC, primaryDC int, runtimeStopped bool) bool {
+	if !nativeRuntimeBroken(err) {
+		return false
+	}
+	if runtimeStopped {
+		return true
+	}
+	return fileDC <= 0 || primaryDC <= 0 || fileDC == primaryDC
 }
 
 func nativeFilePoolBroken(err error) bool {
