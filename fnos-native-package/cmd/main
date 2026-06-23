@@ -27,8 +27,8 @@ export FEIGRAM_DOWNLOADER_URL="http://127.0.0.1:${DOWNLOADER_PORT}"
 export FEIGRAM_DOWNLOADER_LOG="$DOWNLOADER_LOG_FILE"
 export FEIGRAM_DOWNLOADER_SECRET_FILE="${DATA_HOME}/data/app-secret"
 export APP_EDITION="Feigram 2.0 fnOS Client Edition"
-export APP_VERSION="2.0.65"
-export APP_CHANGELOG="隔离跨 DC 文件连接故障，避免单个文件 pool 波动连带关闭整个账号主连接。"
+export APP_VERSION="2.0.66"
+export APP_CHANGELOG="Telegram 主连接改用 TCP 443，并为连续故障的 Go 原生任务增加保留断点的自动回退。"
 export NODE_ENV="production"
 
 is_running() {

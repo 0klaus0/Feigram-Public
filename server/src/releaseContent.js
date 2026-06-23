@@ -14,6 +14,20 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.66",
+    title: "Feigram 2.0.66 更新",
+    version: "2.0.66",
+    level: "success",
+    createdAt: "2026-06-23T07:30:00.000Z",
+    body: [
+      "Telegram 聊天主连接由 TCP 80 调整为 TCP 443，减少路由器和透明代理重置长连接的概率。",
+      "Go 原生任务连续发生引擎关闭时，会在具备本机媒体源的情况下自动切换 HTTP 回退。",
+      "切换传输层时沿用原有 .part 文件和下载偏移，不会从头下载。",
+      "Go 原生连接稳定时仍保持优先使用，不改变健康账号的下载路径。",
+      "Go 下载服务版本更新为 0.13.3。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.65",
     title: "Feigram 2.0.65 更新",
     version: "2.0.65",

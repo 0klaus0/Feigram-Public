@@ -37,7 +37,7 @@ import (
 )
 
 const (
-	version         = "0.13.2"
+	version         = "0.13.3"
 	defaultPartSize = 1024 * 1024
 	minPartSize     = 4 * 1024
 	maxPartSize     = 1024 * 1024
@@ -530,6 +530,19 @@ func (a *App) runTask(id string, cancel <-chan struct{}) {
 			if sourceAuthenticationError(err) && a.promoteTaskToNativeIfReady(id) {
 				log.Printf("task %s HTTP source authorization expired; switched to native MTProto and resumed", id)
 				continue
+			}
+			if shouldFallbackNativeTask(*task, err) {
+				delay := 5 * time.Second
+				a.updateTask(id, func(t *Task) {
+					t.Transport = "http-bridge"
+					t.Status = "queued"
+					t.SpeedBps = 0
+					t.RetryAfter = time.Now().Add(delay).Unix()
+					t.Error = "Go 原生连接连续波动，已切换 HTTP 回退并保留断点"
+					t.UpdatedAt = now()
+				})
+				log.Printf("task %s switched to HTTP bridge after repeated native engine closures; retry in %s", id, delay)
+				return
 			}
 			if transientSourceError(err) {
 				delay := retryDelay(task.RetryCount + 1)
@@ -3258,6 +3271,13 @@ func shouldInvalidateNativeRuntime(err error, fileDC, primaryDC int, runtimeStop
 		return true
 	}
 	return fileDC <= 0 || primaryDC <= 0 || fileDC == primaryDC
+}
+
+func shouldFallbackNativeTask(task Task, err error) bool {
+	return normalizeTransport(task.Transport) == "native-mtproto" &&
+		task.SourceURL != "" &&
+		task.RetryCount >= 2 &&
+		nativeRuntimeBroken(err)
 }
 
 func nativeFilePoolBroken(err error) bool {

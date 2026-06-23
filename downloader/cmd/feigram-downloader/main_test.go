@@ -248,6 +248,18 @@ func TestShouldInvalidateNativeRuntimeKeepsPrimaryAliveForCrossDCFailure(t *test
 	}
 }
 
+func TestShouldFallbackNativeTaskAfterRepeatedEngineClosures(t *testing.T) {
+	err := errors.New("rpcDoRequest: retryUntilAck: engine forcibly closed: context canceled")
+	task := Task{Transport: "native-mtproto", SourceURL: "http://127.0.0.1/media", RetryCount: 2}
+	if !shouldFallbackNativeTask(task, err) {
+		t.Fatal("repeated native engine closures should use the available HTTP fallback")
+	}
+	task.SourceURL = ""
+	if shouldFallbackNativeTask(task, err) {
+		t.Fatal("task without an HTTP source must stay on native transport")
+	}
+}
+
 type assertError string
 
 func (e assertError) Error() string { return string(e) }
