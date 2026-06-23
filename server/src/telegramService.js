@@ -810,8 +810,19 @@ function rememberMessageSenders(accountId, messages) {
 
 async function createClient(sessionString = "") {
   const { apiId, apiHash } = await telegramConfig();
+  const settings = await readSettings();
+  const proxy = settings.telegramProxyEnabled && settings.telegramProxyHost ? {
+    ip: settings.telegramProxyHost,
+    port: Number(settings.telegramProxyPort || 1080),
+    socksType: 5,
+    timeout: 15,
+    username: settings.telegramProxyUsername || undefined,
+    password: settings.telegramProxyPassword || undefined
+  } : undefined;
   const client = new TelegramClient(new StringSession(sessionString), apiId, apiHash, {
-    connectionRetries: 3
+    connectionRetries: 5,
+    retryDelay: 2000,
+    proxy
   });
   await withTimeout(client.connect(), 20000, "连接 Telegram 超时，请检查网络");
   return client;

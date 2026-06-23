@@ -480,6 +480,11 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
     publicBaseUrl: "",
     telegramApiId: "",
     telegramApiHash: "",
+    telegramProxyEnabled: false,
+    telegramProxyHost: "",
+    telegramProxyPort: "1080",
+    telegramProxyUsername: "",
+    telegramProxyPassword: "",
     cacheBaseDir: "",
     imageCacheDir: "",
     videoCacheDir: "",
@@ -544,6 +549,11 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
         publicBaseUrl: nextSettings.publicBaseUrl || "",
         telegramApiId: "",
         telegramApiHash: "",
+        telegramProxyEnabled: Boolean(nextSettings.telegramProxyEnabled),
+        telegramProxyHost: nextSettings.telegramProxyHost || "",
+        telegramProxyPort: nextSettings.telegramProxyPort || "1080",
+        telegramProxyUsername: nextSettings.telegramProxyUsername || "",
+        telegramProxyPassword: "",
         cacheBaseDir: nextSettings.cacheBaseDir || "",
         imageCacheDir: nextSettings.imageCacheDir || "",
         videoCacheDir: nextSettings.videoCacheDir || "",
@@ -597,6 +607,7 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
       const payload = { ...settings };
       if (!payload.telegramApiId) delete payload.telegramApiId;
       if (!payload.telegramApiHash) delete payload.telegramApiHash;
+      if (!payload.telegramProxyPassword) delete payload.telegramProxyPassword;
       await api("/api/settings", { method: "PUT", body: JSON.stringify(payload) });
       setSaved("已保存");
       onSettingsChanged?.();
@@ -872,6 +883,15 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
           <label><span>公开访问地址</span><input value={settings.publicBaseUrl} onChange={(e) => setSettings({ ...settings, publicBaseUrl: e.target.value })} placeholder="https://feigram.example.com" required /></label>
           <label><span>Telegram API ID</span><input type="password" inputMode="numeric" autoComplete="off" value={settings.telegramApiId} onChange={(e) => setSettings({ ...settings, telegramApiId: e.target.value })} placeholder={apiIdPlaceholder} /></label>
           <label><span>Telegram API Hash</span><input type="password" value={settings.telegramApiHash} onChange={(e) => setSettings({ ...settings, telegramApiHash: e.target.value })} placeholder={hashPlaceholder} /></label>
+          <h3>Telegram 网络</h3>
+          <label className="check-row"><input type="checkbox" checked={settings.telegramProxyEnabled} onChange={(e) => setSettings({ ...settings, telegramProxyEnabled: e.target.checked })} /><span>启用统一 SOCKS5 代理</span></label>
+          {settings.telegramProxyEnabled && <>
+            <label><span>代理地址</span><input value={settings.telegramProxyHost} onChange={(e) => setSettings({ ...settings, telegramProxyHost: e.target.value })} placeholder="192.168.1.2" required /></label>
+            <label><span>代理端口</span><input type="number" min="1" max="65535" value={settings.telegramProxyPort} onChange={(e) => setSettings({ ...settings, telegramProxyPort: e.target.value })} required /></label>
+            <label><span>代理用户名</span><input value={settings.telegramProxyUsername} onChange={(e) => setSettings({ ...settings, telegramProxyUsername: e.target.value })} placeholder="可留空" /></label>
+            <label><span>代理密码</span><input type="password" value={settings.telegramProxyPassword} onChange={(e) => setSettings({ ...settings, telegramProxyPassword: e.target.value })} placeholder="已保存时留空不修改" /></label>
+          </>}
+          <p className="hint">代理会同时用于聊天连接和 Go 原生下载。修改后连接会自动重建；未启用时保持直连。</p>
           <h3>缓存下载设置</h3>
           <label><span>基础缓存下载位置</span><input value={settings.cacheBaseDir} onChange={(e) => setSettings({ ...settings, cacheBaseDir: e.target.value })} placeholder="/data/downloads" required /></label>
           <label><span>图片缓存位置</span><input value={settings.imageCacheDir} onChange={(e) => setSettings({ ...settings, imageCacheDir: e.target.value })} placeholder="留空则使用 基础缓存/images" /></label>

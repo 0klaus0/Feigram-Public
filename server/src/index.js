@@ -88,6 +88,13 @@ app.get("/api/settings", asyncRoute(async (_req, res) => {
 
 app.put("/api/settings", adminOnly, asyncRoute(async (req, res) => {
   const next = await writeSettings(req.body || {});
+  await downloaderSidecar.updateConfig({
+    proxyEnabled: next.telegramProxyEnabled,
+    proxyHost: next.telegramProxyHost,
+    proxyPort: Number(next.telegramProxyPort || 1080),
+    proxyUsername: next.telegramProxyUsername,
+    proxyPassword: next.telegramProxyPassword
+  });
   await tg.reconnectAll(io);
   res.json({ settings: publicSettings(next) });
 }));
@@ -420,7 +427,16 @@ ensureStore()
     }, 30 * 1000).unref?.();
     server.listen(port, "0.0.0.0", () => {
       console.log(`Feigram Public is listening on http://0.0.0.0:${port}`);
-      tg.loadSavedClients(io)
+      readSettings()
+        .then((settings) => downloaderSidecar.updateConfig({
+          proxyEnabled: settings.telegramProxyEnabled,
+          proxyHost: settings.telegramProxyHost,
+          proxyPort: Number(settings.telegramProxyPort || 1080),
+          proxyUsername: settings.telegramProxyUsername,
+          proxyPassword: settings.telegramProxyPassword
+        }))
+        .catch((error) => console.warn("Telegram proxy sync failed:", error.message))
+        .then(() => tg.loadSavedClients(io))
         .catch((error) => console.warn("Telegram account restore failed:", error.message))
         .then(() => tg.restoreBackgroundTasks(io).catch((error) => console.warn("Download task restore failed:", error.message)))
         .then(() => tg.cleanupCache().catch((error) => console.warn("Cache cleanup failed:", error.message)));

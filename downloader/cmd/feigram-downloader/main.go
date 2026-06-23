@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -29,12 +30,14 @@ import (
 	"github.com/gotd/td/telegram"
 	"github.com/gotd/td/telegram/auth"
 	"github.com/gotd/td/telegram/auth/qrlogin"
+	"github.com/gotd/td/telegram/dcs"
 	"github.com/gotd/td/tg"
+	xproxy "golang.org/x/net/proxy"
 	"rsc.io/qr"
 )
 
 const (
-	version         = "0.12.1"
+	version         = "0.13.0"
 	defaultPartSize = 1024 * 1024
 	minPartSize     = 4 * 1024
 	maxPartSize     = 1024 * 1024
@@ -45,14 +48,19 @@ var floodWaitRe = regexp.MustCompile(`(?i)FLOOD(?:_PREMIUM)?_WAIT[^0-9]*([0-9]+)
 var floodWaitRPCRe = regexp.MustCompile(`(?i)FLOOD(?:_PREMIUM)?_WAIT.*\(([0-9]+)\)`)
 
 type Config struct {
-	Enabled      bool   `json:"enabled"`
-	Concurrency  int    `json:"concurrency"`
-	RateLimitBps int64  `json:"rateLimitBps"`
-	Mode         string `json:"mode"`
-	PartSize     int64  `json:"partSize"`
-	Backend      string `json:"backend"`
-	Transport    string `json:"transport"`
-	UpdatedAt    string `json:"updatedAt"`
+	Enabled       bool   `json:"enabled"`
+	Concurrency   int    `json:"concurrency"`
+	RateLimitBps  int64  `json:"rateLimitBps"`
+	Mode          string `json:"mode"`
+	PartSize      int64  `json:"partSize"`
+	Backend       string `json:"backend"`
+	Transport     string `json:"transport"`
+	ProxyEnabled  bool   `json:"proxyEnabled"`
+	ProxyHost     string `json:"proxyHost"`
+	ProxyPort     int    `json:"proxyPort"`
+	ProxyUsername string `json:"proxyUsername"`
+	ProxyPassword string `json:"-"`
+	UpdatedAt     string `json:"updatedAt"`
 }
 
 type Task struct {
@@ -1228,7 +1236,7 @@ func (a *App) handleHealth(w http.ResponseWriter, _ *http.Request) {
 		"uptime":    int(time.Since(a.startedAt).Seconds()),
 		"taskCount": len(a.tasks),
 		"running":   len(a.running),
-		"config":    a.config,
+		"config":    publicConfig(a.config),
 	})
 }
 
@@ -1249,13 +1257,25 @@ func (a *App) handleConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.mu.Lock()
+	oldProxy := proxySignature(a.config)
 	a.config = sanitizeConfig(applyConfigPatch(a.config, patch))
 	if a.config.Transport == "native-mtproto" && !a.nativeReadyLocked() {
 		a.config.Transport = "http-bridge"
 	}
 	a.config.UpdatedAt = now()
 	err := a.saveLocked()
+	proxyChanged := oldProxy != proxySignature(a.config)
+	runtimes := make([]*nativeRuntime, 0)
+	if proxyChanged {
+		for key, runtime := range a.runtimes {
+			runtimes = append(runtimes, runtime)
+			delete(a.runtimes, key)
+		}
+	}
 	a.mu.Unlock()
+	for _, runtime := range runtimes {
+		runtime.cancel()
+	}
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -1546,7 +1566,7 @@ func (a *App) stateLocked() map[string]any {
 		"pid":           os.Getpid(),
 		"uptime":        int(time.Since(a.startedAt).Seconds()),
 		"dataDir":       a.dataDir,
-		"config":        a.config,
+		"config":        publicConfig(a.config),
 		"counts":        counts,
 		"running":       len(a.running),
 		"speedBps":      speed,
@@ -1773,6 +1793,14 @@ func sanitizeConfig(input Config) Config {
 		input.Backend = "go-sidecar"
 	}
 	input.Transport = normalizeTransport(input.Transport)
+	input.ProxyHost = strings.TrimSpace(input.ProxyHost)
+	input.ProxyUsername = strings.TrimSpace(input.ProxyUsername)
+	if input.ProxyPort <= 0 || input.ProxyPort > 65535 {
+		input.ProxyPort = 1080
+	}
+	if input.ProxyHost == "" {
+		input.ProxyEnabled = false
+	}
 	if input.UpdatedAt == "" {
 		input.UpdatedAt = now()
 	}
@@ -1798,7 +1826,31 @@ func applyConfigPatch(current Config, patch map[string]any) Config {
 	if value, ok := stringValue(patch["transport"]); ok {
 		current.Transport = value
 	}
+	if value, ok := boolValue(patch["proxyEnabled"]); ok {
+		current.ProxyEnabled = value
+	}
+	if value, ok := stringValue(patch["proxyHost"]); ok {
+		current.ProxyHost = value
+	}
+	if value, ok := intValue(patch["proxyPort"]); ok {
+		current.ProxyPort = value
+	}
+	if value, ok := stringValue(patch["proxyUsername"]); ok {
+		current.ProxyUsername = value
+	}
+	if value, ok := stringValue(patch["proxyPassword"]); ok {
+		current.ProxyPassword = value
+	}
 	return current
+}
+
+func proxySignature(config Config) string {
+	return fmt.Sprintf("%t|%s|%d|%s|%s", config.ProxyEnabled, config.ProxyHost, config.ProxyPort, config.ProxyUsername, config.ProxyPassword)
+}
+
+func publicConfig(config Config) Config {
+	config.ProxyPassword = ""
+	return config
 }
 
 func normalizeTransport(value string) string {
@@ -1980,12 +2032,50 @@ func (a *App) nativeAccountSnapshotLocked(userID, accountID string) (NativeAccou
 	return *account, nil
 }
 
-func (a *App) newTelegramClient(account NativeAccount, apiHash string) (*telegram.Client, error) {
+func telegramResolver(config Config) (dcs.Resolver, error) {
+	if !config.ProxyEnabled || config.ProxyHost == "" {
+		return dcs.DefaultResolver(), nil
+	}
+	address := net.JoinHostPort(config.ProxyHost, strconv.Itoa(config.ProxyPort))
+	var auth *xproxy.Auth
+	if config.ProxyUsername != "" || config.ProxyPassword != "" {
+		auth = &xproxy.Auth{User: config.ProxyUsername, Password: config.ProxyPassword}
+	}
+	dialer, err := xproxy.SOCKS5("tcp", address, auth, &net.Dialer{Timeout: 20 * time.Second, KeepAlive: 30 * time.Second})
+	if err != nil {
+		return nil, fmt.Errorf("create SOCKS5 proxy: %w", err)
+	}
+	dialContext := func(ctx context.Context, network, addr string) (net.Conn, error) {
+		if contextDialer, ok := dialer.(xproxy.ContextDialer); ok {
+			return contextDialer.DialContext(ctx, network, addr)
+		}
+		type result struct {
+			conn net.Conn
+			err  error
+		}
+		ch := make(chan result, 1)
+		go func() { conn, dialErr := dialer.Dial(network, addr); ch <- result{conn: conn, err: dialErr} }()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case value := <-ch:
+			return value.conn, value.err
+		}
+	}
+	return dcs.Plain(dcs.PlainOptions{Dial: dialContext}), nil
+}
+
+func (a *App) newTelegramClient(account NativeAccount, apiHash string, config Config) (*telegram.Client, error) {
 	if account.APIID <= 0 || apiHash == "" {
 		return nil, errors.New("Go 原生 MTProto 缺少 API ID/Hash")
 	}
+	resolver, err := telegramResolver(config)
+	if err != nil {
+		return nil, err
+	}
 	options := telegram.Options{
 		SessionStorage:   nativeSessionStorage{app: a, userID: account.UserID, accountID: account.AccountID},
+		Resolver:         resolver,
 		NoUpdates:        true,
 		MigrationTimeout: 90 * time.Second,
 		RetryInterval:    2 * time.Second,
@@ -1997,17 +2087,18 @@ func (a *App) newTelegramClient(account NativeAccount, apiHash string) (*telegra
 	return telegram.NewClient(account.APIID, apiHash, options), nil
 }
 
-func nativeRuntimeSignature(account NativeAccount) string {
-	sum := sha256.Sum256([]byte(fmt.Sprintf("%d|%s|%s", account.APIID, account.APIHash, account.Session)))
+func nativeRuntimeSignature(account NativeAccount, config Config) string {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%d|%s|%s|%s", account.APIID, account.APIHash, account.Session, proxySignature(config))))
 	return hex.EncodeToString(sum[:])
 }
 
 func (a *App) acquireNativeRuntime(ctx context.Context, account NativeAccount, apiHash string) (*nativeRuntime, error) {
 	key := nativeAccountKey(account.UserID, account.AccountID)
-	signature := nativeRuntimeSignature(account)
 	primaryDC := a.nativePrimaryDC(ctx, account)
 
 	a.mu.Lock()
+	config := a.config
+	signature := nativeRuntimeSignature(account, config)
 	runtime := a.runtimes[key]
 	if runtime != nil && runtime.signature != signature {
 		runtime.cancel()
@@ -2021,7 +2112,7 @@ func (a *App) acquireNativeRuntime(ctx context.Context, account NativeAccount, a
 		}
 	}
 	if runtime == nil {
-		client, err := a.newTelegramClient(account, apiHash)
+		client, err := a.newTelegramClient(account, apiHash, config)
 		if err != nil {
 			a.mu.Unlock()
 			return nil, err
@@ -3013,7 +3104,10 @@ func (a *App) runNativeLogin(ctx context.Context, login *NativeLogin) {
 		return
 	}
 	account.APIID = login.APIID
-	client, err := a.newTelegramClient(account, login.APIHash)
+	a.mu.Lock()
+	config := a.config
+	a.mu.Unlock()
+	client, err := a.newTelegramClient(account, login.APIHash, config)
 	if err != nil {
 		login.StartResult <- nativeLoginResult{Error: err, LoginID: login.ID}
 		return

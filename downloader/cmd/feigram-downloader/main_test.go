@@ -154,6 +154,31 @@ func TestSanitizePartSize(t *testing.T) {
 	}
 }
 
+func TestProxyConfigSanitizationAndRedaction(t *testing.T) {
+	config := sanitizeConfig(Config{
+		ProxyEnabled:  true,
+		ProxyHost:     " 10.0.0.2 ",
+		ProxyPort:     70000,
+		ProxyUsername: " user ",
+		ProxyPassword: "secret",
+	})
+	if config.ProxyHost != "10.0.0.2" || config.ProxyPort != 1080 || config.ProxyUsername != "user" {
+		t.Fatalf("unexpected sanitized proxy config: %+v", config)
+	}
+	public := publicConfig(config)
+	if public.ProxyPassword != "" {
+		t.Fatal("proxy password must not be exposed by public config")
+	}
+	if proxySignature(config) == proxySignature(Config{ProxyEnabled: true, ProxyHost: "10.0.0.2", ProxyPort: 1080, ProxyUsername: "user", ProxyPassword: "different"}) {
+		t.Fatal("runtime signature must change when proxy credentials change")
+	}
+
+	disabled := sanitizeConfig(Config{ProxyEnabled: true})
+	if disabled.ProxyEnabled {
+		t.Fatal("proxy without a host must be disabled")
+	}
+}
+
 func TestNativeFilePoolBroken(t *testing.T) {
 	for _, message := range []string{"engine forcibly closed: context canceled", "retry limit reached after 5 attempts", "AUTH_BYTES_INVALID"} {
 		if !nativeFilePoolBroken(assertError(message)) {

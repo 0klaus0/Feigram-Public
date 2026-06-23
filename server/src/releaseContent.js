@@ -14,6 +14,21 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.62",
+    title: "Feigram 2.0.62 更新",
+    version: "2.0.62",
+    level: "success",
+    createdAt: "2026-06-23T04:30:00.000Z",
+    body: [
+      "新增 Telegram 统一 SOCKS5 代理设置，聊天连接和 Go 原生下载使用同一个网络出口。",
+      "代理设置保存在服务端，密码不会通过管理接口或运行诊断回显。",
+      "修改代理后会自动重连 GramJS，并销毁、重建已有 Go MTProto runtime 和跨 DC 文件池。",
+      "FPK 调整为先启动 Go sidecar、再启动 Node 主服务，确保重启时连接配置能够同步到下载服务。",
+      "未启用代理时继续使用原有直连模式，不改变已有部署行为。",
+      "Go 下载服务版本更新为 0.13.0。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.61",
     title: "Feigram 2.0.61 更新",
     version: "2.0.61",
