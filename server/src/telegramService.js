@@ -10,6 +10,7 @@ const { dataDir, downloadTasksPath, readAccounts, removeAccount, safeId, silentC
 const { readSettings } = require("./settings");
 const { decryptText, encryptText } = require("./cryptoBox");
 const downloaderSidecar = require("./downloaderSidecar");
+const { resolveTelegramProxy } = require("./telegramProxy");
 
 const clients = new Map();
 const cacheClients = new Map();
@@ -811,13 +812,14 @@ function rememberMessageSenders(accountId, messages) {
 async function createClient(sessionString = "") {
   const { apiId, apiHash } = await telegramConfig();
   const settings = await readSettings();
-  const proxy = settings.telegramProxyEnabled && settings.telegramProxyHost ? {
-    ip: settings.telegramProxyHost,
-    port: Number(settings.telegramProxyPort || 1080),
+  const resolvedProxy = await resolveTelegramProxy(settings);
+  const proxy = resolvedProxy.enabled ? {
+    ip: resolvedProxy.host,
+    port: resolvedProxy.port,
     socksType: 5,
     timeout: 15,
-    username: settings.telegramProxyUsername || undefined,
-    password: settings.telegramProxyPassword || undefined
+    username: resolvedProxy.username || undefined,
+    password: resolvedProxy.password || undefined
   } : undefined;
   const client = new TelegramClient(new StringSession(sessionString), apiId, apiHash, {
     connectionRetries: 5,

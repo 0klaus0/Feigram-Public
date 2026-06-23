@@ -14,6 +14,20 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.63",
+    title: "Feigram 2.0.63 更新",
+    version: "2.0.63",
+    level: "success",
+    createdAt: "2026-06-23T05:30:00.000Z",
+    body: [
+      "Telegram 网络默认自动探测并复用飞牛 OS 本机 v2rayA SOCKS5 代理。",
+      "自动模式会执行 SOCKS5 协议握手确认；v2rayA 不可用时自动回退直连。",
+      "保留直连和手动 SOCKS5 两种模式，手动配置优先于自动探测。",
+      "管理后台会显示当前是否已检测到 v2rayA。",
+      "桌面图标更新为更明显的圆角透明样式。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.62",
     title: "Feigram 2.0.62 更新",
     version: "2.0.62",

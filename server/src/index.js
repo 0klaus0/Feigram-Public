@@ -25,6 +25,7 @@ const downloaderSidecar = require("./downloaderSidecar");
 const { migrateStore } = require("./migrations");
 const { rateLimit } = require("./rateLimit");
 const tg = require("./telegramService");
+const { downloaderProxyPatch, resolveTelegramProxy } = require("./telegramProxy");
 
 const port = Number(process.env.APP_PORT || 3088);
 const app = express();
@@ -83,20 +84,17 @@ app.get("/api/me", asyncRoute(async (req, res) => {
 }));
 
 app.get("/api/settings", asyncRoute(async (_req, res) => {
-  res.json(publicSettings(await readSettings()));
+  const settings = await readSettings();
+  const proxy = await resolveTelegramProxy(settings);
+  res.json({ ...publicSettings(settings), telegramProxyEffective: proxy.enabled, telegramProxySource: proxy.source });
 }));
 
 app.put("/api/settings", adminOnly, asyncRoute(async (req, res) => {
   const next = await writeSettings(req.body || {});
-  await downloaderSidecar.updateConfig({
-    proxyEnabled: next.telegramProxyEnabled,
-    proxyHost: next.telegramProxyHost,
-    proxyPort: Number(next.telegramProxyPort || 1080),
-    proxyUsername: next.telegramProxyUsername,
-    proxyPassword: next.telegramProxyPassword
-  });
+  const proxy = await resolveTelegramProxy(next);
+  await downloaderSidecar.updateConfig(downloaderProxyPatch(proxy));
   await tg.reconnectAll(io);
-  res.json({ settings: publicSettings(next) });
+  res.json({ settings: { ...publicSettings(next), telegramProxyEffective: proxy.enabled, telegramProxySource: proxy.source } });
 }));
 
 app.get("/api/admin/users", adminOnly, asyncRoute(async (_req, res) => {
@@ -428,13 +426,7 @@ ensureStore()
     server.listen(port, "0.0.0.0", () => {
       console.log(`Feigram Public is listening on http://0.0.0.0:${port}`);
       readSettings()
-        .then((settings) => downloaderSidecar.updateConfig({
-          proxyEnabled: settings.telegramProxyEnabled,
-          proxyHost: settings.telegramProxyHost,
-          proxyPort: Number(settings.telegramProxyPort || 1080),
-          proxyUsername: settings.telegramProxyUsername,
-          proxyPassword: settings.telegramProxyPassword
-        }))
+        .then(async (settings) => downloaderSidecar.updateConfig(downloaderProxyPatch(await resolveTelegramProxy(settings))))
         .catch((error) => console.warn("Telegram proxy sync failed:", error.message))
         .then(() => tg.loadSavedClients(io))
         .catch((error) => console.warn("Telegram account restore failed:", error.message))

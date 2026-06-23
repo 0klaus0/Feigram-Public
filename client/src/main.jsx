@@ -480,6 +480,9 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
     publicBaseUrl: "",
     telegramApiId: "",
     telegramApiHash: "",
+    telegramProxyMode: "auto",
+    telegramProxyEffective: false,
+    telegramProxySource: "",
     telegramProxyEnabled: false,
     telegramProxyHost: "",
     telegramProxyPort: "1080",
@@ -549,6 +552,9 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
         publicBaseUrl: nextSettings.publicBaseUrl || "",
         telegramApiId: "",
         telegramApiHash: "",
+        telegramProxyMode: nextSettings.telegramProxyMode || "auto",
+        telegramProxyEffective: Boolean(nextSettings.telegramProxyEffective),
+        telegramProxySource: nextSettings.telegramProxySource || "",
         telegramProxyEnabled: Boolean(nextSettings.telegramProxyEnabled),
         telegramProxyHost: nextSettings.telegramProxyHost || "",
         telegramProxyPort: nextSettings.telegramProxyPort || "1080",
@@ -884,14 +890,19 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
           <label><span>Telegram API ID</span><input type="password" inputMode="numeric" autoComplete="off" value={settings.telegramApiId} onChange={(e) => setSettings({ ...settings, telegramApiId: e.target.value })} placeholder={apiIdPlaceholder} /></label>
           <label><span>Telegram API Hash</span><input type="password" value={settings.telegramApiHash} onChange={(e) => setSettings({ ...settings, telegramApiHash: e.target.value })} placeholder={hashPlaceholder} /></label>
           <h3>Telegram 网络</h3>
-          <label className="check-row"><input type="checkbox" checked={settings.telegramProxyEnabled} onChange={(e) => setSettings({ ...settings, telegramProxyEnabled: e.target.checked })} /><span>启用统一 SOCKS5 代理</span></label>
-          {settings.telegramProxyEnabled && <>
+          <label><span>连接方式</span><select value={settings.telegramProxyMode} onChange={(e) => setSettings({ ...settings, telegramProxyMode: e.target.value, telegramProxyEnabled: e.target.value === "manual" })}>
+            <option value="auto">自动复用本机 v2rayA（推荐）</option>
+            <option value="direct">直连 Telegram</option>
+            <option value="manual">手动 SOCKS5</option>
+          </select></label>
+          {settings.telegramProxyMode === "manual" && <>
             <label><span>代理地址</span><input value={settings.telegramProxyHost} onChange={(e) => setSettings({ ...settings, telegramProxyHost: e.target.value })} placeholder="192.168.1.2" required /></label>
             <label><span>代理端口</span><input type="number" min="1" max="65535" value={settings.telegramProxyPort} onChange={(e) => setSettings({ ...settings, telegramProxyPort: e.target.value })} required /></label>
             <label><span>代理用户名</span><input value={settings.telegramProxyUsername} onChange={(e) => setSettings({ ...settings, telegramProxyUsername: e.target.value })} placeholder="可留空" /></label>
             <label><span>代理密码</span><input type="password" value={settings.telegramProxyPassword} onChange={(e) => setSettings({ ...settings, telegramProxyPassword: e.target.value })} placeholder="已保存时留空不修改" /></label>
           </>}
-          <p className="hint">代理会同时用于聊天连接和 Go 原生下载。修改后连接会自动重建；未启用时保持直连。</p>
+          <p className="hint">自动模式会探测本机 v2rayA 的 SOCKS5 端口 20170，成功后同时用于聊天和 Go 原生下载；不可用时自动回退直连。</p>
+          {settings.telegramProxyMode === "auto" && <p className={settings.telegramProxyEffective ? "success" : "hint"}>{settings.telegramProxyEffective ? "已检测到 v2rayA，Telegram 正在复用其代理。" : "暂未检测到 v2rayA SOCKS5，当前使用直连。"}</p>}
           <h3>缓存下载设置</h3>
           <label><span>基础缓存下载位置</span><input value={settings.cacheBaseDir} onChange={(e) => setSettings({ ...settings, cacheBaseDir: e.target.value })} placeholder="/data/downloads" required /></label>
           <label><span>图片缓存位置</span><input value={settings.imageCacheDir} onChange={(e) => setSettings({ ...settings, imageCacheDir: e.target.value })} placeholder="留空则使用 基础缓存/images" /></label>

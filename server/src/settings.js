@@ -13,6 +13,7 @@ function envDefaults() {
     publicBaseUrl: process.env.PUBLIC_BASE_URL || `http://127.0.0.1:${process.env.APP_PORT || 3088}`,
     telegramApiId: process.env.TELEGRAM_API_ID || bundled.telegramApiId,
     telegramApiHash: process.env.TELEGRAM_API_HASH || bundled.telegramApiHash,
+    telegramProxyMode: process.env.TELEGRAM_PROXY_MODE || "",
     telegramProxyEnabled: process.env.TELEGRAM_PROXY_ENABLED === "true",
     telegramProxyHost: process.env.TELEGRAM_PROXY_HOST || "",
     telegramProxyPort: process.env.TELEGRAM_PROXY_PORT || "1080",
@@ -40,11 +41,15 @@ function envDefaults() {
 function sanitize(input = {}) {
   const retention = Math.max(1, Math.min(3650, Number(input.cacheRetentionDays || 30)));
   const bool = (value, fallback) => value === undefined ? fallback : Boolean(value);
+  const proxyMode = ["auto", "direct", "manual"].includes(input.telegramProxyMode)
+    ? input.telegramProxyMode
+    : (input.telegramProxyEnabled ? "manual" : "auto");
   return {
     appPassword: String(input.appPassword ?? "").trim(),
     publicBaseUrl: String(input.publicBaseUrl ?? "").trim(),
     telegramApiId: String(input.telegramApiId ?? "").trim(),
     telegramApiHash: String(input.telegramApiHash ?? "").trim(),
+    telegramProxyMode: proxyMode,
     telegramProxyEnabled: bool(input.telegramProxyEnabled, false),
     telegramProxyHost: String(input.telegramProxyHost ?? "").trim(),
     telegramProxyPort: String(Math.max(1, Math.min(65535, Number(input.telegramProxyPort || 1080)))),
@@ -98,6 +103,7 @@ function publicSettings(settings) {
     telegramApiId: "",
     telegramApiIdSet: Boolean(settings.telegramApiId),
     telegramApiHashSet: Boolean(settings.telegramApiHash && !settings.telegramApiHash.includes("put-your")),
+    telegramProxyMode: settings.telegramProxyMode,
     telegramProxyEnabled: settings.telegramProxyEnabled,
     telegramProxyHost: settings.telegramProxyHost,
     telegramProxyPort: settings.telegramProxyPort,
