@@ -14,6 +14,21 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.68",
+    title: "Feigram 2.0.68 更新",
+    version: "2.0.68",
+    level: "success",
+    createdAt: "2026-06-24T01:20:00.000Z",
+    body: [
+      "修复 Telegram TCP 443 设置发生在客户端构造之后，导致实际连接仍使用 80 端口的问题。",
+      "新建和已有 GramJS session 都会在创建连接前固定使用 TCP 443。",
+      "修复任务切换 HTTP 回退后被调度器立即升级回 Go 原生，造成传输层反复摆动的问题。",
+      "发生连续 native 连接故障的任务会稳定使用 HTTP 回退直至完成，并保留原有 .part 断点。",
+      "其他新任务仍可使用 Go 原生下载，不会因单个异常 DC 全局降级。",
+      "Go 下载服务版本更新为 0.13.5。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.67",
     title: "Feigram 2.0.67 更新",
     version: "2.0.67",

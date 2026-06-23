@@ -295,6 +295,40 @@ func TestShouldFallbackNativeTaskAfterRepeatedEngineClosures(t *testing.T) {
 	}
 }
 
+func TestReconcileKeepsStickyHTTPFallback(t *testing.T) {
+	app := &App{
+		tasks: map[string]*Task{
+			"fallback": {
+				ID: "fallback", UserID: "user-1", AccountID: "account-1",
+				Transport: "http-bridge", NativeFallback: true, Status: "queued",
+				MessageID: 42, NativePeer: NativePeerLocation{Type: "channel", ID: "100"},
+			},
+		},
+		native: map[string]*NativeAccount{}, running: map[string]chan struct{}{},
+	}
+	app.native[nativeAccountKey("user-1", "account-1")] = &NativeAccount{
+		UserID: "user-1", AccountID: "account-1", Ready: true, HealthPasses: 2,
+		Session: "session", APIID: 1, APIHash: "hash",
+	}
+
+	if got := app.reconcileReadyLegacyTasksLocked(); got != 0 {
+		t.Fatalf("sticky HTTP fallback was unexpectedly promoted: %d", got)
+	}
+	if app.tasks["fallback"].Transport != "http-bridge" {
+		t.Fatalf("fallback transport changed unexpectedly: %+v", app.tasks["fallback"])
+	}
+}
+
+func TestUpsertPreservesStickyHTTPFallback(t *testing.T) {
+	app := &App{tasks: map[string]*Task{
+		"fallback": {ID: "fallback", Transport: "http-bridge", NativeFallback: true, Status: "queued"},
+	}}
+	task := app.upsertTaskLocked(Task{ID: "fallback", Transport: "native-mtproto", FileName: "video.mp4"})
+	if task.Transport != "http-bridge" || !task.NativeFallback {
+		t.Fatalf("upsert overrode sticky fallback: %+v", task)
+	}
+}
+
 type assertError string
 
 func (e assertError) Error() string { return string(e) }

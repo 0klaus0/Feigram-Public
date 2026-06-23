@@ -37,7 +37,7 @@ import (
 )
 
 const (
-	version         = "0.13.4"
+	version         = "0.13.5"
 	defaultPartSize = 1024 * 1024
 	minPartSize     = 4 * 1024
 	maxPartSize     = 1024 * 1024
@@ -64,34 +64,35 @@ type Config struct {
 }
 
 type Task struct {
-	ID          string             `json:"id"`
-	UserID      string             `json:"userId"`
-	AccountID   string             `json:"accountId"`
-	PeerID      string             `json:"peerId"`
-	MessageID   int64              `json:"messageId"`
-	FileName    string             `json:"fileName"`
-	ContentType string             `json:"contentType"`
-	Kind        string             `json:"kind"`
-	Size        int64              `json:"size"`
-	Downloaded  int64              `json:"downloaded"`
-	SpeedBps    int64              `json:"speedBps"`
-	Status      string             `json:"status"`
-	Source      string             `json:"source"`
-	AutoCache   bool               `json:"autoCache"`
-	Transport   string             `json:"transport"`
-	SourceURL   string             `json:"sourceUrl"`
-	MetadataURL string             `json:"metadataUrl"`
-	FilePath    string             `json:"filePath"`
-	PartPath    string             `json:"partPath"`
-	InlineURL   string             `json:"inlineUrl"`
-	NativeFile  NativeFileLocation `json:"nativeFile"`
-	NativePeer  NativePeerLocation `json:"nativePeer"`
-	Error       string             `json:"error"`
-	RetryCount  int                `json:"retryCount"`
-	RetryAfter  int64              `json:"retryAfterUnix"`
-	Order       int64              `json:"order"`
-	CreatedAt   string             `json:"createdAt"`
-	UpdatedAt   string             `json:"updatedAt"`
+	ID             string             `json:"id"`
+	UserID         string             `json:"userId"`
+	AccountID      string             `json:"accountId"`
+	PeerID         string             `json:"peerId"`
+	MessageID      int64              `json:"messageId"`
+	FileName       string             `json:"fileName"`
+	ContentType    string             `json:"contentType"`
+	Kind           string             `json:"kind"`
+	Size           int64              `json:"size"`
+	Downloaded     int64              `json:"downloaded"`
+	SpeedBps       int64              `json:"speedBps"`
+	Status         string             `json:"status"`
+	Source         string             `json:"source"`
+	AutoCache      bool               `json:"autoCache"`
+	Transport      string             `json:"transport"`
+	SourceURL      string             `json:"sourceUrl"`
+	MetadataURL    string             `json:"metadataUrl"`
+	FilePath       string             `json:"filePath"`
+	PartPath       string             `json:"partPath"`
+	InlineURL      string             `json:"inlineUrl"`
+	NativeFile     NativeFileLocation `json:"nativeFile"`
+	NativePeer     NativePeerLocation `json:"nativePeer"`
+	Error          string             `json:"error"`
+	RetryCount     int                `json:"retryCount"`
+	RetryAfter     int64              `json:"retryAfterUnix"`
+	NativeFallback bool               `json:"nativeFallback"`
+	Order          int64              `json:"order"`
+	CreatedAt      string             `json:"createdAt"`
+	UpdatedAt      string             `json:"updatedAt"`
 }
 
 type NativeFileLocation struct {
@@ -535,6 +536,7 @@ func (a *App) runTask(id string, cancel <-chan struct{}) {
 				delay := 5 * time.Second
 				a.updateTask(id, func(t *Task) {
 					t.Transport = "http-bridge"
+					t.NativeFallback = true
 					t.Status = "queued"
 					t.SpeedBps = 0
 					t.RetryAfter = time.Now().Add(delay).Unix()
@@ -1717,7 +1719,10 @@ func (a *App) upsertTaskLocked(input Task) Task {
 		existing.Source = input.Source
 	}
 	if input.Transport != "" {
-		existing.Transport = normalizeTransport(input.Transport)
+		requested := normalizeTransport(input.Transport)
+		if !(existing.NativeFallback && requested == "native-mtproto") {
+			existing.Transport = requested
+		}
 	}
 	existing.AutoCache = existing.AutoCache || input.AutoCache
 	if input.SourceURL != "" {
@@ -2522,6 +2527,9 @@ func (a *App) promoteAccountTasksToNativeLocked(userID, accountID string) int {
 		if _, running := a.running[id]; running || task.Status == "completed" || task.Status == "cancelled" {
 			continue
 		}
+		if task.NativeFallback {
+			continue
+		}
 		// Native failures need explicit handling. Reconciliation only upgrades
 		// legacy HTTP tasks and must not retry a permanent native error forever.
 		if normalizeTransport(task.Transport) == "native-mtproto" {
@@ -2563,6 +2571,7 @@ func (a *App) promoteTaskToNativeIfReady(taskID string) bool {
 		return false
 	}
 	task.Transport = "native-mtproto"
+	task.NativeFallback = false
 	task.Status = "queued"
 	task.Error = ""
 	task.SpeedBps = 0

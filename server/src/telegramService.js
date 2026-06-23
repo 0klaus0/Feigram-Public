@@ -822,17 +822,18 @@ async function createClient(sessionString = "") {
     password: resolvedProxy.password || undefined
   } : undefined;
   const session = new StringSession(sessionString);
+  // TelegramBaseClient fills an empty session with TCP port 80 during connect.
+  // Pin the initial DC before construction so its sender is created for 443.
+  if (!session.serverAddress) {
+    session.setDC(4, "149.154.167.91", 443);
+  } else if (Number(session.port) === 80) {
+    session.setDC(session.dcId, session.serverAddress, 443);
+  }
   const client = new TelegramClient(session, apiId, apiHash, {
     connectionRetries: 5,
     retryDelay: 2000,
     proxy
   });
-  // GramJS defaults new and older StringSession connections to TCP port 80.
-  // The same Telegram DC auth key is valid on 443, which is substantially less
-  // likely to be reset by restrictive routers and transparent proxies.
-  if (session.serverAddress && Number(session.port) === 80) {
-    session.setDC(session.dcId, session.serverAddress, 443);
-  }
   await withTimeout(client.connect(), 20000, "连接 Telegram 超时，请检查网络");
   return client;
 }

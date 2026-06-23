@@ -28,8 +28,8 @@ export FEIGRAM_DOWNLOADER_URL="http://127.0.0.1:${DOWNLOADER_PORT}"
 export FEIGRAM_DOWNLOADER_LOG="$DOWNLOADER_LOG_FILE"
 export FEIGRAM_DOWNLOADER_SECRET_FILE="${DATA_HOME}/data/app-secret"
 export APP_EDITION="Feigram 2.0 fnOS Client Edition"
-export APP_VERSION="2.0.67"
-export APP_CHANGELOG="修复旧任务经 FN Connect 访问内部媒体接口；本机桥接强制直连并拦截 HTML 权限页。"
+export APP_VERSION="2.0.68"
+export APP_CHANGELOG="修复 Telegram 443 配置未实际生效及下载任务在 Go 原生与 HTTP 回退间反复切换的问题。"
 export NODE_ENV="production"
 
 is_running() {
