@@ -14,6 +14,20 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.61",
+    title: "Feigram 2.0.61 更新",
+    version: "2.0.61",
+    level: "success",
+    createdAt: "2026-06-23T02:10:00.000Z",
+    body: [
+      "修复视频下载到 99% 后出现 LIMIT_INVALID、无法进入完成状态的问题。",
+      "upload.getFile 的请求分片始终保持 Telegram 要求的 4 KB 对齐，并限制在 1 MB 以内。",
+      "最后一个不足完整分片的尾段不再使用精确剩余字节作为 limit，由 Telegram 返回实际尾段数据。",
+      "升级后旧的 LIMIT_INVALID 失败任务会自动重新排队，并从已有 .part 位置完成最后分片。",
+      "Go 下载服务版本更新为 0.12.1。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.60",
     title: "Feigram 2.0.60 更新",
     version: "2.0.60",

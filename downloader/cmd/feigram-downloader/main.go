@@ -34,8 +34,10 @@ import (
 )
 
 const (
-	version         = "0.12.0"
+	version         = "0.12.1"
 	defaultPartSize = 1024 * 1024
+	minPartSize     = 4 * 1024
+	maxPartSize     = 1024 * 1024
 )
 
 var migrateRe = regexp.MustCompile(`(?:FILE|PHONE|NETWORK|USER)?_?MIGRATE_([0-9]+)`)
@@ -826,12 +828,10 @@ func (a *App) downloadNativeMTProto(task *Task, cancel <-chan struct{}) error {
 				break
 			}
 			limit := int(a.currentPartSize())
-			if limit <= 0 {
-				limit = defaultPartSize
-			}
-			if task.Size > 0 && downloaded+int64(limit) > task.Size {
-				limit = int(task.Size - downloaded)
-			}
+			// Telegram requires upload.getFile limit to remain 4 KiB aligned.
+			// Request a full legal part for the tail too; Telegram returns the
+			// actual remaining bytes. Shrinking limit to the exact remainder
+			// causes LIMIT_INVALID for most file sizes.
 			location := &tg.InputDocumentFileLocation{
 				ID:            fileID,
 				AccessHash:    accessHash,
@@ -1758,6 +1758,13 @@ func sanitizeConfig(input Config) Config {
 	}
 	if input.PartSize <= 0 {
 		input.PartSize = defaultPartSize
+	}
+	if input.PartSize > maxPartSize {
+		input.PartSize = maxPartSize
+	}
+	input.PartSize -= input.PartSize % minPartSize
+	if input.PartSize < minPartSize {
+		input.PartSize = minPartSize
 	}
 	if input.Mode != "fast" {
 		input.Mode = "conservative"
@@ -3311,6 +3318,7 @@ func transientSourceError(err error) bool {
 		"flood_premium_wait",
 		"engine was closed",
 		"engine forcibly closed",
+		"limit_invalid",
 	}
 	for _, marker := range markers {
 		if strings.Contains(text, marker) {
@@ -3333,6 +3341,7 @@ func recoverableNativeTaskError(err error) bool {
 		strings.Contains(text, "flood_premium_wait") ||
 		strings.Contains(text, "engine was closed") ||
 		strings.Contains(text, "engine forcibly closed") ||
+		strings.Contains(text, "limit_invalid") ||
 		strings.Contains(text, "not connected") ||
 		strings.Contains(text, "broken pipe")
 }

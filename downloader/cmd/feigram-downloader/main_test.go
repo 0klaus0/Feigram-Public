@@ -126,9 +126,30 @@ func TestCompletedTaskWithMissingFileIsRequeued(t *testing.T) {
 }
 
 func TestRecoverableNativeTaskErrors(t *testing.T) {
-	for _, message := range []string{"AUTH_BYTES_INVALID", "retry limit reached after 5 attempts", "file incomplete: 1 / 2", "FLOOD_PREMIUM_WAIT (3)", "empty file chunk", "engine was closed", "engine forcibly closed: context canceled", "Not connected"} {
+	for _, message := range []string{"AUTH_BYTES_INVALID", "retry limit reached after 5 attempts", "file incomplete: 1 / 2", "FLOOD_PREMIUM_WAIT (3)", "empty file chunk", "engine was closed", "engine forcibly closed: context canceled", "LIMIT_INVALID", "Not connected"} {
 		if !recoverableNativeTaskError(assertError(message)) {
 			t.Fatalf("expected %q to be recoverable", message)
+		}
+	}
+}
+
+func TestSanitizePartSize(t *testing.T) {
+	tests := []struct {
+		input int64
+		want  int64
+	}{
+		{0, defaultPartSize},
+		{12345, 12 * 1024},
+		{1024, minPartSize},
+		{2 * 1024 * 1024, maxPartSize},
+	}
+	for _, test := range tests {
+		got := sanitizeConfig(Config{PartSize: test.input}).PartSize
+		if got != test.want {
+			t.Fatalf("sanitizeConfig(partSize=%d) = %d, want %d", test.input, got, test.want)
+		}
+		if got%minPartSize != 0 {
+			t.Fatalf("part size %d is not Telegram aligned", got)
 		}
 	}
 }

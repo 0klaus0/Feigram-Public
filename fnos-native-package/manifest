@@ -1,5 +1,5 @@
 appname=feigrampub
-version=2.0.60
+version=2.0.61
 display_name=feigram
 desc="""<p><strong>Feigram 2.0 fnOS Client Edition</strong> 是第三方开发的非官方 Telegram 客户端，支持管理员后台、飞牛账户隔离、加密 Telegram session、Telegram 文件夹、媒体预览、后台任务恢复、运行诊断和更新检测。</p><p>仅适用于 x86_64 / amd64 飞牛 OS 设备。</p>"""
 platform=all
@@ -12,4 +12,4 @@ desktop_uidir=ui
 desktop_applaunchname=feigrampub.proxy.Application
 service_port=3088
 checkport=true
-changelog=桌面名称改为 feigram，完成任务移出缓存列表；gotd 升级并增强跨 DC 重连与授权恢复。
+changelog=修复视频下载到 99% 后因最后分片未按 Telegram 规则对齐而触发 LIMIT_INVALID 的问题。

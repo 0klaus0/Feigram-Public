@@ -27,8 +27,8 @@ export FEIGRAM_DOWNLOADER_URL="http://127.0.0.1:${DOWNLOADER_PORT}"
 export FEIGRAM_DOWNLOADER_LOG="$DOWNLOADER_LOG_FILE"
 export FEIGRAM_DOWNLOADER_SECRET_FILE="${DATA_HOME}/data/app-secret"
 export APP_EDITION="Feigram 2.0 fnOS Client Edition"
-export APP_VERSION="2.0.60"
-export APP_CHANGELOG="桌面名称改为 feigram，完成任务移出缓存列表；gotd 升级并增强跨 DC 重连与授权恢复。"
+export APP_VERSION="2.0.61"
+export APP_CHANGELOG="修复视频下载到 99% 后因最后分片未按 Telegram 规则对齐而触发 LIMIT_INVALID 的问题。"
 export NODE_ENV="production"
 
 is_running() {
