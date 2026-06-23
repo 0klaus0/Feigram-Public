@@ -27,8 +27,8 @@ export FEIGRAM_DOWNLOADER_URL="http://127.0.0.1:${DOWNLOADER_PORT}"
 export FEIGRAM_DOWNLOADER_LOG="$DOWNLOADER_LOG_FILE"
 export FEIGRAM_DOWNLOADER_SECRET_FILE="${DATA_HOME}/data/app-secret"
 export APP_EDITION="Feigram 2.0 fnOS Client Edition"
-export APP_VERSION="2.0.63"
-export APP_CHANGELOG="自动复用飞牛 OS 的 v2rayA SOCKS5 代理，并更新圆角桌面图标。"
+export APP_VERSION="2.0.64"
+export APP_CHANGELOG="修复后台任务实际续传时仍显示旧重试文案的问题，并补齐实时状态与速度显示。"
 export NODE_ENV="production"
 
 is_running() {

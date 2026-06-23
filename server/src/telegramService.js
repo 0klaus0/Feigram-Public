@@ -1410,6 +1410,7 @@ function serializeDownloadTask(task) {
     autoCache: Boolean(task.autoCache),
     order: Number(task.order || 0),
     error: task.error || "",
+    retryAfterUnix: Number(task.retryAfterUnix || 0),
     createdAt: task.createdAt,
     updatedAt: task.updatedAt,
     inlineUrl: task.status === "completed"

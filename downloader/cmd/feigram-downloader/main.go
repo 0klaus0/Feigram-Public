@@ -37,7 +37,7 @@ import (
 )
 
 const (
-	version         = "0.13.0"
+	version         = "0.13.1"
 	defaultPartSize = 1024 * 1024
 	minPartSize     = 4 * 1024
 	maxPartSize     = 1024 * 1024
@@ -453,7 +453,11 @@ func (a *App) pumpOnce() bool {
 	}
 	started := false
 	nowUnix := time.Now().Unix()
-	for _, task := range a.listTasksLocked() {
+	for _, snapshot := range a.listTasksLocked() {
+		task := a.tasks[snapshot.ID]
+		if task == nil {
+			continue
+		}
 		if len(a.running) >= limit {
 			break
 		}
@@ -463,27 +467,25 @@ func (a *App) pumpOnce() bool {
 		if task.FilePath == "" {
 			continue
 		}
-		transport := a.taskTransport(task)
+		transport := a.taskTransport(*task)
 		if transport == "http-bridge" && task.SourceURL == "" {
 			continue
 		}
 		if task.RetryAfter > nowUnix {
 			continue
 		}
-		if a.taskTransport(task) == "native-mtproto" && a.nativeWait[nativeAccountKey(task.UserID, task.AccountID)] > nowUnix {
+		if a.taskTransport(*task) == "native-mtproto" && a.nativeWait[nativeAccountKey(task.UserID, task.AccountID)] > nowUnix {
 			continue
 		}
 		if _, ok := a.running[task.ID]; ok {
 			continue
 		}
-		if a.taskTransport(task) == "native-mtproto" && a.nativeAccountRunningLocked(task) {
+		if a.taskTransport(*task) == "native-mtproto" && a.nativeAccountRunningLocked(*task) {
 			continue
 		}
 		cancel := make(chan struct{})
 		a.running[task.ID] = cancel
-		task.Status = "downloading"
-		task.Error = ""
-		task.UpdatedAt = now()
+		markTaskDownloading(task)
 		started = true
 		go a.runTask(task.ID, cancel)
 	}
@@ -491,6 +493,14 @@ func (a *App) pumpOnce() bool {
 		_ = a.saveLocked()
 	}
 	return started
+}
+
+func markTaskDownloading(task *Task) {
+	task.Status = "downloading"
+	task.SpeedBps = 0
+	task.Error = ""
+	task.RetryAfter = 0
+	task.UpdatedAt = now()
 }
 
 func (a *App) runTask(id string, cancel <-chan struct{}) {

@@ -221,6 +221,19 @@ func TestNativeAccountRunningLocked(t *testing.T) {
 	}
 }
 
+func TestMarkTaskDownloadingClearsRetryState(t *testing.T) {
+	task := &Task{
+		Status:     "queued",
+		SpeedBps:   123,
+		Error:      "媒体源暂不可用，2 分钟后自动续传",
+		RetryAfter: time.Now().Add(2 * time.Minute).Unix(),
+	}
+	markTaskDownloading(task)
+	if task.Status != "downloading" || task.Error != "" || task.RetryAfter != 0 || task.SpeedBps != 0 {
+		t.Fatalf("retry state was not cleared when task started: %+v", task)
+	}
+}
+
 type assertError string
 
 func (e assertError) Error() string { return string(e) }

@@ -958,7 +958,8 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
           <div className="silent-cache-list">
             {visibleSilentCaches.map((task) => {
               const progress = task.size ? Math.min(100, Math.round((Number(task.downloaded || 0) / Number(task.size)) * 100)) : 0;
-              const statusText = task.status === "running" || task.status === "downloading" ? "下载中" : task.status === "queued" ? "排队中" : task.status === "paused" ? "已暂停" : task.status === "completed" ? "已完成" : task.status === "cancelled" ? "已取消" : "失败";
+              const waitingRetry = task.status === "queued" && Number(task.retryAfterUnix || 0) > Math.floor(Date.now() / 1000);
+              const statusText = task.status === "running" || task.status === "downloading" ? "下载中" : waitingRetry ? "等待续传" : task.status === "queued" ? "排队中" : task.status === "paused" ? "已暂停" : task.status === "completed" ? "已完成" : task.status === "cancelled" ? "已取消" : "失败";
               return (
                 <div
                   className="silent-cache-row"
@@ -981,7 +982,7 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
                   </div>
                   <div className="silent-cache-meta">
                     <span>{formatBytes(task.downloaded)} / {formatBytes(task.size)}</span>
-                    <span>{task.status === "running" ? `${formatBytes(task.speedBps)}/s` : "-"}</span>
+                    <span>{task.status === "running" || task.status === "downloading" ? `${formatBytes(task.speedBps)}/s` : "-"}</span>
                     <span>{formatTime(task.updatedAt)}</span>
                   </div>
                   <div className="mini-progress"><i style={{ width: `${progress}%` }} /></div>
