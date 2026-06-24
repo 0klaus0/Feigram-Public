@@ -14,6 +14,21 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.69",
+    title: "Feigram 2.0.69 更新",
+    version: "2.0.69",
+    level: "success",
+    createdAt: "2026-06-24T02:00:00.000Z",
+    body: [
+      "使用自定义 GramJS 连接类强制主会话和导出 DC 的 TCP 连接全部走 443。",
+      "修复 GramJS connect 内部硬编码端口，覆盖 session 端口设置的问题。",
+      "将 waitSession: connection dead 纳入可恢复网络故障，任务会自动续传而不是直接失败。",
+      "升级时会把已有 connection dead 原生失败任务迁移到稳定 HTTP 回退，并保留 .part 断点。",
+      "已进入 HTTP 回退的任务不会因源认证错误自动跳回不稳定 native 链路。",
+      "Go 下载服务版本更新为 0.13.6。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.68",
     title: "Feigram 2.0.68 更新",
     version: "2.0.68",

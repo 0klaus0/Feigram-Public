@@ -37,7 +37,7 @@ import (
 )
 
 const (
-	version         = "0.13.5"
+	version         = "0.13.6"
 	defaultPartSize = 1024 * 1024
 	minPartSize     = 4 * 1024
 	maxPartSize     = 1024 * 1024
@@ -340,7 +340,14 @@ func (a *App) load() error {
 			task.RetryAfter = 0
 			task.Error = "升级后已自动切换 HTTP 回退并等待续传"
 		}
-		if task.Status == "error" && recoverableNativeTaskError(errors.New(task.Error)) {
+		if task.SourceURL != "" && normalizeTransport(task.Transport) == "native-mtproto" && recoverableNativeTaskError(errors.New(task.Error)) {
+			task.Status = "queued"
+			task.Transport = "http-bridge"
+			task.NativeFallback = true
+			task.SpeedBps = 0
+			task.RetryAfter = 0
+			task.Error = "升级后已切换稳定 HTTP 回退，正在等待断点续传"
+		} else if task.Status == "error" && recoverableNativeTaskError(errors.New(task.Error)) {
 			task.Status = "queued"
 			task.SpeedBps = 0
 			task.RetryAfter = 0
@@ -2563,7 +2570,7 @@ func (a *App) promoteTaskToNativeIfReady(taskID string) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	task := a.tasks[taskID]
-	if task == nil || !nativeTaskRefreshable(*task) {
+	if task == nil || task.NativeFallback || !nativeTaskRefreshable(*task) {
 		return false
 	}
 	account := a.native[nativeAccountKey(task.UserID, task.AccountID)]
@@ -3325,7 +3332,7 @@ func nativeRuntimeBroken(err error) bool {
 		return false
 	}
 	text := strings.ToLower(err.Error())
-	markers := []string{"engine was closed", "engine forcibly closed", "not connected", "connection closed", "broken pipe", "connection reset"}
+	markers := []string{"engine was closed", "engine forcibly closed", "not connected", "connection closed", "connection dead", "broken pipe", "connection reset"}
 	for _, marker := range markers {
 		if strings.Contains(text, marker) {
 			return true
@@ -3539,6 +3546,7 @@ func transientSourceError(err error) bool {
 		"flood_premium_wait",
 		"engine was closed",
 		"engine forcibly closed",
+		"connection dead",
 		"limit_invalid",
 	}
 	for _, marker := range markers {
@@ -3562,6 +3570,7 @@ func recoverableNativeTaskError(err error) bool {
 		strings.Contains(text, "flood_premium_wait") ||
 		strings.Contains(text, "engine was closed") ||
 		strings.Contains(text, "engine forcibly closed") ||
+		strings.Contains(text, "connection dead") ||
 		strings.Contains(text, "limit_invalid") ||
 		strings.Contains(text, "not connected") ||
 		strings.Contains(text, "broken pipe")

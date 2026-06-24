@@ -1,9 +1,11 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -162,7 +164,7 @@ func TestCompletedTaskWithMissingFileIsRequeued(t *testing.T) {
 }
 
 func TestRecoverableNativeTaskErrors(t *testing.T) {
-	for _, message := range []string{"AUTH_BYTES_INVALID", "retry limit reached after 5 attempts", "file incomplete: 1 / 2", "FLOOD_PREMIUM_WAIT (3)", "empty file chunk", "engine was closed", "engine forcibly closed: context canceled", "LIMIT_INVALID", "Not connected"} {
+	for _, message := range []string{"AUTH_BYTES_INVALID", "retry limit reached after 5 attempts", "file incomplete: 1 / 2", "FLOOD_PREMIUM_WAIT (3)", "empty file chunk", "engine was closed", "engine forcibly closed: context canceled", "waitSession: connection dead", "LIMIT_INVALID", "Not connected"} {
 		if !recoverableNativeTaskError(assertError(message)) {
 			t.Fatalf("expected %q to be recoverable", message)
 		}
@@ -216,13 +218,40 @@ func TestProxyConfigSanitizationAndRedaction(t *testing.T) {
 }
 
 func TestNativeFilePoolBroken(t *testing.T) {
-	for _, message := range []string{"engine forcibly closed: context canceled", "retry limit reached after 5 attempts", "AUTH_BYTES_INVALID"} {
+	for _, message := range []string{"engine forcibly closed: context canceled", "waitSession: connection dead", "retry limit reached after 5 attempts", "AUTH_BYTES_INVALID"} {
 		if !nativeFilePoolBroken(assertError(message)) {
 			t.Fatalf("expected %q to rebuild the file pool", message)
 		}
 	}
 	if nativeFilePoolBroken(assertError("FILE_REFERENCE_EXPIRED")) {
 		t.Fatal("file reference refresh should not rebuild a healthy file pool")
+	}
+}
+
+func TestLoadMigratesRecoverableNativeFailureToStickyHTTP(t *testing.T) {
+	dataDir := t.TempDir()
+	store := Store{
+		Config: Config{Enabled: true, Concurrency: 1, PartSize: defaultPartSize},
+		Tasks: []Task{{
+			ID: "broken", Transport: "native-mtproto", SourceURL: "http://127.0.0.1/media",
+			Status: "error", Error: "waitSession: connection dead", FilePath: dataDir + "/video.mp4",
+		}},
+	}
+	raw, _ := json.Marshal(store)
+	storePath := dataDir + "/tasks.json"
+	if err := os.WriteFile(storePath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{
+		dataDir: dataDir, storePath: storePath, nativePath: dataDir + "/native.json",
+		tasks: map[string]*Task{}, native: map[string]*NativeAccount{}, running: map[string]chan struct{}{},
+	}
+	if err := app.load(); err != nil {
+		t.Fatal(err)
+	}
+	task := app.tasks["broken"]
+	if task.Status != "queued" || task.Transport != "http-bridge" || !task.NativeFallback {
+		t.Fatalf("recoverable native failure was not migrated: %+v", task)
 	}
 }
 
