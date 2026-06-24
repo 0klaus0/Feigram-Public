@@ -14,6 +14,13 @@ test("telegram service exports the GramJS download pipeline", () => {
   assert.doesNotMatch(source, /downloaderSidecar|startGoDownloadTask|restoreGoBackgroundTasks/);
 });
 
+test("background downloads use an isolated GramJS client pool", () => {
+  const source = fs.readFileSync(path.join(__dirname, "telegramService.js"), "utf8");
+  assert.doesNotMatch(source, /async function getCacheClient\([^)]*\) \{\s*return getClient/);
+  assert.match(source, /const client = await getCacheClient\(task\.userId, task\.accountId\)/);
+  assert.match(source, /await resetCacheClient\(task\.accountId\)/);
+});
+
 test("native package does not start or build the removed Go sidecar", () => {
   const command = fs.readFileSync(path.join(root, "fnos-native-package/cmd/main"), "utf8");
   const build = fs.readFileSync(path.join(root, "scripts/build-native-fpk.sh"), "utf8");

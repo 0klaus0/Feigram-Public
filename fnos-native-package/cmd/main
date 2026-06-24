@@ -19,8 +19,8 @@ export DATA_DIR="${DATA_HOME}/data"
 export DOWNLOAD_DIR="${DATA_HOME}/data/downloads"
 export LOG_FILE="$LOG_FILE"
 export APP_EDITION="Feigram 2.0 fnOS Client Edition"
-export APP_VERSION="2.0.72"
-export APP_CHANGELOG="GramJS 改用 MTProto Obfuscated/Abridged TCP 443，降低代理或 DPI 网络持续断开 Telegram 连接的问题。"
+export APP_VERSION="2.0.73"
+export APP_CHANGELOG="隔离前台聊天与后台下载的 GramJS client，并改用 Abridged MTProto TCP 443，减少 sender 争抢与连接握手后断开。"
 export NODE_ENV="production"
 
 is_running() {

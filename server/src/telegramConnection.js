@@ -1,13 +1,13 @@
 require("telegram");
-const { ConnectionTCPObfuscated } = require("telegram/network/connection/TCPObfuscated");
+const { ConnectionTCPAbridged } = require("telegram/network/connection/TCPAbridged");
 
-// Carry native MTProto with GramJS' obfuscated abridged transport. This avoids
-// TCPFull signatures that some networks terminate immediately, while keeping
-// every main and exported-DC connection on TCP/443.
-class ConnectionTCPObfuscated443 extends ConnectionTCPObfuscated {
+// Use Telegram's low-overhead abridged MTProto transport on TCP/443. Both the
+// full and obfuscated variants are terminated by some SOCKS/transparent proxy
+// paths immediately after their transport handshake.
+class ConnectionTCPAbridged443 extends ConnectionTCPAbridged {
   constructor(options) {
     super({ ...options, port: 443 });
   }
 }
 
-module.exports = { ConnectionTCPObfuscated443 };
+module.exports = { ConnectionTCPAbridged443 };

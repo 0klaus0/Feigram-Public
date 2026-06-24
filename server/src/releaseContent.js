@@ -14,6 +14,18 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.73",
+    title: "Feigram 2.0.73 更新",
+    version: "2.0.73",
+    level: "success",
+    createdAt: "2026-06-24T22:40:00.000Z",
+    body: [
+      "前台聊天和后台下载改用相互隔离的 GramJS client，避免共享 exported sender 产生 hanging states 和重连风暴。",
+      "后台任务仍按账号单并发执行；下载连接波动时只重建下载 client，不再重置聊天主连接。",
+      "GramJS 改用低开销 Abridged MTProto TCP 443，并保留 v2rayA 自动代理、下载断点和现有 Telegram 登录 session。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.72",
     title: "Feigram 2.0.72 更新",
     version: "2.0.72",
