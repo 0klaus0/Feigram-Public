@@ -14,6 +14,18 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.72",
+    title: "Feigram 2.0.72 更新",
+    version: "2.0.72",
+    level: "success",
+    createdAt: "2026-06-24T17:45:00.000Z",
+    body: [
+      "针对 TCP 443 建连后仍被代理出口或 DPI 快速断开的情况，GramJS 改用 MTProto Obfuscated/Abridged 传输。",
+      "主连接、跨 DC 媒体连接和重连统一使用混淆 TCP 443，并继续自动复用本机 v2rayA SOCKS5。",
+      "服务日志会记录实际传输与代理来源，便于区分 v2rayA 和直连；升级不影响登录 session 与下载断点。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.71",
     title: "Feigram 2.0.71 更新",
     version: "2.0.71",

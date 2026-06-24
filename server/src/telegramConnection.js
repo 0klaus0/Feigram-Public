@@ -1,13 +1,13 @@
 require("telegram");
-const { ConnectionTCPFull } = require("telegram/network/connection/TCPFull");
+const { ConnectionTCPObfuscated } = require("telegram/network/connection/TCPObfuscated");
 
-// Some networks accept Telegram TCP/80 and immediately tear it down. Keep the
-// normal GramJS transport while pinning every main and exported-DC connection
-// to TCP/443, including sessions loaded after client construction.
-class ConnectionTCPFull443 extends ConnectionTCPFull {
+// Carry native MTProto with GramJS' obfuscated abridged transport. This avoids
+// TCPFull signatures that some networks terminate immediately, while keeping
+// every main and exported-DC connection on TCP/443.
+class ConnectionTCPObfuscated443 extends ConnectionTCPObfuscated {
   constructor(options) {
     super({ ...options, port: 443 });
   }
 }
 
-module.exports = { ConnectionTCPFull443 };
+module.exports = { ConnectionTCPObfuscated443 };

@@ -10,10 +10,11 @@ const { dataDir, downloadTasksPath, readAccounts, removeAccount, safeId, silentC
 const { readSettings } = require("./settings");
 const { decryptText, encryptText } = require("./cryptoBox");
 const { resolveTelegramProxy } = require("./telegramProxy");
-const { ConnectionTCPFull443 } = require("./telegramConnection");
+const { ConnectionTCPObfuscated443 } = require("./telegramConnection");
 
 const clients = new Map();
 const cacheClients = new Map();
+const loggedTransportProfiles = new Set();
 const clientConnectLocks = new Map();
 const peerCache = new Map();
 const pendingLogins = new Map();
@@ -868,9 +869,17 @@ async function createClient(sessionString = "") {
   const client = new TelegramClient(session, apiId, apiHash, {
     connectionRetries: 5,
     retryDelay: 2000,
-    connection: ConnectionTCPFull443,
+    connection: ConnectionTCPObfuscated443,
     proxy
   });
+  const transportProfile = `${resolvedProxy.source || "direct"}:${resolvedProxy.host || ""}:${resolvedProxy.port || ""}`;
+  if (!loggedTransportProfiles.has(transportProfile)) {
+    loggedTransportProfiles.add(transportProfile);
+    const route = resolvedProxy.enabled
+      ? `${resolvedProxy.source} SOCKS5 ${resolvedProxy.host}:${resolvedProxy.port}`
+      : "direct";
+    console.log(`Telegram transport: GramJS MTProto obfuscated TCP/443 via ${route}`);
+  }
   await withTimeout(client.connect(), 20000, "连接 Telegram 超时，请检查网络");
   return client;
 }
