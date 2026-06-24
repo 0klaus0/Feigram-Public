@@ -32,9 +32,7 @@ function envDefaults() {
     foldersEnabled: process.env.FOLDERS_ENABLED !== "false",
     foldersShowArchived: process.env.FOLDERS_SHOW_ARCHIVED === "true",
     foldersAutoSelectFirst: process.env.FOLDERS_AUTO_SELECT_FIRST !== "false",
-    playerMode: process.env.PLAYER_MODE || "browser",
-    downloaderEngine: process.env.DOWNLOADER_ENGINE || "go-sidecar",
-    downloaderSidecarUrl: process.env.FEIGRAM_DOWNLOADER_URL || "http://127.0.0.1:3090"
+    playerMode: process.env.PLAYER_MODE || "browser"
   };
 }
 
@@ -68,9 +66,7 @@ function sanitize(input = {}) {
     foldersEnabled: bool(input.foldersEnabled, true),
     foldersShowArchived: bool(input.foldersShowArchived, false),
     foldersAutoSelectFirst: bool(input.foldersAutoSelectFirst, true),
-    playerMode: ["browser", "local"].includes(input.playerMode) ? input.playerMode : "browser",
-    downloaderEngine: ["node", "go-sidecar"].includes(input.downloaderEngine) ? input.downloaderEngine : "go-sidecar",
-    downloaderSidecarUrl: String(input.downloaderSidecarUrl ?? "http://127.0.0.1:3090").trim()
+    playerMode: ["browser", "local"].includes(input.playerMode) ? input.playerMode : "browser"
   };
 }
 
@@ -122,9 +118,7 @@ function publicSettings(settings) {
     foldersEnabled: settings.foldersEnabled,
     foldersShowArchived: settings.foldersShowArchived,
     foldersAutoSelectFirst: settings.foldersAutoSelectFirst,
-    playerMode: settings.playerMode,
-    downloaderEngine: settings.downloaderEngine,
-    downloaderSidecarUrl: settings.downloaderSidecarUrl
+    playerMode: settings.playerMode
   };
 }
 

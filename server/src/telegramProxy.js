@@ -48,14 +48,4 @@ async function resolveTelegramProxy(settings = {}) {
   };
 }
 
-function downloaderProxyPatch(proxy) {
-  return {
-    proxyEnabled: proxy.enabled,
-    proxyHost: proxy.host,
-    proxyPort: proxy.port || 1080,
-    proxyUsername: proxy.username,
-    proxyPassword: proxy.password
-  };
-}
-
-module.exports = { downloaderProxyPatch, resolveTelegramProxy, socks5Available };
+module.exports = { resolveTelegramProxy, socks5Available };

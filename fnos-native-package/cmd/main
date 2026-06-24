@@ -2,16 +2,12 @@
 
 APP_HOME="${TRIM_APPDEST}"
 NODE_BIN="${APP_HOME}/bin/node"
-DOWNLOADER_BIN="${APP_HOME}/bin/feigram-downloader"
 SERVER_DIR="${APP_HOME}/server"
 DATA_HOME="/${TRIM_APPDEST_VOL}/@appshare/feigrampub"
 PID_FILE="${DATA_HOME}/feigram.pid"
-DOWNLOADER_PID_FILE="${DATA_HOME}/feigram-downloader.pid"
 VERSION_FILE="${DATA_HOME}/feigram.version"
 LOG_FILE="${DATA_HOME}/feigram.log"
-DOWNLOADER_LOG_FILE="${DATA_HOME}/feigram-downloader.log"
 PORT="${wizard_app_port:-3088}"
-DOWNLOADER_PORT="${FEIGRAM_DOWNLOADER_PORT:-3090}"
 
 export APP_PORT="$PORT"
 export FEIGRAM_APP_URL="http://127.0.0.1:${PORT}"
@@ -22,14 +18,9 @@ export TELEGRAM_API_HASH="${wizard_telegram_api_hash}"
 export DATA_DIR="${DATA_HOME}/data"
 export DOWNLOAD_DIR="${DATA_HOME}/data/downloads"
 export LOG_FILE="$LOG_FILE"
-export FEIGRAM_DOWNLOADER_PORT="$DOWNLOADER_PORT"
-export FEIGRAM_DOWNLOADER_DATA="${DATA_HOME}/data/downloader"
-export FEIGRAM_DOWNLOADER_URL="http://127.0.0.1:${DOWNLOADER_PORT}"
-export FEIGRAM_DOWNLOADER_LOG="$DOWNLOADER_LOG_FILE"
-export FEIGRAM_DOWNLOADER_SECRET_FILE="${DATA_HOME}/data/app-secret"
 export APP_EDITION="Feigram 2.0 fnOS Client Edition"
-export APP_VERSION="2.0.69"
-export APP_CHANGELOG="强制 GramJS 全部 TCP 连接使用 443，并修复 connection dead 未触发自动续传和 HTTP 回退。"
+export APP_VERSION="2.0.70"
+export APP_CHANGELOG="移除 Go 下载模块，缓存和下载统一恢复为 Telegram/GramJS 管线。"
 export NODE_ENV="production"
 
 is_running() {
@@ -57,17 +48,6 @@ stop_running() {
         fi
     fi
     rm -f "$PID_FILE"
-    if [ -f "$DOWNLOADER_PID_FILE" ]; then
-        downloader_pid="$(cat "$DOWNLOADER_PID_FILE")"
-        if [ -n "$downloader_pid" ] && kill -0 "$downloader_pid" >/dev/null 2>&1; then
-            kill "$downloader_pid" >/dev/null 2>&1 || true
-            sleep 1
-            if kill -0 "$downloader_pid" >/dev/null 2>&1; then
-                kill -9 "$downloader_pid" >/dev/null 2>&1 || true
-            fi
-        fi
-        rm -f "$DOWNLOADER_PID_FILE"
-    fi
     if command -v pgrep >/dev/null 2>&1; then
         pattern="${APP_HOME}/bin/node.*src/index.js|${SERVER_DIR}/src/index.js"
         for old_pid in $(pgrep -f "$pattern" 2>/dev/null || true); do
@@ -81,8 +61,8 @@ stop_running() {
                 kill -9 "$old_pid" >/dev/null 2>&1 || true
             fi
         done
-        downloader_pattern="${APP_HOME}/bin/feigram-downloader|feigram-downloader"
-        for old_pid in $(pgrep -f "$downloader_pattern" 2>/dev/null || true); do
+        # Stop a downloader left by pre-2.0.70 packages during the upgrade.
+        for old_pid in $(pgrep -f "feigram-downloader" 2>/dev/null || true); do
             if [ -n "$old_pid" ] && [ "$old_pid" != "$$" ]; then
                 kill "$old_pid" >/dev/null 2>&1 || true
             fi
@@ -92,19 +72,7 @@ stop_running() {
 
 case "$1" in
 start)
-    mkdir -p "$DATA_HOME" "$DATA_DIR" "$DOWNLOAD_DIR" "$FEIGRAM_DOWNLOADER_DATA"
-    INTERNAL_TOKEN_FILE="${DATA_HOME}/feigram-internal-token"
-    if [ ! -f "$INTERNAL_TOKEN_FILE" ]; then
-        if command -v od >/dev/null 2>&1; then
-            od -An -N32 -tx1 /dev/urandom | tr -d ' \n' > "$INTERNAL_TOKEN_FILE"
-        elif command -v sha256sum >/dev/null 2>&1; then
-            date +%s%N | sha256sum | awk '{print $1}' > "$INTERNAL_TOKEN_FILE"
-        else
-            date +%s%N > "$INTERNAL_TOKEN_FILE"
-        fi
-        chmod 600 "$INTERNAL_TOKEN_FILE" >/dev/null 2>&1 || true
-    fi
-    export FEIGRAM_INTERNAL_TOKEN="$(cat "$INTERNAL_TOKEN_FILE" 2>/dev/null)"
+    mkdir -p "$DATA_HOME" "$DATA_DIR" "$DOWNLOAD_DIR"
     chmod +x "$NODE_BIN"
     if is_running; then
         running_version=""
@@ -129,16 +97,8 @@ start)
         echo "Port: ${APP_PORT}"
         echo "Data: ${DATA_DIR}"
         echo "Downloads: ${DOWNLOAD_DIR}"
-        echo "Go downloader: ${FEIGRAM_DOWNLOADER_URL}"
+        echo "Download engine: Telegram/GramJS"
     } >> "$LOG_FILE"
-    if [ -x "$DOWNLOADER_BIN" ]; then
-        chmod +x "$DOWNLOADER_BIN"
-        nohup "$DOWNLOADER_BIN" >> "$DOWNLOADER_LOG_FILE" 2>&1 &
-        echo $! > "$DOWNLOADER_PID_FILE"
-        sleep 2
-    else
-        echo "Go downloader binary missing: $DOWNLOADER_BIN" >> "$LOG_FILE"
-    fi
     nohup "$NODE_BIN" src/index.js >> "$LOG_FILE" 2>&1 &
     echo $! > "$PID_FILE"
     sleep 2

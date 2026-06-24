@@ -501,16 +501,11 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
     foldersEnabled: true,
     foldersShowArchived: false,
     foldersAutoSelectFirst: true,
-    playerMode: "browser",
-    downloaderEngine: "go-sidecar",
-    downloaderSidecarUrl: "http://127.0.0.1:3090"
+    playerMode: "browser"
   });
   const [apiIdPlaceholder, setApiIdPlaceholder] = useState("");
   const [hashPlaceholder, setHashPlaceholder] = useState("");
   const [diagnostics, setDiagnostics] = useState(null);
-  const [downloaderState, setDownloaderState] = useState(null);
-  const [nativeAccounts, setNativeAccounts] = useState([]);
-  const [nativeQr, setNativeQr] = useState(null);
   const [cacheSpeedTest, setCacheSpeedTest] = useState(null);
   const [cacheSpeedTesting, setCacheSpeedTesting] = useState(false);
   const [updateInfo, setUpdateInfo] = useState(null);
@@ -519,8 +514,6 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
   const [selectedSilentIds, setSelectedSilentIds] = useState([]);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState("");
-  const [pendingAction, setPendingAction] = useState("");
-  const [actionNotice, setActionNotice] = useState("");
   const visibleSilentCaches = useMemo(() => silentCaches.filter((task) => task.status !== "completed"), [silentCaches]);
   const selectedSilentSet = useMemo(() => new Set(selectedSilentIds), [selectedSilentIds]);
 
@@ -573,13 +566,10 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
         foldersEnabled: nextSettings.foldersEnabled !== false,
         foldersShowArchived: Boolean(nextSettings.foldersShowArchived),
         foldersAutoSelectFirst: nextSettings.foldersAutoSelectFirst !== false,
-        playerMode: nextSettings.playerMode || "browser",
-        downloaderEngine: nextSettings.downloaderEngine || "go-sidecar",
-        downloaderSidecarUrl: nextSettings.downloaderSidecarUrl || "http://127.0.0.1:3090"
+        playerMode: nextSettings.playerMode || "browser"
       });
       setApiIdPlaceholder(nextSettings.telegramApiIdSet ? "已保存，留空则不修改" : "请输入 Telegram API ID");
       setHashPlaceholder(nextSettings.telegramApiHashSet ? "已保存，留空则不修改" : "请输入 Telegram API Hash");
-      setNativeAccounts(await api("/api/admin/native-accounts").catch(() => []));
     }
   }
 
@@ -629,133 +619,6 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
       setError(err.message);
       return null;
     }));
-    setDownloaderState(await api("/api/admin/downloader").catch(() => null));
-    setNativeAccounts(await api("/api/admin/native-accounts").catch(() => []));
-  }
-
-  async function refreshNativeAccounts() {
-    if (!canAdmin) return;
-    setNativeAccounts(await api("/api/admin/native-accounts").catch(() => []));
-  }
-
-  async function checkNativeAccount(accountId) {
-    setError("");
-    setActionNotice("健康检查已启动，正在连接 Telegram 并读取真实文件分片…");
-    setPendingAction(`health:${accountId}`);
-    const result = await api(`/api/admin/native-accounts/${accountId}/health`, { method: "POST" }).catch((err) => {
-      setError(err.message);
-      return null;
-    });
-    if (result) {
-      setNativeAccounts((items) => items.map((item) => item.accountId === result.accountId ? result : item));
-      setDownloaderState(await api("/api/admin/downloader").catch(() => downloaderState));
-      setActionNotice(result.ready ? "健康检查通过，Go 原生文件读取正常。" : `健康检查完成：${result.error || result.status || "等待下一次检查"}`);
-    } else {
-      setActionNotice("");
-    }
-    setPendingAction("");
-  }
-
-  async function reloginNativeAccount(item) {
-    setError("");
-    const phone = prompt("输入用于 Go 原生 MTProto 登录的手机号", item.phone || "");
-    if (!phone) return;
-    setPendingAction(`fallback:${item.accountId}`);
-    setActionNotice("正在启动验证码兜底登录…");
-    try {
-      const started = await api(`/api/admin/native-accounts/${item.accountId}/login/start`, {
-        method: "POST",
-        body: JSON.stringify({ phone })
-      });
-      const loginId = started.loginId;
-      if (started.done) {
-        setNativeAccounts((items) => items.map((entry) => entry.accountId === started.account.accountId ? started.account : entry));
-        setDownloaderState(await api("/api/admin/downloader").catch(() => downloaderState));
-        return;
-      }
-      const code = prompt("输入 Telegram 验证码");
-      if (!code) return;
-      const coded = await api(`/api/admin/native-accounts/${item.accountId}/login/code`, {
-        method: "POST",
-        body: JSON.stringify({ loginId, code })
-      });
-      let result = coded;
-      if (coded.passwordRequired) {
-        const password = prompt("该账号启用了两步验证，请输入 Telegram 云密码");
-        if (!password) return;
-        result = await api(`/api/admin/native-accounts/${item.accountId}/login/password`, {
-          method: "POST",
-          body: JSON.stringify({ loginId, password })
-        });
-      }
-      if (result.account) {
-        setNativeAccounts((items) => items.map((entry) => entry.accountId === result.account.accountId ? result.account : entry));
-      }
-      setDownloaderState(await api("/api/admin/downloader").catch(() => downloaderState));
-      setActionNotice("验证码兜底登录已完成。");
-    } catch (err) {
-      setError(err.message);
-      setActionNotice("");
-    } finally {
-      setPendingAction("");
-    }
-  }
-
-  async function startNativeQrLogin(item) {
-    setError("");
-    setActionNotice("正在生成 Telegram 扫码登录二维码…");
-    setPendingAction(`qr:${item.accountId}`);
-    try {
-      const started = await api(`/api/admin/native-accounts/${item.accountId}/login/qr-start`, { method: "POST", body: JSON.stringify({}) });
-      setNativeQr({ ...started, accountId: item.accountId, title: item.displayName || item.phone || item.accountId });
-      setActionNotice("二维码已生成，请使用 Telegram 手机客户端扫码。");
-    } catch (err) {
-      setError(err.message);
-      setActionNotice("");
-    } finally {
-      setPendingAction("");
-    }
-  }
-
-  useEffect(() => {
-    if (!nativeQr?.loginId || nativeQr.done || nativeQr.status === "error") return undefined;
-    let cancelled = false;
-    let timer = null;
-    const poll = async () => {
-      try {
-        const result = await api(`/api/admin/native-accounts/${nativeQr.accountId}/login/qr-status`, {
-          method: "POST",
-          body: JSON.stringify({ loginId: nativeQr.loginId })
-        });
-        if (cancelled) return;
-        setNativeQr((current) => current?.loginId === result.loginId ? { ...current, ...result } : current);
-        if (result.account) {
-          setNativeAccounts((items) => items.map((entry) => entry.accountId === result.account.accountId ? result.account : entry));
-          setDownloaderState(await api("/api/admin/downloader").catch(() => downloaderState));
-        }
-      } catch (err) {
-        if (!cancelled) setNativeQr((current) => current ? { ...current, status: "waiting-scan", error: "Telegram 连接波动，正在自动重试" } : current);
-      } finally {
-        if (!cancelled) timer = window.setTimeout(poll, 4000);
-      }
-    };
-    timer = window.setTimeout(poll, 1200);
-    return () => {
-      cancelled = true;
-      if (timer) window.clearTimeout(timer);
-    };
-  }, [nativeQr?.loginId, nativeQr?.accountId, nativeQr?.done, nativeQr?.status]);
-
-  async function saveDownloaderConfig(patch) {
-    setError("");
-    const result = await api("/api/admin/downloader/config", {
-      method: "PUT",
-      body: JSON.stringify(patch)
-    }).catch((err) => {
-      setError(err.message);
-      return null;
-    });
-    if (result) setDownloaderState(result);
   }
 
   async function checkUpdates() {
@@ -819,18 +682,6 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
         </div>
         <div className="admin-body">
         {error && <p className="error admin-status-message">{error}</p>}
-        {tab === "accounts" && actionNotice && !error && <p className="action-notice admin-status-message" role="status">{pendingAction && <LoaderCircle className="button-spinner" size={16} />}{actionNotice}</p>}
-        {nativeQr && <div className="qr-modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setNativeQr(null)}>
-          <div className="qr-login-panel" role="dialog" aria-modal="true" aria-label="Telegram App 扫码登录 Go">
-            <button className="close mini-close" type="button" onClick={() => setNativeQr(null)} title="关闭"><X size={18} /></button>
-            <h3>Telegram App 扫码登录 Go</h3>
-            <p>{nativeQr.title || "Telegram 账号"} · {nativeQr.done ? "已授权" : nativeQr.status === "error" ? "登录异常" : nativeQr.status === "refreshing" ? "二维码已过期，正在刷新" : "请用 Telegram 手机客户端扫描二维码"}</p>
-            {nativeQr.qrImage && !nativeQr.done && <img src={nativeQr.qrImage} alt="Telegram QR login" />}
-            {nativeQr.done && <p className="success">Go 原生 MTProto session 已生成，请关闭弹窗后连续执行两次健康检查。</p>}
-            {nativeQr.error && <p className="error">{nativeQr.error}</p>}
-            {nativeQr.expires && !nativeQr.done && <small>二维码有效期：{formatTime(nativeQr.expires)}，过期会自动刷新。</small>}
-          </div>
-        </div>}
         {tab === "accounts" && <div className="account-admin">
           {canAdmin && <>
             <h3>飞牛账号管理</h3>
@@ -859,28 +710,15 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
             {socket && <AccountLogin socket={socket} onDone={() => onAccountsChanged?.()} />}
           </div>
           <div className="account-admin-list">
-            {accounts.map((account) => {
-              const native = nativeAccounts.find((item) => item.accountId === account.id);
-              return <div className="account-admin-row" key={account.id}>
+            {accounts.map((account) => <div className="account-admin-row" key={account.id}>
                 <Avatar accountId={account.id} label={account.displayName || account.label} size={38} />
                 <div>
                   <strong>{account.displayName || account.label}</strong>
                   <span>{account.username ? `@${account.username}` : account.phoneNumber || "Telegram 账号"}</span>
-                  {canAdmin && <small className={cx("native-status", native?.ready && "ready")}>
-                    Go：{native?.ready ? "原生 session 健康" : native?.error || native?.status || "等待扫码迁移"}
-                  </small>}
-                  {canAdmin && native?.sessionSet && <small>
-                    连续检查 {native.healthPasses || 0}/2
-                    {native.lastHealthBytes ? ` · ${formatBytes(native.lastHealthBytes)} · DC ${native.lastHealthDc || "-"} · ${native.lastHealthDurationMs || 0} ms` : ""}
-                  </small>}
                 </div>
                 <button className="icon-button" onClick={() => onAccountChange(account.id)}>{account.id === accountId ? "当前" : "切换"}</button>
-                {canAdmin && <button className="icon-button" type="button" aria-busy={pendingAction === `qr:${account.id}`} disabled={Boolean(pendingAction)} onClick={() => startNativeQrLogin(native || { accountId: account.id, displayName: account.displayName || account.label, phone: account.phoneNumber })}>{pendingAction === `qr:${account.id}` && <LoaderCircle className="button-spinner" size={15} />}{pendingAction === `qr:${account.id}` ? "启动中" : "扫码登录 Go"}</button>}
-                {canAdmin && <button className="icon-button" type="button" aria-busy={pendingAction === `health:${account.id}`} disabled={Boolean(pendingAction)} onClick={() => native ? checkNativeAccount(account.id) : refreshNativeAccounts()}>{pendingAction === `health:${account.id}` && <LoaderCircle className="button-spinner" size={15} />}{pendingAction === `health:${account.id}` ? "检查中" : "健康检查"}</button>}
-                {canAdmin && <button className="icon-button" type="button" aria-busy={pendingAction === `fallback:${account.id}`} disabled={Boolean(pendingAction)} onClick={() => reloginNativeAccount(native || { accountId: account.id, phone: account.phoneNumber, displayName: account.displayName || account.label })}>{pendingAction === `fallback:${account.id}` && <LoaderCircle className="button-spinner" size={15} />}{pendingAction === `fallback:${account.id}` ? "登录中" : "验证码兜底"}</button>}
                 <button className="icon-button danger-button" onClick={() => onAccountLogout(account.id)}><LogOut size={16} />退出</button>
-              </div>;
-            })}
+              </div>)}
             {!accounts.length && <div className="empty">暂无 Telegram 账号</div>}
           </div>
         </div>}
@@ -901,7 +739,7 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
             <label><span>代理用户名</span><input value={settings.telegramProxyUsername} onChange={(e) => setSettings({ ...settings, telegramProxyUsername: e.target.value })} placeholder="可留空" /></label>
             <label><span>代理密码</span><input type="password" value={settings.telegramProxyPassword} onChange={(e) => setSettings({ ...settings, telegramProxyPassword: e.target.value })} placeholder="已保存时留空不修改" /></label>
           </>}
-          <p className="hint">自动模式会探测本机 v2rayA 的 SOCKS5 端口 20170，成功后同时用于聊天和 Go 原生下载；不可用时自动回退直连。</p>
+          <p className="hint">自动模式会探测本机 v2rayA 的 SOCKS5 端口 20170，成功后用于 Telegram/GramJS；不可用时自动回退直连。</p>
           {settings.telegramProxyMode === "auto" && <p className={settings.telegramProxyEffective ? "success" : "hint"}>{settings.telegramProxyEffective ? "已检测到 v2rayA，Telegram 正在复用其代理。" : "暂未检测到 v2rayA SOCKS5，当前使用直连。"}</p>}
           <h3>缓存下载设置</h3>
           <label><span>基础缓存下载位置</span><input value={settings.cacheBaseDir} onChange={(e) => setSettings({ ...settings, cacheBaseDir: e.target.value })} placeholder="/data/downloads" required /></label>
@@ -916,8 +754,7 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
           </select></label>
           <p className="hint">推荐优先使用原始视频在线播放；遇到浏览器不支持的编码时，可切换为本地播放器模式。</p>
           <h3>下载服务</h3>
-          <label><span>Go 下载服务地址</span><input value={settings.downloaderSidecarUrl} onChange={(e) => setSettings({ ...settings, downloaderSidecarUrl: e.target.value })} placeholder="http://127.0.0.1:3090" /></label>
-          <p className="hint">Go 下载服务已接管大文件队列、断点续传、限速、并发和文件落盘；当前媒体源仍通过本机 Telegram 桥接，后续会继续迁移到原生 Go/tdl 传输层。</p>
+          <p className="hint">图片、视频和文件下载由 Telegram/GramJS 统一处理，支持任务队列、断点续传、限速和并发控制。</p>
           {saved && <p className="success">{saved}</p>}
           <button className="primary"><Settings size={18} />保存服务端设置</button>
         </form>}
@@ -947,7 +784,7 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
           <div className="cache-runtime-summary">
             <span><b>运行</b>{silentCacheState.running || 0} / {silentCacheState.effectiveConcurrency || silentCacheState.concurrency || 1}</span>
             <span><b>并发设置</b>{silentCacheState.configuredConcurrency || silentCacheState.concurrency || 1}</span>
-            <span><b>传输层</b>{silentCacheState.transport === "native-mtproto" ? "Go 原生 MTProto" : "HTTP 回退"}</span>
+            <span><b>传输层</b>Telegram/GramJS</span>
             <span><b>任务数</b>{visibleSilentCaches.length}</span>
           </div>
           <div className="silent-cache-bulk">
@@ -1022,72 +859,12 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
             <span><b>缓存大小</b>{formatBytes(diagnostics.cache?.bytes)}</span>
             <span><b>下载任务</b>{diagnostics.cache?.downloadTasks || 0}</span>
             <span><b>后台缓存</b>{diagnostics.cache?.silentCacheTasks || 0}</span>
-            <span><b>Go 下载服务</b>{diagnostics.downloader?.ok ? `运行中 v${diagnostics.downloader.version}` : diagnostics.downloader?.error || "未连接"}</span>
+            <span><b>下载引擎</b>{diagnostics.downloader?.version || "Telegram/GramJS"}</span>
           </div> : <div className="empty">点击刷新诊断查看系统状态</div>}
           {diagnostics && <div className="diagnostics-paths">
             <p><strong>数据目录</strong>{diagnostics.paths?.dataDir}</p>
             <p><strong>缓存目录</strong>{diagnostics.paths?.cacheBase}</p>
             <p><strong>日志文件</strong>{diagnostics.paths?.logFile || "未设置"}</p>
-            <p><strong>Go 下载日志</strong>{diagnostics.paths?.downloaderLogFile || "未设置"}</p>
-          </div>}
-          {downloaderState && <div className="cache-speed-card">
-            <div className="cache-speed-head">
-              <strong>Go 下载服务</strong>
-              <span>{downloaderState.ok ? "运行中" : "未连接"}</span>
-            </div>
-            <div className="diagnostics-grid compact">
-              <span><b>版本</b>{downloaderState.version || "-"}</span>
-              <span><b>PID</b>{downloaderState.pid || "-"}</span>
-              <span><b>运行时间</b>{downloaderState.uptime ? `${Math.floor(downloaderState.uptime / 60)} 分钟` : "-"}</span>
-              <span><b>任务数</b>{downloaderState.tasks?.length || downloaderState.taskCount || 0}</span>
-              <span><b>并发</b>{downloaderState.config?.concurrency || "-"}</span>
-              <span><b>限速</b>{downloaderState.config?.rateLimitBps ? `${formatBytes(downloaderState.config.rateLimitBps)}/s` : "不限速"}</span>
-              <span><b>模式</b>{downloaderState.config?.mode === "fast" ? "高速" : "保守"}</span>
-              <span><b>媒体源</b>{(downloaderState.config?.transport || downloaderState.transport) === "native-mtproto" ? "Go 原生 MTProto" : "HTTP 桥接"}</span>
-              <span><b>数据目录</b>{downloaderState.dataDir || "-"}</span>
-            </div>
-            <div className="silent-cache-controls downloader-config-controls">
-              <label className="check-row"><input type="checkbox" checked={downloaderState.config?.enabled !== false} onChange={(e) => saveDownloaderConfig({ enabled: e.target.checked })} /><span>{downloaderState.config?.enabled !== false ? "Go 队列已启用" : "Go 队列已暂停"}</span></label>
-              <label><span>Go 并发</span><select value={String(downloaderState.config?.concurrency || 1)} onChange={(e) => saveDownloaderConfig({ concurrency: Number(e.target.value) })}>
-                {[1, 2, 3, 4, 5, 10].map((value) => <option value={String(value)} key={value}>{value}</option>)}
-              </select></label>
-              <label><span>Go 限速</span><select value={String(downloaderState.config?.rateLimitBps || 0)} onChange={(e) => saveDownloaderConfig({ rateLimitBps: Number(e.target.value) })}>
-                <option value="0">不限速</option>
-                <option value={String(1024 * 1024)}>1 MB/s</option>
-                <option value={String(5 * 1024 * 1024)}>5 MB/s</option>
-                <option value={String(10 * 1024 * 1024)}>10 MB/s</option>
-              </select></label>
-              <label><span>Go 模式</span><select value={downloaderState.config?.mode || "conservative"} onChange={(e) => saveDownloaderConfig({ mode: e.target.value })}>
-                <option value="conservative">保守</option>
-                <option value="fast">高速</option>
-              </select></label>
-              <label><span>媒体源传输层</span><select value={downloaderState.config?.transport || "http-bridge"} onChange={(e) => saveDownloaderConfig({ transport: e.target.value })}>
-                <option value="http-bridge">HTTP 桥接（稳定）</option>
-                <option value="native-mtproto" disabled={!downloaderState.nativeMTProto?.ready}>Go 原生 MTProto（健康后可选）</option>
-              </select></label>
-            </div>
-            {downloaderState.nativeMTProto && <p className="hint">{downloaderState.nativeMTProto.note}</p>}
-            <p className="hint">{downloaderState.strategy || "Go sidecar 已就绪，等待 Telegram 下载桥接。"}</p>
-            {downloaderState.error && <p className="error">{downloaderState.error}</p>}
-          </div>}
-          {nativeAccounts.length > 0 && <div className="cache-speed-card">
-            <div className="cache-speed-head">
-              <strong>Go 原生账号</strong>
-              <span>{nativeAccounts.filter((item) => item.ready).length} / {nativeAccounts.length} 可用</span>
-            </div>
-            <div className="native-account-list">
-              {nativeAccounts.map((item) => (
-                <div className="native-account-row" key={`${item.userId}:${item.accountId}`}>
-                  <div>
-                    <strong>{item.displayName || item.phone || item.accountId}</strong>
-                    <p>{item.ready ? "Go MTProto session 健康" : item.error || "等待 Go 重新登录生成原生 session"}</p>
-                    <small>连续检查 {item.healthPasses || 0}/2{item.lastHealthBytes ? ` · ${formatBytes(item.lastHealthBytes)} · DC ${item.lastHealthDc || "-"} · ${item.lastHealthDurationMs || 0} ms` : ""}</small>
-                  </div>
-                  <span>{item.sessionSet ? item.status : "未迁移"}</span>
-                  <button className="icon-button" type="button" onClick={() => checkNativeAccount(item.accountId)}>健康检查</button>
-                </div>
-              ))}
-            </div>
           </div>}
           {cacheSpeedTest && <div className="cache-speed-card">
             <div className="cache-speed-head">
@@ -1118,7 +895,7 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
             </div>}
             {cacheSpeedTest.error && <p className="error">{cacheSpeedTest.error}</p>}
             {cacheSpeedTest.note && <p className="hint">{cacheSpeedTest.note}</p>}
-            <p className="hint">诊断速度来自 Go 队列的真实运行任务；如果运行数为 0，速度也会归零，避免排队任务残留速度造成误判。</p>
+            <p className="hint">诊断速度来自 GramJS 队列的真实运行任务；如果运行数为 0，速度也会归零。</p>
             <pre className="log-tail cache-speed-json">{JSON.stringify(cacheSpeedTest, null, 2)}</pre>
           </div>}
           {updateInfo && <div className="update-card">
@@ -1128,7 +905,6 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
             <a href={updateInfo.url} target="_blank" rel="noreferrer">打开发布页</a>
           </div>}
           {diagnostics?.logTail && <pre className="log-tail system-log-tail">{diagnostics.logTail}</pre>}
-          {diagnostics?.downloaderLogTail && <pre className="log-tail system-log-tail">{diagnostics.downloaderLogTail}</pre>}
         </div>}
         </div>
       </div>

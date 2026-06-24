@@ -5,7 +5,6 @@ const path = require("path");
 const { dataDir, downloadTasksPath, silentCachePath } = require("./store");
 const { metaPath } = require("./migrations");
 const { readSettings } = require("./settings");
-const downloaderSidecar = require("./downloaderSidecar");
 
 async function dirSize(target) {
   let total = 0;
@@ -36,11 +35,10 @@ async function tail(filePath, maxBytes = 16000) {
 
 async function diagnostics() {
   const settings = await readSettings();
-  const [downloadData, silentData, meta, downloader] = await Promise.all([
+  const [downloadData, silentData, meta] = await Promise.all([
     fs.readJson(downloadTasksPath).catch(() => ({ tasks: [] })),
     fs.readJson(silentCachePath).catch(() => ({ tasks: [] })),
-    fs.readJson(metaPath).catch(() => ({})),
-    downloaderSidecar.health()
+    fs.readJson(metaPath).catch(() => ({}))
   ]);
   const cacheBase = settings.cacheBaseDir || process.env.DOWNLOAD_DIR || path.join(dataDir, "downloads");
   return {
@@ -57,17 +55,15 @@ async function diagnostics() {
     paths: {
       dataDir,
       cacheBase,
-      logFile: process.env.LOG_FILE || "",
-      downloaderLogFile: process.env.FEIGRAM_DOWNLOADER_LOG || ""
+      logFile: process.env.LOG_FILE || ""
     },
-    downloader,
+    downloader: { ok: true, engine: "gramjs", version: "GramJS 2.26.21" },
     cache: {
       bytes: await dirSize(cacheBase),
       downloadTasks: (downloadData.tasks || []).length,
       silentCacheTasks: (silentData.tasks || []).length
     },
-    logTail: await tail(process.env.LOG_FILE),
-    downloaderLogTail: await tail(process.env.FEIGRAM_DOWNLOADER_LOG, 8000)
+    logTail: await tail(process.env.LOG_FILE)
   };
 }
 

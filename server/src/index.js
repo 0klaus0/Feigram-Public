@@ -21,11 +21,10 @@ const { publicSettings, readSettings, writeSettings } = require("./settings");
 const { readPolicies } = require("./policies");
 const { readAbout, readAnnouncements } = require("./releaseContent");
 const { checkForUpdates, diagnostics } = require("./diagnostics");
-const downloaderSidecar = require("./downloaderSidecar");
 const { migrateStore } = require("./migrations");
 const { rateLimit } = require("./rateLimit");
 const tg = require("./telegramService");
-const { downloaderProxyPatch, resolveTelegramProxy } = require("./telegramProxy");
+const { resolveTelegramProxy } = require("./telegramProxy");
 
 const port = Number(process.env.APP_PORT || 3088);
 const app = express();
@@ -54,29 +53,6 @@ app.post("/api/login", rateLimit({ windowMs: 60000, max: 12 }), asyncRoute(login
 app.get("/api/policies", asyncRoute(async (_req, res) => res.json(await readPolicies())));
 app.get("/api/about", asyncRoute(async (_req, res) => res.json(readAbout())));
 
-app.get("/api/internal/media/:user/:account/:peer/:messageId", asyncRoute(async (req, res) => {
-  const expected = process.env.FEIGRAM_INTERNAL_TOKEN || "";
-  const provided = req.query.token || req.get("x-feigram-internal-token") || "";
-  if (!expected || provided !== expected) {
-    res.status(403).json({ error: "forbidden" });
-    return;
-  }
-  const streamed = await tg.streamVideoMedia(req.params.user, req.params.account, req.params.peer, req.params.messageId, req.headers.range, res);
-  if (!streamed && !res.headersSent) {
-    res.status(404).json({ error: "media is not streamable" });
-  }
-}));
-
-app.get("/api/internal/media-meta/:user/:account/:peer/:messageId", asyncRoute(async (req, res) => {
-  const expected = process.env.FEIGRAM_INTERNAL_TOKEN || "";
-  const provided = req.query.token || req.get("x-feigram-internal-token") || "";
-  if (!expected || provided !== expected) {
-    res.status(403).json({ error: "forbidden" });
-    return;
-  }
-  res.json(await tg.mediaNativeMetadata(req.params.user, req.params.account, req.params.peer, req.params.messageId));
-}));
-
 app.use("/api", authMiddleware());
 
 app.get("/api/me", asyncRoute(async (req, res) => {
@@ -92,7 +68,6 @@ app.get("/api/settings", asyncRoute(async (_req, res) => {
 app.put("/api/settings", adminOnly, asyncRoute(async (req, res) => {
   const next = await writeSettings(req.body || {});
   const proxy = await resolveTelegramProxy(next);
-  await downloaderSidecar.updateConfig(downloaderProxyPatch(proxy));
   await tg.reconnectAll(io);
   res.json({ settings: { ...publicSettings(next), telegramProxyEffective: proxy.enabled, telegramProxySource: proxy.source } });
 }));
@@ -103,42 +78,6 @@ app.get("/api/admin/users", adminOnly, asyncRoute(async (_req, res) => {
 
 app.get("/api/admin/diagnostics", adminOnly, asyncRoute(async (_req, res) => {
   res.json(await diagnostics());
-}));
-
-app.get("/api/admin/downloader", adminOnly, asyncRoute(async (_req, res) => {
-  res.json(await downloaderSidecar.state());
-}));
-
-app.put("/api/admin/downloader/config", adminOnly, asyncRoute(async (req, res) => {
-  res.json(await downloaderSidecar.updateConfig(req.body || {}));
-}));
-
-app.get("/api/admin/native-accounts", adminOnly, asyncRoute(async (_req, res) => {
-  res.json(await tg.nativeAccounts());
-}));
-
-app.post("/api/admin/native-accounts/:account/health", adminOnly, asyncRoute(async (req, res) => {
-  res.json(await tg.nativeAccountHealth(req.user.id, req.params.account));
-}));
-
-app.post("/api/admin/native-accounts/:account/login/start", adminOnly, asyncRoute(async (req, res) => {
-  res.json(await tg.nativeAccountLoginStart(req.user.id, req.params.account, req.body || {}));
-}));
-
-app.post("/api/admin/native-accounts/:account/login/qr-start", adminOnly, asyncRoute(async (req, res) => {
-  res.json(await tg.nativeAccountQRLoginStart(req.user.id, req.params.account, req.body || {}));
-}));
-
-app.post("/api/admin/native-accounts/:account/login/qr-status", adminOnly, asyncRoute(async (req, res) => {
-  res.json(await tg.nativeAccountQRLoginStatus(req.user.id, req.params.account, req.body || {}));
-}));
-
-app.post("/api/admin/native-accounts/:account/login/code", adminOnly, asyncRoute(async (req, res) => {
-  res.json(await tg.nativeAccountLoginCode(req.user.id, req.params.account, req.body || {}));
-}));
-
-app.post("/api/admin/native-accounts/:account/login/password", adminOnly, asyncRoute(async (req, res) => {
-  res.json(await tg.nativeAccountLoginPassword(req.user.id, req.params.account, req.body || {}));
 }));
 
 app.post("/api/admin/cache-speed-diagnostics", adminOnly, asyncRoute(async (req, res) => {
@@ -426,8 +365,6 @@ ensureStore()
     server.listen(port, "0.0.0.0", () => {
       console.log(`Feigram Public is listening on http://0.0.0.0:${port}`);
       readSettings()
-        .then(async (settings) => downloaderSidecar.updateConfig(downloaderProxyPatch(await resolveTelegramProxy(settings))))
-        .catch((error) => console.warn("Telegram proxy sync failed:", error.message))
         .then(() => tg.loadSavedClients(io))
         .catch((error) => console.warn("Telegram account restore failed:", error.message))
         .then(() => tg.restoreBackgroundTasks(io).catch((error) => console.warn("Download task restore failed:", error.message)))

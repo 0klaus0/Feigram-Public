@@ -9,9 +9,7 @@ const { NewMessage } = require("telegram/events");
 const { dataDir, downloadTasksPath, readAccounts, removeAccount, safeId, silentCachePath, upsertAccount } = require("./store");
 const { readSettings } = require("./settings");
 const { decryptText, encryptText } = require("./cryptoBox");
-const downloaderSidecar = require("./downloaderSidecar");
 const { resolveTelegramProxy } = require("./telegramProxy");
-const { ConnectionTCPFull443 } = require("./telegramConnection");
 
 const clients = new Map();
 const cacheClients = new Map();
@@ -438,6 +436,7 @@ async function loadPersistentTasks() {
 async function restoreBackgroundTasks(io) {
   realtimeIo = io;
   await loadPersistentTasks();
+  await migrateLegacyGoQueue();
   for (const task of downloadTasks.values()) {
     if (task.status !== "completed") {
       task.status = "queued";
@@ -447,6 +446,41 @@ async function restoreBackgroundTasks(io) {
     }
   }
   pumpUnifiedDownloadQueue(io);
+}
+
+async function migrateLegacyGoQueue() {
+  const legacyPath = path.join(process.env.DATA_DIR || dataDir, "downloader", "tasks.json");
+  if (!(await fs.pathExists(legacyPath))) return;
+  const payload = await fs.readJson(legacyPath).catch(() => null);
+  const tasks = Array.isArray(payload) ? payload : payload?.tasks;
+  if (!Array.isArray(tasks)) return;
+  for (const legacy of tasks) {
+    if (!legacy?.userId || !legacy?.accountId || !legacy?.peerId || !legacy?.messageId) continue;
+    if (["completed", "cancelled", "deleted"].includes(String(legacy.status || "").toLowerCase())) continue;
+    try {
+      const task = await ensureDownloadTask(legacy.userId, legacy.accountId, legacy.peerId, legacy.messageId, {
+        source: legacy.source || (legacy.autoCache ? "auto" : "manual"),
+        autoCache: Boolean(legacy.autoCache || legacy.source === "auto"),
+        dedupKey: legacy.dedupKey || "",
+        order: Number(legacy.order || 0) || nextDownloadOrder()
+      });
+      const legacyPart = legacy.partPath || `${legacy.filePath || ""}.part`;
+      if (legacyPart && legacyPart !== task.partPath && await fs.pathExists(legacyPart) && !(await fs.pathExists(task.partPath))) {
+        await fs.copy(legacyPart, task.partPath);
+      }
+      const partStat = await fs.stat(task.partPath).catch(() => null);
+      task.downloaded = Number(partStat?.size || legacy.downloaded || 0);
+      task.status = "queued";
+      task.error = "已从旧下载模块迁移，等待 GramJS 续传";
+      task.updatedAt = new Date().toISOString();
+    } catch (error) {
+      console.warn(`Legacy downloader task ${legacy.id || legacy.messageId} migration failed:`, error.message);
+    }
+  }
+  const migratedPath = path.join(path.dirname(legacyPath), `tasks.migrated-${Date.now()}.json`);
+  await fs.move(legacyPath, migratedPath, { overwrite: false }).catch(() => {});
+  schedulePersistDownloads();
+  schedulePersistSilent();
 }
 
 async function cacheSettings() {
@@ -833,7 +867,6 @@ async function createClient(sessionString = "") {
   const client = new TelegramClient(session, apiId, apiHash, {
     connectionRetries: 5,
     retryDelay: 2000,
-    connection: ConnectionTCPFull443,
     proxy
   });
   await withTimeout(client.connect(), 20000, "连接 Telegram 超时，请检查网络");
@@ -869,24 +902,10 @@ function registerUpdates(io, accountId, client) {
 async function listAccounts(userId) {
   const accounts = await readAccounts();
   const owned = accounts.filter((account) => account.userId === userId);
-  await Promise.all(owned.map((account) => syncGoNativeAccount(account).catch(() => null)));
   return owned.map(({ session, ...safe }) => ({
     ...safe,
     connected: clients.has(safe.id)
   }));
-}
-
-async function syncGoNativeAccount(account) {
-  if (!account?.userId || !account?.id) return null;
-  const { apiId, apiHash } = await telegramConfig();
-  return downloaderSidecar.upsertNativeAccount({
-    userId: account.userId,
-    accountId: account.id,
-    phone: account.phone || "",
-    displayName: account.label || account.username || account.phone || account.id,
-    apiId,
-    apiHash
-  });
 }
 
 async function getClient(userId, accountId) {
@@ -1714,6 +1733,7 @@ async function runDownloadTask(task, io) {
     task.lastObservedPartSize = task.downloaded;
     task.lastObservedAt = new Date().toISOString();
     lastBytes = task.downloaded;
+    let lastThrottleBytes = task.downloaded;
     const progressCallback = async (downloadedValue, totalValue) => {
       if (cancelToken.cancelled) {
         throw Object.assign(new Error(cancelToken.requeue ? "下载连接已重排" : "下载已取消"), { status: 499, requeue: Boolean(cancelToken.requeue) });
@@ -1722,6 +1742,10 @@ async function runDownloadTask(task, io) {
       const fullSize = Number(totalValue?.toString?.() || totalValue || total || 0);
       task.downloaded = downloaded;
       task.size = fullSize || task.size;
+      if (isAutoDownloadTask(task)) {
+        await throttleSilentCache(downloaded - lastThrottleBytes);
+        lastThrottleBytes = downloaded;
+      }
       const now = Date.now();
       if (now - lastTick >= 800 || downloaded >= fullSize) {
         task.speedBps = Math.max(0, Math.round((downloaded - lastBytes) / Math.max(0.001, (now - lastTick) / 1000)));
@@ -2577,436 +2601,6 @@ async function profilePhoto(userId, accountId, peerId = "__self") {
   };
 }
 
-function goDownloaderTaskId(userId, accountId, peerId, messageId) {
-  return downloadTaskId(userId, accountId, peerId, messageId);
-}
-
-function internalMediaSourceUrl(userId, accountId, peerId, messageId) {
-  const token = process.env.FEIGRAM_INTERNAL_TOKEN || "";
-  if (!token) throw Object.assign(new Error("内部下载令牌未初始化，请重启 Feigram"), { status: 500 });
-  const port = Number(process.env.APP_PORT || 3088);
-  return `http://127.0.0.1:${port}/api/internal/media/${encodeURIComponent(userId)}/${encodeURIComponent(accountId)}/${encodeURIComponent(peerId)}/${encodeURIComponent(messageId)}?token=${encodeURIComponent(token)}`;
-}
-
-function internalMediaMetadataUrl(userId, accountId, peerId, messageId) {
-  const token = process.env.FEIGRAM_INTERNAL_TOKEN || "";
-  if (!token) throw Object.assign(new Error("内部下载令牌未初始化，请重启 Feigram"), { status: 500 });
-  const port = Number(process.env.APP_PORT || 3088);
-  return `http://127.0.0.1:${port}/api/internal/media-meta/${encodeURIComponent(userId)}/${encodeURIComponent(accountId)}/${encodeURIComponent(peerId)}/${encodeURIComponent(messageId)}?token=${encodeURIComponent(token)}`;
-}
-
-function base64Buffer(value) {
-  if (!value) return "";
-  if (Buffer.isBuffer(value)) return value.toString("base64");
-  if (value instanceof Uint8Array) return Buffer.from(value).toString("base64");
-  if (Array.isArray(value)) return Buffer.from(value).toString("base64");
-  return "";
-}
-
-function nativeFileLocation(peerId, message, contentType, fileName, kind) {
-  const document = message.document || null;
-  const file = message.file || {};
-  return {
-    peerId,
-    messageId: Number(message.id || 0),
-    kind,
-    fileId: document?.id ? toText(document.id) : "",
-    accessHash: document?.accessHash ? toText(document.accessHash) : "",
-    fileReference: base64Buffer(document?.fileReference),
-    dcId: Number(document?.dcId || file.dcId || 0),
-    size: Number(file.size || document?.size || 0),
-    mimeType: contentType || document?.mimeType || "",
-    fileName: fileName || file.name || "",
-    updatedAt: new Date().toISOString()
-  };
-}
-
-function nativePeerLocation(peerId, entity) {
-  const klass = entity?.className || entity?.constructor?.name || "";
-  const [fallbackType, fallbackId] = String(peerId || "").split(":");
-  const id = toText(entity?.id || fallbackId || "");
-  const accessHash = entity?.accessHash ? toText(entity.accessHash) : "";
-  if (klass.includes("Channel") || fallbackType === "Channel") {
-    return { type: "channel", id, accessHash };
-  }
-  if (klass.includes("User") || fallbackType === "User") {
-    return { type: "user", id, accessHash };
-  }
-  if (klass.includes("Chat") || fallbackType === "Chat") {
-    return { type: "chat", id, accessHash };
-  }
-  return { type: "", id, accessHash };
-}
-
-function normalizeGoDownloadTask(task) {
-  const next = {
-    id: task.id,
-    accountId: task.accountId,
-    peerId: task.peerId,
-    messageId: task.messageId,
-    fileName: task.fileName,
-    kind: task.kind,
-    contentType: task.contentType,
-    status: task.status === "running" ? "downloading" : task.status,
-    size: Number(task.size || 0),
-    downloaded: Number(task.downloaded || 0),
-    speedBps: Number(task.speedBps || 0),
-    source: task.source || "manual",
-    autoCache: Boolean(task.autoCache || task.source === "auto"),
-    transport: task.transport || "http-bridge",
-    order: Number(task.order || 0),
-    error: task.error || "",
-    createdAt: task.createdAt,
-    updatedAt: task.updatedAt,
-    inlineUrl: task.inlineUrl || ""
-  };
-  if (!next.inlineUrl && next.status === "completed") {
-    next.inlineUrl = `/api/media/${next.accountId}/${encodeURIComponent(next.peerId)}/${next.messageId}?inline=1`;
-  }
-  return next;
-}
-
-function normalizeGoSilentTask(task) {
-  const next = normalizeGoDownloadTask(task);
-  return {
-    ...next,
-    status: next.status === "downloading" ? "running" : next.status,
-    lastProgressAt: task.lastProgressAt || task.updatedAt || "",
-    lastObservedAt: task.lastObservedAt || task.updatedAt || ""
-  };
-}
-
-async function goAllTasks() {
-  const tasks = await downloaderSidecar.listTasks();
-  return Array.isArray(tasks) ? tasks : [];
-}
-
-async function ensureGoDownloadTask(userId, accountId, peerId, messageId, options = {}) {
-  const { entity, message } = await mediaMessage(userId, accountId, peerId, messageId);
-  const contentType = message.photo ? "image/jpeg" : message.document?.mimeType || "";
-  const kind = mediaKind(message, contentType);
-  const size = Number(message.file?.size || message.document?.size || 0);
-  const { fileName, filePath, downloadDir } = await mediaFileInfo(userId, accountId, message, contentType, kind);
-  await fs.ensureDir(downloadDir);
-  const id = goDownloaderTaskId(userId, accountId, peerId, messageId);
-  const source = options.source || "manual";
-  const downloaderState = await downloaderSidecar.state().catch(() => null);
-  const configuredTransport = downloaderState?.config?.transport || "http-bridge";
-  const readyAccountKeys = Array.isArray(downloaderState?.nativeMTProto?.readyAccountKeys)
-    ? downloaderState.nativeMTProto.readyAccountKeys
-    : [];
-  const nativeEligible = size >= 100 * 1024 * 1024 && readyAccountKeys.includes(`${userId}|${accountId}`);
-  const transport = configuredTransport === "native-mtproto" || nativeEligible ? "native-mtproto" : "http-bridge";
-  const task = await downloaderSidecar.enqueueTask({
-    id,
-    userId,
-    accountId,
-    peerId,
-    messageId: Number(messageId),
-    fileName,
-    filePath,
-    partPath: `${filePath}.part`,
-    kind,
-    contentType: contentType || mime.lookup(fileName) || "application/octet-stream",
-    size,
-    source,
-    autoCache: Boolean(options.autoCache || source === "auto"),
-    transport,
-    sourceUrl: internalMediaSourceUrl(userId, accountId, peerId, messageId),
-    metadataUrl: internalMediaMetadataUrl(userId, accountId, peerId, messageId),
-    inlineUrl: `/api/media/${accountId}/${encodeURIComponent(peerId)}/${messageId}?inline=1`,
-    nativeFile: nativeFileLocation(peerId, message, contentType, fileName, kind),
-    nativePeer: nativePeerLocation(peerId, entity),
-    order: Number(options.order || 0) || Date.now(),
-    dedupKey: options.dedupKey || ""
-  });
-  return normalizeGoDownloadTask(task);
-}
-
-async function mediaNativeMetadata(userId, accountId, peerId, messageId) {
-  const { entity, message } = await mediaMessage(userId, accountId, peerId, messageId);
-  const contentType = message.photo ? "image/jpeg" : message.document?.mimeType || "";
-  const kind = mediaKind(message, contentType);
-  const file = message.file || {};
-  const fileName = safeName(file.name || message.document?.mimeType || `telegram-${messageId}`);
-  return {
-    accountId,
-    peerId,
-    messageId: Number(messageId),
-    nativeFile: nativeFileLocation(peerId, message, contentType, fileName, kind),
-    nativePeer: nativePeerLocation(peerId, entity)
-  };
-}
-
-async function startGoDownloadTask(userId, accountId, peerId, messageId, _io, options = {}) {
-  return ensureGoDownloadTask(userId, accountId, peerId, messageId, options);
-}
-
-async function listGoDownloadTasks(userId) {
-  const tasks = await goAllTasks().catch(() => []);
-  return tasks
-    .filter((task) => task.userId === userId && !task.autoCache && task.source !== "auto")
-    .sort((a, b) => String(b.createdAt || b.updatedAt).localeCompare(String(a.createdAt || a.updatedAt)))
-    .map(normalizeGoDownloadTask);
-}
-
-async function listGoSilentCacheTasks(userId) {
-  const tasks = await goAllTasks().catch(() => []);
-  return tasks
-    .filter((task) => task.userId === userId && task.status !== "cancelled")
-    .sort((a, b) => {
-      const orderDiff = Number(a.order || 0) - Number(b.order || 0);
-      if (orderDiff) return orderDiff;
-      return String(b.createdAt || b.updatedAt).localeCompare(String(a.createdAt || a.updatedAt));
-    })
-    .map(normalizeGoSilentTask);
-}
-
-async function goSilentCacheState(userId) {
-  const state = await downloaderSidecar.state();
-  const config = state?.config || {};
-  const tasks = (Array.isArray(state?.tasks) ? state.tasks : [])
-    .filter((task) => task.userId === userId && task.status !== "cancelled")
-    .sort((a, b) => Number(a.order || 0) - Number(b.order || 0))
-    .map(normalizeGoSilentTask);
-  const taskTransports = new Set(tasks.map((task) => task.transport).filter(Boolean));
-  const activeTransport = taskTransports.has("native-mtproto") ? "native-mtproto" : (config.transport || state?.transport || "http-bridge");
-  return {
-    enabled: config.enabled !== false,
-    rateLimitBps: Number(config.rateLimitBps || 0),
-    concurrency: Math.max(1, Number(config.concurrency || 1)),
-    configuredConcurrency: Math.max(1, Number(config.concurrency || 1)),
-    effectiveConcurrency: Number(state?.running || 0),
-    mode: config.mode || "conservative",
-    transport: activeTransport,
-    running: tasks.filter((task) => task.status === "running").length,
-    tasks,
-    engine: "go-sidecar"
-  };
-}
-
-async function setGoSilentCacheControl(userId, payload = {}) {
-  const patch = {};
-  if (payload.enabled !== undefined) patch.enabled = Boolean(payload.enabled);
-  if (payload.rateLimitBps !== undefined) patch.rateLimitBps = Math.max(0, Math.min(1024 * 1024 * 1024, Number(payload.rateLimitBps || 0)));
-  if (payload.concurrency !== undefined) patch.concurrency = Math.max(1, Math.min(10, Number(payload.concurrency || 1)));
-  if (payload.mode !== undefined) patch.mode = normalizedSilentCacheMode(payload.mode);
-  if (payload.transport !== undefined) patch.transport = payload.transport === "native-mtproto" ? "native-mtproto" : "http-bridge";
-  await downloaderSidecar.updateConfig(patch);
-  return goSilentCacheState(userId);
-}
-
-async function reorderGoSilentCacheTasks(userId, orderedIds = []) {
-  const ids = Array.isArray(orderedIds) ? orderedIds : [];
-  const tasks = await goAllTasks();
-  const byId = new Map(tasks.map((task) => [task.id, task]));
-  for (const [index, id] of ids.entries()) {
-    const task = byId.get(id);
-    if (task && task.userId === userId) {
-      await downloaderSidecar.enqueueTask({ ...task, order: index + 1 });
-    }
-  }
-  return goSilentCacheState(userId);
-}
-
-async function cancelGoSilentCacheTask(userId, taskId) {
-  const task = await downloaderSidecar.getTask(taskId);
-  if (!task || task.userId !== userId) throw Object.assign(new Error("找不到后台缓存任务"), { status: 404 });
-  await downloaderSidecar.cancelTask(taskId);
-  return { ok: true, id: taskId };
-}
-
-async function cancelGoSilentCacheTasks(userId, taskIds = []) {
-  const ids = Array.isArray(taskIds) ? taskIds : [];
-  const cancelled = [];
-  for (const id of ids) {
-    const task = await downloaderSidecar.getTask(id).catch(() => null);
-    if (!task || task.userId !== userId) continue;
-    await downloaderSidecar.cancelTask(id).catch(() => {});
-    cancelled.push(id);
-  }
-  return { ok: true, ids: cancelled };
-}
-
-async function resumeGoDownloadTask(userId, taskId) {
-  const task = await downloaderSidecar.getTask(taskId);
-  if (!task || task.userId !== userId) throw Object.assign(new Error("找不到下载任务"), { status: 404 });
-  return normalizeGoDownloadTask(await downloaderSidecar.queueTask(taskId));
-}
-
-async function cancelGoDownloadTask(userId, taskId) {
-  const task = await downloaderSidecar.getTask(taskId);
-  if (!task || task.userId !== userId) throw Object.assign(new Error("找不到下载任务"), { status: 404 });
-  return normalizeGoDownloadTask(await downloaderSidecar.cancelTask(taskId));
-}
-
-async function clearGoDownloadTask(userId, taskId) {
-  const task = await downloaderSidecar.getTask(taskId);
-  if (!task || task.userId !== userId) throw Object.assign(new Error("找不到下载任务"), { status: 404 });
-  await downloaderSidecar.deleteTask(taskId);
-  return { ok: true };
-}
-
-async function deleteGoDownloadTask(userId, taskId) {
-  const task = await downloaderSidecar.getTask(taskId);
-  if (!task || task.userId !== userId) throw Object.assign(new Error("找不到下载任务"), { status: 404 });
-  await downloaderSidecar.deleteTask(taskId);
-  await fs.remove(task.partPath || `${task.filePath}.part`).catch(() => {});
-  await fs.remove(task.filePath).catch(() => {});
-  return { ok: true };
-}
-
-async function cacheVideoSilentlyGo(userId, accountId, peerId, message) {
-  const contentType = message.document?.mimeType || "";
-  const kind = mediaKind(message, contentType);
-  const size = Number(message.file?.size || message.document?.size || 0);
-  if (kind !== "video" || size <= VIDEO_CACHE_THRESHOLD) return false;
-  const mediaInfo = await mediaFileInfo(userId, accountId, message, contentType, kind);
-  const dedupKey = silentDedupKey(userId, accountId, peerId, mediaInfo.fileName, size);
-  const tasks = await goAllTasks().catch(() => []);
-  const duplicate = tasks.find((task) => (
-    task.userId === userId &&
-    task.accountId === accountId &&
-    task.peerId === peerId &&
-    task.status !== "cancelled" &&
-    (task.id === goDownloaderTaskId(userId, accountId, peerId, message.id) ||
-      silentDedupKey(task.userId, task.accountId, task.peerId, task.fileName, task.size) === dedupKey)
-  ));
-  if (duplicate) return false;
-  await ensureGoDownloadTask(userId, accountId, peerId, message.id, {
-    source: "auto",
-    autoCache: true,
-    dedupKey,
-    order: Date.now()
-  });
-  return true;
-}
-
-async function cacheLargeVideosInChatGo(userId, accountId, peerId, io = realtimeIo) {
-  realtimeIo = io || realtimeIo;
-  const client = await getClient(userId, accountId);
-  const entity = await resolvePeer(userId, accountId, peerId);
-  const recent = await client.getMessages(entity, { limit: 120 }).catch(() => []);
-  let queued = 0;
-  for (const message of recent) {
-    if (!message?.media) continue;
-    if (await cacheVideoSilentlyGo(userId, accountId, peerId, message)) queued += 1;
-  }
-  return { queued };
-}
-
-async function goSilentCacheSpeedDiagnostics(userId) {
-  const state = await downloaderSidecar.state();
-  const tasks = (Array.isArray(state?.tasks) ? state.tasks : []).filter((task) => task.userId === userId && (task.autoCache || task.source === "auto"));
-  const running = tasks.filter((task) => ["downloading", "running"].includes(task.status));
-  const primary = running[0] || tasks.find((task) => task.status === "queued") || tasks[0];
-  return {
-    testedAt: new Date().toISOString(),
-    ok: Boolean(state?.ok),
-    enabled: state?.config?.enabled !== false,
-    rateLimitBps: Number(state?.config?.rateLimitBps || 0),
-    concurrency: Number(state?.config?.concurrency || 1),
-    configuredConcurrency: Number(state?.config?.concurrency || 1),
-    effectiveConcurrency: Number(state?.running || 0),
-    cacheMode: state?.config?.mode || "conservative",
-    transport: state?.config?.transport || state?.transport || "http-bridge",
-    mode: "go-sidecar",
-    running: running.length,
-    queued: tasks.filter((task) => task.status === "queued").length,
-    partSizeKb: Math.round(Number(state?.config?.partSize || (1024 * 1024)) / 1024),
-    result: {
-      bytesRead: 0,
-      chunks: 0,
-      durationMs: 0,
-      speedBps: Number(state?.speedBps || 0),
-      runningTasks: running.length,
-      requestedChunkSize: Number(state?.config?.partSize || (1024 * 1024)),
-      effectiveChunkSize: Number(state?.config?.partSize || (1024 * 1024)),
-      fallbackCount: 0,
-      limitInvalidCount: 0
-    },
-    task: primary ? normalizeGoSilentTask(primary) : null,
-    activeTasks: tasks.slice(0, 20).map(normalizeGoSilentTask),
-    note: "Go 下载服务已接管队列与文件写入；诊断显示 Go 任务聚合速度。媒体源传输层会在运行诊断中显示。"
-  };
-}
-
-async function goNativeAccounts() {
-  const activeAccounts = await readAccounts();
-  await Promise.all(activeAccounts.map((account) => syncGoNativeAccount(account).catch(() => null)));
-  const accounts = await downloaderSidecar.nativeAccounts();
-  if (!Array.isArray(accounts)) return [];
-  const activeKeys = new Set(activeAccounts.map((account) => `${account.userId}:${account.id}`));
-  return accounts.filter((account) => activeKeys.has(`${account.userId}:${account.accountId}`));
-}
-
-async function goNativeAccountHealth(userId, accountId) {
-  const account = (await readAccounts()).find((item) => item.userId === userId && item.id === accountId);
-  if (!account) throw Object.assign(new Error("账号不存在"), { status: 404 });
-  await syncGoNativeAccount(account).catch(() => null);
-  return downloaderSidecar.checkNativeAccount(userId, accountId);
-}
-
-async function goNativeAccountLoginStart(userId, accountId, payload = {}) {
-  const account = (await readAccounts()).find((item) => item.userId === userId && item.id === accountId);
-  if (!account) throw Object.assign(new Error("账号不存在"), { status: 404 });
-  const { apiId, apiHash } = await telegramConfig();
-  await syncGoNativeAccount(account).catch(() => null);
-  return downloaderSidecar.startNativeLogin(userId, accountId, {
-    phone: payload.phone || account.phone || "",
-    apiId,
-    apiHash
-  });
-}
-
-async function goNativeAccountQRLoginStart(userId, accountId, payload = {}) {
-  const account = (await readAccounts()).find((item) => item.userId === userId && item.id === accountId);
-  if (!account) throw Object.assign(new Error("账号不存在"), { status: 404 });
-  const { apiId, apiHash } = await telegramConfig();
-  await syncGoNativeAccount(account).catch(() => null);
-  return downloaderSidecar.startNativeQRLogin(userId, accountId, {
-    apiId: payload.apiId || apiId,
-    apiHash: payload.apiHash || apiHash
-  });
-}
-
-async function goNativeAccountQRLoginStatus(userId, accountId, payload = {}) {
-  return downloaderSidecar.pollNativeQRLogin(userId, accountId, {
-    loginId: payload.loginId
-  });
-}
-
-async function goNativeAccountLoginCode(userId, accountId, payload = {}) {
-  return downloaderSidecar.submitNativeLoginCode(userId, accountId, {
-    loginId: payload.loginId,
-    code: payload.code
-  });
-}
-
-async function goNativeAccountLoginPassword(userId, accountId, payload = {}) {
-  return downloaderSidecar.submitNativeLoginPassword(userId, accountId, {
-    loginId: payload.loginId,
-    password: payload.password
-  });
-}
-
-async function restoreGoBackgroundTasks(io) {
-  realtimeIo = io;
-  await loadPersistentTasks();
-  for (const task of downloadTasks.values()) {
-    if (!task.userId || !task.accountId || !task.peerId || !task.messageId) continue;
-    if (task.status === "completed") continue;
-    await ensureGoDownloadTask(task.userId, task.accountId, task.peerId, task.messageId, {
-      source: task.source || (task.autoCache ? "auto" : "manual"),
-      autoCache: Boolean(task.autoCache || task.source === "auto"),
-      dedupKey: task.dedupKey || "",
-      order: Number(task.order || Date.parse(task.createdAt || "") || Date.now())
-    }).catch((error) => {
-      console.warn("Failed to migrate legacy download task:", error.message);
-    });
-  }
-}
-
 async function cleanupCache() {
   const settings = await cacheSettings();
   const cutoff = Date.now() - settings.retentionDays * 24 * 60 * 60 * 1000;
@@ -3036,33 +2630,25 @@ module.exports = {
   completeCode,
   completePassword,
   cacheMedia,
-  cacheLargeVideosInChat: cacheLargeVideosInChatGo,
-  cancelDownloadTask: cancelGoDownloadTask,
+  cacheLargeVideosInChat,
+  cancelDownloadTask,
   chatDetails,
   chatMedia,
-  clearDownloadTask: clearGoDownloadTask,
-  deleteDownloadTask: deleteGoDownloadTask,
+  clearDownloadTask,
+  deleteDownloadTask,
   downloadMedia,
   mediaThumbnail,
-  listDownloadTasks: listGoDownloadTasks,
-  listSilentCacheTasks: listGoSilentCacheTasks,
-  silentCacheSpeedDiagnostics: goSilentCacheSpeedDiagnostics,
-  silentCacheState: goSilentCacheState,
-  setSilentCacheControl: setGoSilentCacheControl,
-  reorderSilentCacheTasks: reorderGoSilentCacheTasks,
-  monitorSilentCacheTasks: () => {},
-  nativeAccounts: goNativeAccounts,
-  nativeAccountHealth: goNativeAccountHealth,
-  nativeAccountLoginStart: goNativeAccountLoginStart,
-  nativeAccountQRLoginStart: goNativeAccountQRLoginStart,
-  nativeAccountQRLoginStatus: goNativeAccountQRLoginStatus,
-  nativeAccountLoginCode: goNativeAccountLoginCode,
-  nativeAccountLoginPassword: goNativeAccountLoginPassword,
-  mediaNativeMetadata,
-  cancelSilentCacheTask: cancelGoSilentCacheTask,
-  cancelSilentCacheTasks: cancelGoSilentCacheTasks,
-  resumeDownloadTask: resumeGoDownloadTask,
-  startDownloadTask: startGoDownloadTask,
+  listDownloadTasks,
+  listSilentCacheTasks,
+  silentCacheSpeedDiagnostics,
+  silentCacheState: serializeSilentCacheState,
+  setSilentCacheControl,
+  reorderSilentCacheTasks,
+  monitorSilentCacheTasks,
+  cancelSilentCacheTask,
+  cancelSilentCacheTasks,
+  resumeDownloadTask,
+  startDownloadTask,
   streamVideoMedia,
   listAccounts,
   listChats,
@@ -3073,7 +2659,7 @@ module.exports = {
   cleanupCache,
   profilePhoto,
   resolveTelegramLink,
-  restoreBackgroundTasks: restoreGoBackgroundTasks,
+  restoreBackgroundTasks,
   search,
   sendText,
   startLogin,

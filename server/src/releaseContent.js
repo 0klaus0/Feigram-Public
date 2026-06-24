@@ -14,6 +14,19 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.70",
+    title: "Feigram 2.0.70 更新",
+    version: "2.0.70",
+    level: "success",
+    createdAt: "2026-06-24T10:00:00.000Z",
+    body: [
+      "移除实验性 Go 下载模块，主动下载与群视频后台缓存统一恢复为 Telegram/GramJS 管线。",
+      "FPK 不再包含或启动 feigram-downloader，管理后台同步移除 Go 登录、健康检查和 sidecar 配置。",
+      "升级时会尝试把旧 Go 队列中的未完成任务迁移到 GramJS 队列，并沿用已有 .part 断点文件。",
+      "恢复 GramJS 默认连接策略，继续支持 v2rayA 自动代理、并发、限速、任务恢复和缓存清理。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.69",
     title: "Feigram 2.0.69 更新",
     version: "2.0.69",
