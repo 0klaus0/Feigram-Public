@@ -14,6 +14,18 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.71",
+    title: "Feigram 2.0.71 更新",
+    version: "2.0.71",
+    level: "success",
+    createdAt: "2026-06-24T17:10:00.000Z",
+    body: [
+      "修复已有 Telegram session 初始化后仍使用 TCP 80，造成连接建立后立即被网络侧断开的情况。",
+      "GramJS 主连接、跨 DC 媒体连接与自动重连现在统一使用 TCP 443。",
+      "本次升级保留现有 Telegram 登录状态和下载断点，无需重新登录或清空任务。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.70",
     title: "Feigram 2.0.70 更新",
     version: "2.0.70",

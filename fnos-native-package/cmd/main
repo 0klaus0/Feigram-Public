@@ -19,8 +19,8 @@ export DATA_DIR="${DATA_HOME}/data"
 export DOWNLOAD_DIR="${DATA_HOME}/data/downloads"
 export LOG_FILE="$LOG_FILE"
 export APP_EDITION="Feigram 2.0 fnOS Client Edition"
-export APP_VERSION="2.0.70"
-export APP_CHANGELOG="移除 Go 下载模块，缓存和下载统一恢复为 Telegram/GramJS 管线。"
+export APP_VERSION="2.0.71"
+export APP_CHANGELOG="修复 GramJS 已有会话仍连接 Telegram TCP 80 导致的反复断线，所有主连接和媒体 DC 统一使用 TCP 443。"
 export NODE_ENV="production"
 
 is_running() {

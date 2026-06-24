@@ -10,6 +10,7 @@ const { dataDir, downloadTasksPath, readAccounts, removeAccount, safeId, silentC
 const { readSettings } = require("./settings");
 const { decryptText, encryptText } = require("./cryptoBox");
 const { resolveTelegramProxy } = require("./telegramProxy");
+const { ConnectionTCPFull443 } = require("./telegramConnection");
 
 const clients = new Map();
 const cacheClients = new Map();
@@ -867,6 +868,7 @@ async function createClient(sessionString = "") {
   const client = new TelegramClient(session, apiId, apiHash, {
     connectionRetries: 5,
     retryDelay: 2000,
+    connection: ConnectionTCPFull443,
     proxy
   });
   await withTimeout(client.connect(), 20000, "连接 Telegram 超时，请检查网络");
