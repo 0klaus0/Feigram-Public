@@ -14,6 +14,18 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.75",
+    title: "Feigram 2.0.75 更新",
+    version: "2.0.75",
+    level: "success",
+    createdAt: "2026-06-25T16:50:00.000Z",
+    body: [
+      "修复重新登录后仍可能复用旧 Telegram session，导致 invalid auth key、msg_key mismatch 和连接超时的问题。",
+      "同一个飞牛账户下只有一个 Telegram 账号时，重新登录会直接覆盖旧账号记录，不再生成新旧账号分叉。",
+      "重置 Telegram client 时保留连接锁生命周期，避免重置过程中并发创建第二个 GramJS client。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.74",
     title: "Feigram 2.0.74 更新",
     version: "2.0.74",

@@ -19,8 +19,8 @@ export DATA_DIR="${DATA_HOME}/data"
 export DOWNLOAD_DIR="${DATA_HOME}/data/downloads"
 export LOG_FILE="$LOG_FILE"
 export APP_EDITION="Feigram 2.0 fnOS Client Edition"
-export APP_VERSION="2.0.74"
-export APP_CHANGELOG="修复独立下载 client 复用 session 导致 invalid auth key；每账号恢复唯一 GramJS client，并仅重建异常媒体 DC sender。"
+export APP_VERSION="2.0.75"
+export APP_CHANGELOG="修复 Telegram 重新登录后仍复用旧 session 的问题；重新登录会覆盖单账号旧记录并清理旧连接。"
 export NODE_ENV="production"
 
 is_running() {

@@ -13,6 +13,7 @@ const { resolveTelegramProxy } = require("./telegramProxy");
 const { ConnectionTCPAbridged443 } = require("./telegramConnection");
 
 const clients = new Map();
+const clientSessionFingerprints = new Map();
 const loggedTransportProfiles = new Set();
 const clientConnectLocks = new Map();
 const peerCache = new Map();
@@ -57,17 +58,29 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function errorMessage(error) {
+  return String(error?.message || error || "");
+}
+
+function sessionFingerprint(sessionString = "") {
+  return crypto.createHash("sha256").update(String(sessionString || "")).digest("hex");
+}
+
 function isTransientDownloadError(error) {
-  const message = String(error?.message || error || "");
-  return /FILE_REFERENCE_EXPIRED|File reference expired|Request was unsuccessful|TIMEOUT|timeout|retryUntilAck|retry limit reached|unexpected EOF|ECONN|ETIMEDOUT|EPIPE|socket|network|disconnect|CONNECTION_NOT_INITED|AUTH_KEY_UNREGISTERED|AUTH_KEY_DUPLICATED|Not connected/i.test(message);
+  const message = errorMessage(error);
+  return /FILE_REFERENCE_EXPIRED|File reference expired|Request was unsuccessful|TIMEOUT|timeout|retryUntilAck|retry limit reached|unexpected EOF|ECONN|ETIMEDOUT|EPIPE|socket|network|disconnect|CONNECTION_NOT_INITED|AUTH_KEY_UNREGISTERED|AUTH_KEY_DUPLICATED|AUTH_BYTES_INVALID|AUTH_TOKEN_EXPIRED|invalid auth key|msg_key|Not connected/i.test(message);
 }
 
 function isDuplicatedAuthKey(error) {
-  return /AUTH_KEY_DUPLICATED/i.test(String(error?.message || error || ""));
+  return /AUTH_KEY_DUPLICATED/i.test(errorMessage(error));
+}
+
+function isAuthKeyCorruption(error) {
+  return /AUTH_KEY_UNREGISTERED|AUTH_KEY_DUPLICATED|AUTH_BYTES_INVALID|AUTH_TOKEN_EXPIRED|invalid auth key|msg_key/i.test(errorMessage(error));
 }
 
 function isFileReferenceExpired(error) {
-  return /FILE_REFERENCE_EXPIRED|File reference expired/i.test(String(error?.message || error || ""));
+  return /FILE_REFERENCE_EXPIRED|File reference expired/i.test(errorMessage(error));
 }
 
 function nextSilentOrder() {
@@ -930,33 +943,40 @@ async function getClient(userId, accountId) {
 }
 
 async function getClientUnlocked(userId, accountId) {
+  const account = (await readAccounts()).find((item) => item.id === accountId && item.userId === userId);
+  if (!account) throw Object.assign(new Error("账号不存在"), { status: 404 });
+  const sessionString = await decryptText(account.session);
+  const expectedFingerprint = sessionFingerprint(sessionString);
   const existing = clients.get(accountId);
-  if (existing) {
+  if (existing && clientSessionFingerprints.get(accountId) !== expectedFingerprint) {
+    await resetTelegramClient(accountId);
+  } else if (existing) {
     try {
       if (existing.connected === false) await existing.connect();
       if (await existing.checkAuthorization()) return existing;
     } catch (error) {
       await resetTelegramClient(accountId);
-      if (!isDuplicatedAuthKey(error)) {
-        // Fall through and rebuild the client from the saved session.
-      } else {
+      if (isAuthKeyCorruption(error)) {
         await sleep(1500);
       }
+      // Fall through and rebuild the client from the saved session.
     }
   }
-  const account = (await readAccounts()).find((item) => item.id === accountId && item.userId === userId);
-  if (!account) throw Object.assign(new Error("账号不存在"), { status: 404 });
   let client;
   try {
-    client = await createClient(await decryptText(account.session));
+    client = await createClient(sessionString);
     if (!(await client.checkAuthorization())) throw Object.assign(new Error("账号登录已失效"), { status: 401 });
   } catch (error) {
     if (isDuplicatedAuthKey(error)) {
       throw Object.assign(new Error("Telegram 检测到账号重复连接。请先安装 2.0.24 并等待服务重启；如果仍出现，请在账号管理里退出后重新登录 Telegram。"), { status: 409 });
     }
+    if (isAuthKeyCorruption(error)) {
+      throw Object.assign(new Error("Telegram 登录状态已损坏或失效，请在账号管理里重新登录该账号。"), { status: 401 });
+    }
     throw error;
   }
   clients.set(accountId, client);
+  clientSessionFingerprints.set(accountId, expectedFingerprint);
   if (realtimeIo) registerUpdates(realtimeIo, accountId, client);
   return client;
 }
@@ -978,14 +998,29 @@ async function resetDownloadSender(client, dcId) {
   } catch {}
 }
 
+async function closeTelegramClient(client) {
+  if (!client) return;
+  if (typeof client._cleanupExportedSender === "function") {
+    for (const dcId of [1, 2, 3, 4, 5]) {
+      try {
+        await client._cleanupExportedSender(dcId);
+      } catch {}
+    }
+  }
+  try {
+    await client.disconnect();
+  } catch {}
+  try {
+    if (typeof client.destroy === "function") await client.destroy();
+  } catch {}
+}
+
 async function resetTelegramClient(accountId) {
   const client = clients.get(accountId);
-  if (client) {
-    try {
-      await client.disconnect();
-    } catch {}
-  }
   clients.delete(accountId);
+  clientSessionFingerprints.delete(accountId);
+  peerCache.delete(accountId);
+  await closeTelegramClient(client);
 }
 
 async function startLogin(userId, { label, phoneNumber }) {
@@ -1072,44 +1107,52 @@ async function discardPendingLogin(loginId) {
   const pending = pendingLogins.get(loginId);
   pendingLogins.delete(loginId);
   if (!pending?.client) return;
-  try {
-    await pending.client.disconnect();
-  } catch {}
+  await closeTelegramClient(pending.client);
 }
 
 async function saveLoggedInClient(loginId, io) {
   const pending = pendingLogins.get(loginId);
   const me = await pending.client.getMe();
-  const id = safeId("account");
+  const rawUserId = toText(me.id);
+  const accounts = await readAccounts();
+  const exactAccount = accounts.find((item) => (
+    item.userId === pending.userId &&
+    ((rawUserId && String(item.rawUserId || "") === rawUserId) ||
+      (pending.phoneNumber && item.phoneNumber === pending.phoneNumber))
+  ));
+  const userAccounts = accounts.filter((item) => item.userId === pending.userId);
+  const existingAccount = exactAccount || (userAccounts.length === 1 ? userAccounts[0] : null);
+  const id = existingAccount?.id || safeId("account");
+  const savedSession = pending.client.session.save();
+  const savedFingerprint = sessionFingerprint(savedSession);
+  if (existingAccount) await resetTelegramClient(id);
+  const now = new Date().toISOString();
   const account = {
+    ...existingAccount,
     id,
     userId: pending.userId,
-    label: pending.label,
-    phoneNumber: pending.phoneNumber,
-    displayName: [me.firstName, me.lastName].filter(Boolean).join(" ") || me.username || pending.label,
-    username: me.username || "",
-    rawUserId: toText(me.id),
-    session: await encryptText(pending.client.session.save()),
-    createdAt: new Date().toISOString()
+    label: pending.label || existingAccount?.label || pending.phoneNumber || rawUserId,
+    phoneNumber: pending.phoneNumber || existingAccount?.phoneNumber || "",
+    displayName: [me.firstName, me.lastName].filter(Boolean).join(" ") || me.username || existingAccount?.displayName || pending.label,
+    username: me.username || existingAccount?.username || "",
+    rawUserId,
+    session: await encryptText(savedSession),
+    createdAt: existingAccount?.createdAt || now,
+    updatedAt: now
   };
   await upsertAccount(account);
   clients.set(id, pending.client);
+  clientSessionFingerprints.set(id, savedFingerprint);
+  peerCache.delete(id);
   registerUpdates(io, id, pending.client);
   pendingLogins.delete(loginId);
   return { account: { ...account, session: undefined, connected: true } };
 }
 
 async function logout(userId, accountId) {
-  const client = clients.get(accountId);
-  if (client) {
-    try {
-      await client.disconnect();
-    } catch {}
-  }
-  clients.delete(accountId);
-  peerCache.delete(accountId);
   const account = (await readAccounts()).find((item) => item.id === accountId);
   if (!account || account.userId !== userId) throw Object.assign(new Error("账号不存在"), { status: 404 });
+  await resetTelegramClient(accountId);
   await removeAccount(accountId);
 }
 
@@ -1819,10 +1862,16 @@ async function runDownloadTask(task, io) {
       return;
     }
     if (error.status !== 499 && isTransientDownloadError(error) && Number(task.retryCount || 0) < DOWNLOAD_RETRY_LIMIT) {
-      await resetDownloadSender(client, mediaDcId);
+      if (isAuthKeyCorruption(error)) {
+        await resetTelegramClient(task.accountId);
+      } else {
+        await resetDownloadSender(client, mediaDcId);
+      }
       task.retryCount = Number(task.retryCount || 0) + 1;
       task.status = "queued";
-      task.error = `网络波动，自动重试 ${task.retryCount}/${DOWNLOAD_RETRY_LIMIT}`;
+      task.error = isAuthKeyCorruption(error)
+        ? `Telegram 登录连接已重置，自动重试 ${task.retryCount}/${DOWNLOAD_RETRY_LIMIT}`
+        : `网络波动，自动重试 ${task.retryCount}/${DOWNLOAD_RETRY_LIMIT}`;
       task.speedBps = 0;
       task.retryAfter = Date.now() + Math.min(30000, 3000 * task.retryCount);
       task.updatedAt = new Date().toISOString();
