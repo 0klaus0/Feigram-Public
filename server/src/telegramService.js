@@ -79,6 +79,22 @@ function isAuthKeyCorruption(error) {
   return /AUTH_KEY_UNREGISTERED|AUTH_KEY_DUPLICATED|AUTH_BYTES_INVALID|AUTH_TOKEN_EXPIRED|invalid auth key|msg_key/i.test(errorMessage(error));
 }
 
+function isTelegramSessionTimeout(error) {
+  const message = errorMessage(error);
+  return error?.status === 504 || /连接 Telegram 超时|获取 Telegram 会话超时|TIMEOUT|timeout/i.test(message);
+}
+
+function isSessionMarkedInvalid(account) {
+  return Boolean(account?.sessionInvalid || account?.needsRelogin || account?.telegramStatus === "needs-relogin");
+}
+
+function sessionInvalidError(reason) {
+  const message = reason
+    ? `Telegram 登录状态已损坏或失效，请在账号管理里重新登录该账号。原因：${reason}`
+    : "Telegram 登录状态已损坏或失效，请在账号管理里重新登录该账号。";
+  return Object.assign(new Error(message), { status: 401 });
+}
+
 function isFileReferenceExpired(error) {
   return /FILE_REFERENCE_EXPIRED|File reference expired/i.test(errorMessage(error));
 }
@@ -931,6 +947,24 @@ async function listAccounts(userId) {
   }));
 }
 
+async function markAccountNeedsRelogin(accountId, reason) {
+  if (!accountId) return;
+  await resetTelegramClient(accountId);
+  const accounts = await readAccounts();
+  const account = accounts.find((item) => item.id === accountId);
+  if (!account) return;
+  const now = new Date().toISOString();
+  await upsertAccount({
+    ...account,
+    sessionInvalid: true,
+    needsRelogin: true,
+    telegramStatus: "needs-relogin",
+    lastError: errorMessage(reason) || "Telegram 登录状态已损坏或失效",
+    sessionInvalidAt: now,
+    updatedAt: now
+  });
+}
+
 async function getClient(userId, accountId) {
   const lockKey = String(accountId || "");
   const existingLock = clientConnectLocks.get(lockKey);
@@ -945,6 +979,8 @@ async function getClient(userId, accountId) {
 async function getClientUnlocked(userId, accountId) {
   const account = (await readAccounts()).find((item) => item.id === accountId && item.userId === userId);
   if (!account) throw Object.assign(new Error("账号不存在"), { status: 404 });
+  if (isSessionMarkedInvalid(account)) throw sessionInvalidError(account.lastError);
+  if (!account.session) throw sessionInvalidError("Telegram session 不存在");
   const sessionString = await decryptText(account.session);
   const expectedFingerprint = sessionFingerprint(sessionString);
   const existing = clients.get(accountId);
@@ -955,10 +991,11 @@ async function getClientUnlocked(userId, accountId) {
       if (existing.connected === false) await existing.connect();
       if (await existing.checkAuthorization()) return existing;
     } catch (error) {
-      await resetTelegramClient(accountId);
-      if (isAuthKeyCorruption(error)) {
-        await sleep(1500);
+      if (isAuthKeyCorruption(error) || isTelegramSessionTimeout(error)) {
+        await markAccountNeedsRelogin(accountId, error);
+        throw sessionInvalidError(errorMessage(error));
       }
+      await resetTelegramClient(accountId);
       // Fall through and rebuild the client from the saved session.
     }
   }
@@ -967,11 +1004,14 @@ async function getClientUnlocked(userId, accountId) {
     client = await createClient(sessionString);
     if (!(await client.checkAuthorization())) throw Object.assign(new Error("账号登录已失效"), { status: 401 });
   } catch (error) {
-    if (isDuplicatedAuthKey(error)) {
-      throw Object.assign(new Error("Telegram 检测到账号重复连接。请先安装 2.0.24 并等待服务重启；如果仍出现，请在账号管理里退出后重新登录 Telegram。"), { status: 409 });
+    if (client) {
+      try {
+        await closeTelegramClient(client);
+      } catch {}
     }
-    if (isAuthKeyCorruption(error)) {
-      throw Object.assign(new Error("Telegram 登录状态已损坏或失效，请在账号管理里重新登录该账号。"), { status: 401 });
+    if (isDuplicatedAuthKey(error) || isAuthKeyCorruption(error) || isTelegramSessionTimeout(error)) {
+      await markAccountNeedsRelogin(accountId, error);
+      throw sessionInvalidError(errorMessage(error));
     }
     throw error;
   }
@@ -1137,6 +1177,11 @@ async function saveLoggedInClient(loginId, io) {
     username: me.username || existingAccount?.username || "",
     rawUserId,
     session: await encryptText(savedSession),
+    sessionInvalid: false,
+    needsRelogin: false,
+    telegramStatus: "active",
+    lastError: "",
+    sessionInvalidAt: "",
     createdAt: existingAccount?.createdAt || now,
     updatedAt: now
   };

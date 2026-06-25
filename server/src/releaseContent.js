@@ -14,6 +14,18 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.76",
+    title: "Feigram 2.0.76 更新",
+    version: "2.0.76",
+    level: "success",
+    createdAt: "2026-06-25T17:30:00.000Z",
+    body: [
+      "增强 Telegram session 损坏检测：遇到 invalid auth key、msg_key mismatch、AUTH_KEY_DUPLICATED 或加载阶段超时后，不再继续复用旧 session。",
+      "账号会自动标记为需要重新登录，避免反复出现连接超时、聊天列表加载失败和重新登录后仍使用旧状态的问题。",
+      "重新登录成功后会清除失效标记，并写入新的 Telegram session。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.75",
     title: "Feigram 2.0.75 更新",
     version: "2.0.75",

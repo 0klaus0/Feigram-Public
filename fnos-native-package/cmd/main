@@ -19,8 +19,8 @@ export DATA_DIR="${DATA_HOME}/data"
 export DOWNLOAD_DIR="${DATA_HOME}/data/downloads"
 export LOG_FILE="$LOG_FILE"
 export APP_EDITION="Feigram 2.0 fnOS Client Edition"
-export APP_VERSION="2.0.75"
-export APP_CHANGELOG="修复 Telegram 重新登录后仍复用旧 session 的问题；重新登录会覆盖单账号旧记录并清理旧连接。"
+export APP_VERSION="2.0.76"
+export APP_CHANGELOG="增强 Telegram session 损坏熔断；坏 session 会标记为需要重新登录，重新登录成功后清除失效标记。"
 export NODE_ENV="production"
 
 is_running() {
