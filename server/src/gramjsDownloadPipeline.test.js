@@ -14,11 +14,12 @@ test("telegram service exports the GramJS download pipeline", () => {
   assert.doesNotMatch(source, /downloaderSidecar|startGoDownloadTask|restoreGoBackgroundTasks/);
 });
 
-test("background downloads use an isolated GramJS client pool", () => {
+test("background downloads reuse the account's single GramJS auth-key owner", () => {
   const source = fs.readFileSync(path.join(__dirname, "telegramService.js"), "utf8");
-  assert.doesNotMatch(source, /async function getCacheClient\([^)]*\) \{\s*return getClient/);
-  assert.match(source, /const client = await getCacheClient\(task\.userId, task\.accountId\)/);
-  assert.match(source, /await resetCacheClient\(task\.accountId\)/);
+  assert.match(source, /async function getCacheClient\([^)]*\) \{[\s\S]*?return getClient\(userId, accountId\);/);
+  assert.doesNotMatch(source, /const cacheClients = new Map/);
+  assert.match(source, /client = await getCacheClient\(task\.userId, task\.accountId\)/);
+  assert.match(source, /await resetDownloadSender\(client, mediaDcId\)/);
 });
 
 test("native package does not start or build the removed Go sidecar", () => {

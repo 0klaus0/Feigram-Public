@@ -13,10 +13,8 @@ const { resolveTelegramProxy } = require("./telegramProxy");
 const { ConnectionTCPAbridged443 } = require("./telegramConnection");
 
 const clients = new Map();
-const cacheClients = new Map();
 const loggedTransportProfiles = new Set();
 const clientConnectLocks = new Map();
-const cacheClientConnectLocks = new Map();
 const peerCache = new Map();
 const pendingLogins = new Map();
 const downloadTasks = new Map();
@@ -964,48 +962,23 @@ async function getClientUnlocked(userId, accountId) {
 }
 
 async function getCacheClient(userId, accountId) {
-  const existingLock = cacheClientConnectLocks.get(accountId);
-  if (existingLock) return existingLock;
-  const lock = getCacheClientUnlocked(userId, accountId).finally(() => {
-    if (cacheClientConnectLocks.get(accountId) === lock) cacheClientConnectLocks.delete(accountId);
-  });
-  cacheClientConnectLocks.set(accountId, lock);
-  return lock;
+  // A Telegram auth key must have exactly one live GramJS owner. Creating a
+  // second client from the saved StringSession causes INVALID_AUTH_KEY and
+  // msg_key mismatches. Queue scheduling already limits an account to one
+  // background transfer, so downloads share the account's canonical client.
+  return getClient(userId, accountId);
 }
 
-async function getCacheClientUnlocked(userId, accountId) {
-  const existing = cacheClients.get(accountId);
-  if (existing) {
-    try {
-      if (existing.connected === false) await existing.connect();
-      if (await existing.checkAuthorization()) return existing;
-    } catch {
-      await resetCacheClient(accountId);
-    }
-  }
-  const account = (await readAccounts()).find((item) => item.id === accountId && item.userId === userId);
-  if (!account) throw Object.assign(new Error("账号不存在"), { status: 404 });
-  const client = await createClient(await decryptText(account.session));
-  if (!(await client.checkAuthorization())) {
-    await client.disconnect().catch(() => {});
-    throw Object.assign(new Error("下载连接的 Telegram 登录已失效"), { status: 401 });
-  }
-  cacheClients.set(accountId, client);
-  return client;
-}
-
-async function resetCacheClient(accountId) {
-  const client = cacheClients.get(accountId);
-  if (client) {
-    try {
-      await client.disconnect();
-    } catch {}
-  }
-  cacheClients.delete(accountId);
+async function resetDownloadSender(client, dcId) {
+  const targetDc = Number(dcId || 0);
+  const primaryDc = Number(client?.session?.dcId || 0);
+  if (!client || !targetDc || targetDc === primaryDc || typeof client._cleanupExportedSender !== "function") return;
+  try {
+    await client._cleanupExportedSender(targetDc);
+  } catch {}
 }
 
 async function resetTelegramClient(accountId) {
-  await resetCacheClient(accountId);
   const client = clients.get(accountId);
   if (client) {
     try {
@@ -1134,7 +1107,6 @@ async function logout(userId, accountId) {
     } catch {}
   }
   clients.delete(accountId);
-  await resetCacheClient(accountId);
   peerCache.delete(accountId);
   const account = (await readAccounts()).find((item) => item.id === accountId);
   if (!account || account.userId !== userId) throw Object.assign(new Error("账号不存在"), { status: 404 });
@@ -1748,9 +1720,12 @@ async function runDownloadTask(task, io) {
   task.retryAfter = 0;
   task.updatedAt = new Date().toISOString();
   emitDownloadTask(io, task);
+  let client;
+  let mediaDcId = 0;
   try {
     const { message } = await mediaMessage(task.userId, task.accountId, task.peerId, task.messageId);
-    const client = await getCacheClient(task.userId, task.accountId);
+    client = await getCacheClient(task.userId, task.accountId);
+    mediaDcId = Number(message.document?.dcId || 0);
     await fs.ensureDir(task.downloadDir);
     if (await fs.pathExists(task.filePath)) {
       const stat = await fs.stat(task.filePath);
@@ -1844,7 +1819,7 @@ async function runDownloadTask(task, io) {
       return;
     }
     if (error.status !== 499 && isTransientDownloadError(error) && Number(task.retryCount || 0) < DOWNLOAD_RETRY_LIMIT) {
-      await resetCacheClient(task.accountId);
+      await resetDownloadSender(client, mediaDcId);
       task.retryCount = Number(task.retryCount || 0) + 1;
       task.status = "queued";
       task.error = `网络波动，自动重试 ${task.retryCount}/${DOWNLOAD_RETRY_LIMIT}`;
@@ -2711,13 +2686,6 @@ module.exports = {
       } catch {}
     }
     clients.clear();
-    for (const client of cacheClients.values()) {
-      try {
-        await client.disconnect();
-      } catch {}
-    }
-    cacheClients.clear();
-    cacheClientConnectLocks.clear();
     peerCache.clear();
     pendingLogins.clear();
     await loadSavedClients(io);
