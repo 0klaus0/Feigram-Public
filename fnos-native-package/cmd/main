@@ -20,8 +20,9 @@ export DOWNLOAD_DIR="${DATA_HOME}/data/downloads"
 export LOG_FILE="$LOG_FILE"
 export APP_EDITION="Feigram 2.0 fnOS Client Edition"
 export APP_VERSION="2.0.19"
-export APP_CHANGELOG="增强 Telegram session 损坏熔断；坏 session 会标记为需要重新登录，重新登录成功后清除失效标记。"
+export APP_CHANGELOG="支持 ARM64 架构；新增 DPI 抗干扰混淆传输 (obfuscated) 模式，解决直连被干扰导致的 msg_key mismatch 问题。"
 export NODE_ENV="production"
+export TELEGRAM_TRANSPORT="${TELEGRAM_TRANSPORT:-obfuscated}"
 
 is_running() {
     if [ -f "$PID_FILE" ]; then
