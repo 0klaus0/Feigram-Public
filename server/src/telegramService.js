@@ -10,7 +10,7 @@ const { dataDir, downloadTasksPath, readAccounts, removeAccount, safeId, silentC
 const { readSettings } = require("./settings");
 const { decryptText, encryptText } = require("./cryptoBox");
 const { resolveTelegramProxy } = require("./telegramProxy");
-const { ConnectionTCPAbridged443 } = require("./telegramConnection");
+const { getConnectionClass } = require("./telegramConnection");
 
 const clients = new Map();
 const clientSessionFingerprints = new Map();
@@ -894,19 +894,21 @@ async function createClient(sessionString = "") {
   } else if (Number(session.port) === 80) {
     session.setDC(session.dcId, session.serverAddress, 443);
   }
+  const transport = settings.telegramTransport || process.env.TELEGRAM_TRANSPORT || "abridged";
+  const connectionClass = getConnectionClass(transport);
   const client = new TelegramClient(session, apiId, apiHash, {
     connectionRetries: 5,
     retryDelay: 2000,
-    connection: ConnectionTCPAbridged443,
+    connection: connectionClass,
     proxy
   });
-  const transportProfile = `${resolvedProxy.source || "direct"}:${resolvedProxy.host || ""}:${resolvedProxy.port || ""}`;
+  const transportProfile = `${resolvedProxy.source || "direct"}:${resolvedProxy.host || ""}:${resolvedProxy.port || ""}:${transport}`;
   if (!loggedTransportProfiles.has(transportProfile)) {
     loggedTransportProfiles.add(transportProfile);
     const route = resolvedProxy.enabled
       ? `${resolvedProxy.source} SOCKS5 ${resolvedProxy.host}:${resolvedProxy.port}`
       : "direct";
-    console.log(`Telegram transport: GramJS MTProto abridged TCP/443 via ${route}`);
+    console.log(`Telegram transport: GramJS MTProto ${transport} TCP/443 via ${route}`);
   }
   await withTimeout(client.connect(), 20000, "连接 Telegram 超时，请检查网络");
   return client;
