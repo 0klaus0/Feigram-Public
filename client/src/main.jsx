@@ -1156,7 +1156,12 @@ function App() {
   const messageItems = useMemo(() => buildMessageItems(messages), [messages]);
   const visibleChats = useMemo(() => {
     const folder = folders.find((item) => String(item.id) === String(activeFolder));
-    if (!folder) return chats;
+    if (!folder) {
+      if (String(activeFolder) === "all" && !appSettings.foldersShowArchived) {
+        return chats.filter((chat) => !chat.archived);
+      }
+      return chats;
+    }
     if (folder.chatIds?.length) {
       const ids = new Set(folder.chatIds);
       return chats.filter((chat) => ids.has(chat.id));
@@ -1173,7 +1178,7 @@ function App() {
       if (chat.type === "private" && (flags.contacts || flags.nonContacts || flags.bots)) return true;
       return include.size === 0 && !flags.groups && !flags.broadcasts && !flags.contacts && !flags.nonContacts && !flags.bots;
     });
-  }, [chats, folders, activeFolder]);
+  }, [chats, folders, activeFolder, appSettings.foldersShowArchived]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -1197,13 +1202,10 @@ function App() {
     if (!accountId) return;
     socket?.emit("account:join", accountId);
     loadChats();
-    window.setTimeout(() => {
-      if (appSettings.foldersEnabled) loadFolders();
-      else {
-        setFolders([]);
-        setActiveFolder("all");
-      }
-    }, 250);
+    if (!appSettings.foldersEnabled) {
+      setFolders([]);
+      setActiveFolder("all");
+    }
   }, [accountId, socket, appSettings.foldersEnabled]);
 
   useEffect(() => {
@@ -1319,10 +1321,11 @@ function App() {
     setBusy(true);
     setError("");
     try {
-      const list = await api(`/api/chats?account=${encodeURIComponent(accountId)}&query=${encodeURIComponent(nextQuery)}`);
-      const visible = appSettings.foldersShowArchived ? list : list.filter((chat) => !chat.archived);
-      setChats(visible);
-      if (appSettings.foldersAutoSelectFirst && !activeChat && visible[0]) selectChat(visible[0]);
+      const data = await api(`/api/chats-with-folders?account=${encodeURIComponent(accountId)}&query=${encodeURIComponent(nextQuery)}`);
+      setChats(data.chats || []);
+      if (appSettings.foldersEnabled && data.folders) setFolders(data.folders);
+      const visibleChatsList = appSettings.foldersShowArchived ? (data.chats || []) : (data.chats || []).filter((chat) => !chat.archived);
+      if (appSettings.foldersAutoSelectFirst && !activeChat && visibleChatsList[0]) selectChat(visibleChatsList[0]);
     } catch (err) {
       setError(err.message);
     } finally {
