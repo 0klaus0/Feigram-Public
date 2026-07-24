@@ -162,8 +162,17 @@ app.get("/api/folders", asyncRoute(async (req, res) => {
   res.json(await tg.listFolders(req.user.id, req.query.account));
 }));
 
+app.get("/api/chats-with-folders", asyncRoute(async (req, res) => {
+  res.json(await tg.listChatsAndFolders(req.user.id, req.query.account, req.query.query || ""));
+}));
+
 app.get("/api/messages", asyncRoute(async (req, res) => {
-  res.json(await tg.listMessages(req.user.id, req.query.account, req.query.peer, req.query.limit, req.query.before, req.query.around));
+  const messages = await tg.listMessages(req.user.id, req.query.account, req.query.peer, req.query.limit, req.query.before, req.query.around);
+  if (messages.length) {
+    const maxId = Math.max(...messages.map((m) => Number(m.id)));
+    tg.markAsRead(req.user.id, req.query.account, req.query.peer, maxId).catch(() => {});
+  }
+  res.json(messages);
 }));
 
 app.post("/api/messages", asyncRoute(async (req, res) => {
