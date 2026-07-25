@@ -727,14 +727,63 @@ function filterMatchesChat(filter, chat, dialog) {
   return false;
 }
 
+function actionText(message) {
+  const action = message.action;
+  if (!action) return "";
+  const klass = action.className || action.constructor?.name || "";
+  const sender = message.senderId ? (action.inviterId || message.senderId) : "";
+  const user = sender ? toText(sender) : "";
+  const userLink = (action.userId || user) ? `[${toText(action.userId || user)}]` : "";
+  if (klass === "MessageActionChannelCreate") return `${userLink} 创建了此频道`;
+  if (klass === "MessageActionChatCreate") return `${userLink} 创建了此群组`;
+  if (klass === "MessageActionChatEditTitle") return `${userLink} 将群组名称改为「${action.title || ""}」`;
+  if (klass === "MessageActionChatEditPhoto") return `${userLink} 更新了群组头像`;
+  if (klass === "MessageActionChatDeletePhoto") return `${userLink} 删除了群组头像`;
+  if (klass === "MessageActionChatAddUser") return `${userLink} 邀请了 [${toText(action.userId)}] 加入群组`;
+  if (klass === "MessageActionChatDeleteUser") return `${userLink} 将 [${toText(action.userId)}] 移出群组`;
+  if (klass === "MessageActionChatJoinedByLink") return `${userLink} 通过邀请链接加入了群组`;
+  if (klass === "MessageActionChatJoinedByRequest") return `${userLink} 通过申请加入了群组`;
+  if (klass === "MessageActionGroupCall") {
+    const duration = Number(action.duration || 0);
+    const mins = Math.floor(duration / 60);
+    const ended = action.className === "MessageActionGroupCall" ? "的" : "";
+    return duration > 0
+      ? `${userLink} ${ended}群通话已结束，持续 ${mins} 分钟`
+      : `${userLink} ${ended}群通话开始了`;
+  }
+  if (klass === "MessageActionGroupCallScheduled") return `群通话已安排`;
+  if (klass === "MessageActionPinMessage") return `${userLink} 置顶了消息`;
+  if (klass === "MessageActionHistoryClear") return `${userLink} 清除了聊天记录`;
+  if (klass === "MessageActionBotDomain") return `${userLink} 设置了此频道关联的域名`;
+  if (klass === "MessageActionScreenshotTaken") return `${userLink} 在此聊天中截了屏`;
+  if (klass === "MessageActionTopicCreate") return `${userLink} 创建了话题「${action.title || ""}」`;
+  if (klass === "MessageActionTopicEdit") return `${userLink} 编辑了话题「${action.title || ""}」`;
+  if (klass === "MessageActionSetMessagesTTLS") return `${userLink} 设置了自动删除消息`;
+  if (klass === "MessageActionGiftPremium") return `${userLink} 赠送了 Premium`;
+  if (klass === "MessageActionStarGift") return `${userLink} 赠送了礼物`;
+  if (klass === "MessageActionSetChatWallPaper") return `${userLink} 更新了聊天背景`;
+  if (klass === "MessageActionSetSameChatWallPaper") return `${userLink} 应用了相同的聊天背景`;
+  if (klass === "MessageActionWebPage") return "";
+  return `服务消息 (${klass})`;
+}
+
 function messageText(message) {
-  return message.message || "";
+  if (message.message) return message.message;
+  return actionText(message);
 }
 
 function mediaKind(message, mimeType = "") {
   if (message.photo) return "image";
   if (mimeType.startsWith("image/")) return "image";
-  if (mimeType.startsWith("video/") || message.video) return "video";
+  if (message.video || (message.document && mimeType.startsWith("video/"))) {
+    const attr = message.document?.attributes?.find?.((a) => a.className === "DocumentAttributeVideo" || a.constructor?.name === "DocumentAttributeVideo");
+    if (attr?.roundMessage) return "roundVideo";
+    return "video";
+  }
+  if (message.voice || (message.document && mimeType.startsWith("audio/") && !message.document.attributes?.some((a) => a.className === "DocumentAttributeAudio" && a.performer))) return "voice";
+  if (message.audio || (message.document && message.document.attributes?.some((a) => a.className === "DocumentAttributeAudio" && a.performer))) return "audio";
+  if (message.sticker) return "sticker";
+  if (message.animation) return "animation";
   return "file";
 }
 
@@ -824,8 +873,13 @@ function serializeMessage(message) {
     mimeType: kind === "image" && !mimeType ? "image/jpeg" : mimeType,
     kind,
     ...videoDimensions(message),
-    fileName: message.file?.name || message.document?.attributes?.find?.((a) => a.fileName)?.fileName || "",
+    fileName: message.file?.name || message.document?.attributes?.find?.((a) => a.fileName)?.fileName || kind === "voice" ? "语音消息" : kind === "roundVideo" ? "视频消息" : kind === "audio" ? "音频文件" : kind === "sticker" ? "贴纸" : kind === "animation" ? "GIF" : "",
     size: toText(message.file?.size || message.document?.size || "")
+  } : null;
+  const action = message.action ? {
+    className: message.action.className || message.action.constructor?.name || "",
+    title: message.action.title || "",
+    duration: Number(message.action.duration || 0)
   } : null;
 
   const buttons = message.replyMarkup?.rows?.map((row) => (
@@ -847,7 +901,8 @@ function serializeMessage(message) {
     sender: serializeSender(message.sender, toText(message.senderId)),
     groupedId: toText(message.groupedId),
     buttons,
-    media
+    media,
+    action
   };
 }
 
@@ -1238,11 +1293,15 @@ async function listChats(userId, accountId, query = "") {
 async function listFolders(userId, accountId) {
   return foregroundTelegramOperation(accountId, async () => {
   const client = await getClient(userId, accountId);
-  const [filterResult, mainDialogs, archivedDialogs] = await Promise.all([
+  const [filterResult, mainDialogs] = await Promise.all([
     withTimeout(client.invoke(new Api.messages.GetDialogFilters()), 15000, "获取 Telegram 分组超时").catch(() => []),
-    withTimeout(client.getDialogs({ limit: DIALOG_FETCH_LIMIT }), 20000, "获取 Telegram 会话超时").catch(() => []),
-    withTimeout(client.getDialogs({ limit: DIALOG_FETCH_LIMIT, folderId: 1 }), 15000, "获取归档会话超时").catch(() => [])
+    withTimeout(client.getDialogs({ limit: DIALOG_FETCH_LIMIT }), 20000, "获取 Telegram 会话超时").catch(() => [])
   ]);
+  const archivedDialogs = await withTimeout(
+    client.invoke(new Api.messages.GetDialogs({ folderId: 1, offsetDate: 0, offsetId: 0, offsetPeer: new Api.InputPeerEmpty(), limit: DIALOG_FETCH_LIMIT, hash: 0 })),
+    15000,
+    "获取归档会话超时"
+  ).catch(() => []);
   const dialogs = [...mainDialogs, ...archivedDialogs];
   const accountPeers = new Map();
   const chatsById = new Map();
@@ -1301,11 +1360,15 @@ async function listFolders(userId, accountId) {
 async function listChatsAndFolders(userId, accountId, query = "") {
   return foregroundTelegramOperation(accountId, async () => {
     const client = await getClient(userId, accountId);
-    const [filterResult, mainDialogs, archivedDialogs] = await Promise.all([
+    const [filterResult, mainDialogs] = await Promise.all([
       withTimeout(client.invoke(new Api.messages.GetDialogFilters()), 15000, "获取 Telegram 分组超时").catch(() => []),
-      withTimeout(client.getDialogs({ limit: DIALOG_FETCH_LIMIT }), 20000, "获取 Telegram 会话超时"),
-      withTimeout(client.getDialogs({ limit: DIALOG_FETCH_LIMIT, folderId: 1 }), 15000, "获取归档会话超时").catch(() => [])
+      withTimeout(client.getDialogs({ limit: DIALOG_FETCH_LIMIT }), 20000, "获取 Telegram 会话超时")
     ]);
+    const archivedDialogs = await withTimeout(
+      client.invoke(new Api.messages.GetDialogs({ folderId: 1, offsetDate: 0, offsetId: 0, offsetPeer: new Api.InputPeerEmpty(), limit: DIALOG_FETCH_LIMIT, hash: 0 })),
+      15000,
+      "获取归档会话超时"
+    ).catch(() => []);
     const dialogs = [...mainDialogs, ...archivedDialogs];
     const accountPeers = new Map();
     const chatsById = new Map();

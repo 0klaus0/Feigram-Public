@@ -11,6 +11,7 @@ import {
   LogOut,
   MessageSquare,
   Moon,
+  PhoneIncoming,
   Play,
   Plus,
   RefreshCw,
@@ -288,11 +289,13 @@ function MessageBubble({ item, accountId, chatId, showSender, showMedia, playerM
   const taskFor = (message) => downloadTasks.find((task) => (
     task.accountId === accountId && task.peerId === chatId && Number(task.messageId) === Number(message.id)
   ));
+  const isServiceMessage = first.action && !first.media && !first.outgoing;
   return (
-    <article ref={messageRef} className={cx("message-row", first.outgoing && "mine", highlighted && "jump-highlight")}>
-      {showSender && !first.outgoing && <Avatar accountId={accountId} peerId={first.sender?.id} label={first.sender?.title || first.senderId} size={34} />}
-      <div className={cx("bubble", first.outgoing && "mine", item.type === "group" && "media-group-bubble")}>
-        {showSender && !first.outgoing && <div className="sender-line">{first.sender?.title || first.senderId}<span>{first.sender?.username ? `@${first.sender.username}` : first.senderId}</span></div>}
+    <article ref={messageRef} className={cx("message-row", first.outgoing && "mine", highlighted && "jump-highlight", isServiceMessage && "service-message")}>
+      {showSender && !first.outgoing && !isServiceMessage && <Avatar accountId={accountId} peerId={first.sender?.id} label={first.sender?.title || first.senderId} size={34} />}
+      <div className={cx("bubble", first.outgoing && "mine", item.type === "group" && "media-group-bubble", isServiceMessage && "service-bubble")}>
+        {showSender && !first.outgoing && !isServiceMessage && <div className="sender-line">{first.sender?.title || first.senderId}<span>{first.sender?.username ? `@${first.sender.username}` : first.senderId}</span></div>}
+        {isServiceMessage && first.text ? <p className="service-text"><PhoneIncoming size={14} />{first.text}</p> : <>
         {caption.text && <MessageText text={caption.text} entities={caption.entities} onOpenLink={onOpenLink} />}
         {showMedia && item.type === "group" ? <div className={cx("media-grid", messages.length > 1 && "multi")}>
           {messages.map((message) => <MessageMedia key={message.id} accountId={accountId} chatId={chatId} message={message} compact onCache={onCacheMedia} task={taskFor(message)} playerMode={playerMode} onOpenImage={onOpenImage} />)}
@@ -304,6 +307,7 @@ function MessageBubble({ item, accountId, chatId, showSender, showMedia, playerM
             </button>)}
           </div>)}
         </div>}
+        </>}
         <time>{formatTime(messages[messages.length - 1].date)}</time>
       </div>
     </article>

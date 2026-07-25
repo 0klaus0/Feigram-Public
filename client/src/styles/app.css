@@ -1510,6 +1510,33 @@ textarea {
   width: fit-content;
 }
 
+.service-message {
+  justify-content: center;
+}
+
+.service-bubble {
+  background: var(--soft);
+  border-radius: 14px;
+  max-width: 85%;
+  padding: 6px 16px;
+}
+
+.service-text {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  opacity: 0.75;
+  margin: 0;
+  padding: 0;
+  line-height: 1.4;
+}
+
+.service-text svg {
+  flex-shrink: 0;
+  opacity: 0.6;
+}
+
 .tabs {
   display: flex;
   gap: 8px;
