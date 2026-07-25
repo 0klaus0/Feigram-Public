@@ -1379,14 +1379,15 @@ async function listChatsAndFolders(userId, accountId, query = "") {
       if (!dialog.entity) return;
       const chat = serializeEntity(dialog.entity);
       const folderId = Number(dialog.folderId || 0);
+      const isArchived = folderId === 1 || Boolean(dialog.archived);
       const item = {
         ...chat,
         avatarKey: chat.id,
-        folderId,
-        folderIds: folderId ? [folderId] : [],
+        folderId: isArchived ? 1 : folderId,
+        folderIds: (isArchived || folderId) ? [isArchived ? 1 : folderId] : [],
         unreadCount: dialog.unreadCount || 0,
         pinned: Boolean(dialog.pinned),
-        archived: Boolean(dialog.archived),
+        archived: isArchived,
         lastMessage: dialog.message ? serializeMessage(dialog.message) : null
       };
       accountPeers.set(chat.id, dialog.entity);
@@ -1436,67 +1437,6 @@ async function markAsRead(userId, accountId, peerId, maxId) {
     try {
       await client.invoke(new Api.messages.ReadHistory({ peer: entity, maxId: Number(maxId) }));
     } catch {}
-  });
-}
-
-async function listChatsAndFolders(userId, accountId, query = "") {
-  return foregroundTelegramOperation(accountId, async () => {
-    const client = await getClient(userId, accountId);
-    const [filterResult, dialogs] = await Promise.all([
-      withTimeout(client.invoke(new Api.messages.GetDialogFilters()), 15000, "获取 Telegram 分组超时").catch(() => []),
-      withTimeout(client.getDialogs({ limit: DIALOG_FETCH_LIMIT }), 20000, "获取 Telegram 会话超时")
-    ]);
-    const accountPeers = new Map();
-    const chatsById = new Map();
-    const chatDialogs = [];
-    const normalizedQuery = query.trim().toLowerCase();
-    const items = [];
-    dialogs.forEach((dialog) => {
-      if (!dialog.entity) return;
-      const chat = serializeEntity(dialog.entity);
-      const folderId = Number(dialog.folderId || 0);
-      const item = {
-        ...chat,
-        avatarKey: chat.id,
-        folderId,
-        folderIds: folderId ? [folderId] : [],
-        unreadCount: dialog.unreadCount || 0,
-        pinned: Boolean(dialog.pinned),
-        archived: Boolean(dialog.archived),
-        lastMessage: dialog.message ? serializeMessage(dialog.message) : null
-      };
-      accountPeers.set(chat.id, dialog.entity);
-      chatsById.set(chat.id, item);
-      chatDialogs.push({ chat: item, dialog });
-      if (!normalizedQuery || chat.title.toLowerCase().includes(normalizedQuery) || chat.username.toLowerCase().includes(normalizedQuery)) {
-        items.push(item);
-      }
-    });
-    if (accountPeers.size) peerCache.set(accountId, accountPeers);
-    const filters = normalizeDialogFilters(filterResult);
-    const shallow = filters.map(serializeDialogFilterShallow).filter(Boolean).map((filter) => ({
-      ...filter,
-      chatIds: chatDialogs
-        .filter(({ chat, dialog }) => filterMatchesChat(filter, chat, dialog))
-        .map(({ chat }) => chat.id)
-    })).filter((filter) => filter.chatIds.length || filter.includePeerIds.length || filter.pinnedPeerIds.length);
-    let folders;
-    if (shallow.length) {
-      folders = shallow;
-    } else {
-      const folderIds = [...new Set(dialogs.map((dialog) => Number(dialog.folderId || 0)).filter(Boolean))];
-      folders = folderIds.map((id) => ({
-        id,
-        title: id === 1 ? "归档" : `文件夹 ${id}`,
-        emoticon: "",
-        includePeerIds: [],
-        pinnedPeerIds: [],
-        excludePeerIds: [],
-        flags: {},
-        chatIds: [...chatsById.values()].filter((chat) => Number(chat.folderId || 0) === id).map((chat) => chat.id)
-      }));
-    }
-    return { chats: items, folders };
   });
 }
 
