@@ -204,7 +204,7 @@ function FeigramVideo({ src, onError }) {
   return <video ref={ref} controls autoPlay preload="metadata" playsInline onError={onError} />;
 }
 
-function MessageMedia({ accountId, chatId, message, compact = false, onCache, task, playerMode = "browser" }) {
+function MessageMedia({ accountId, chatId, message, compact = false, onCache, task, playerMode = "browser", onOpenImage }) {
   const [failed, setFailed] = useState(false);
   const [active, setActive] = useState(false);
   const [localStatus, setLocalStatus] = useState("");
@@ -218,9 +218,9 @@ function MessageMedia({ accountId, chatId, message, compact = false, onCache, ta
   const cacheLabel = cacheStatus === "completed" ? "已缓存" : cacheStatus === "downloading" ? "下载中" : cacheStatus === "queued" ? "排队中" : cacheStatus === "cancelled" ? "继续缓存" : "缓存";
   if (media.kind === "image") {
     return (
-      <a className={cx("media-preview image-preview", compact && "compact-media")} href={previewUrl} target="_blank" rel="noreferrer" title="打开原图">
+      <button className={cx("media-preview image-preview", compact && "compact-media")} type="button" onClick={() => onOpenImage?.(message)} title="查看原图">
         <img src={previewUrl} alt={label} loading="lazy" />
-      </a>
+      </button>
     );
   }
   if (media.kind === "video") {
@@ -281,7 +281,7 @@ function buildMessageItems(messages) {
   return items;
 }
 
-function MessageBubble({ item, accountId, chatId, showSender, showMedia, playerMode, onOpenLink, onInlineButton, onCacheMedia, downloadTasks, highlighted = false, messageRef }) {
+function MessageBubble({ item, accountId, chatId, showSender, showMedia, playerMode, onOpenLink, onInlineButton, onCacheMedia, downloadTasks, highlighted = false, messageRef, onOpenImage }) {
   const messages = item.type === "group" ? item.messages : [item.message];
   const first = messages[0];
   const caption = messages.find((message) => message.text) || first;
@@ -295,8 +295,8 @@ function MessageBubble({ item, accountId, chatId, showSender, showMedia, playerM
         {showSender && !first.outgoing && <div className="sender-line">{first.sender?.title || first.senderId}<span>{first.sender?.username ? `@${first.sender.username}` : first.senderId}</span></div>}
         {caption.text && <MessageText text={caption.text} entities={caption.entities} onOpenLink={onOpenLink} />}
         {showMedia && item.type === "group" ? <div className={cx("media-grid", messages.length > 1 && "multi")}>
-          {messages.map((message) => <MessageMedia key={message.id} accountId={accountId} chatId={chatId} message={message} compact onCache={onCacheMedia} task={taskFor(message)} playerMode={playerMode} />)}
-        </div> : showMedia && <MessageMedia accountId={accountId} chatId={chatId} message={first} onCache={onCacheMedia} task={taskFor(first)} playerMode={playerMode} />}
+          {messages.map((message) => <MessageMedia key={message.id} accountId={accountId} chatId={chatId} message={message} compact onCache={onCacheMedia} task={taskFor(message)} playerMode={playerMode} onOpenImage={onOpenImage} />)}
+        </div> : showMedia && <MessageMedia accountId={accountId} chatId={chatId} message={first} onCache={onCacheMedia} task={taskFor(first)} playerMode={playerMode} onOpenImage={onOpenImage} />}
         {!!caption.buttons?.length && <div className="inline-buttons">
           {caption.buttons.map((row, rowIndex) => <div className="inline-button-row" key={`${caption.id}-row-${rowIndex}`}>
             {row.map((button, buttonIndex) => <button type="button" key={`${button.text}-${buttonIndex}`} onClick={() => onInlineButton(caption, button)} disabled={button.type === "unsupported"}>
@@ -1009,21 +1009,36 @@ function DownloadCenter({ open, downloads, onStart, onCancel, onClear, onDelete,
   );
 }
 
-function PlaybackModal({ item, playerMode, onClose }) {
+function MediaViewer({ item, playerMode, onClose }) {
   const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    if (!item) return undefined;
+    const handler = (event) => { if (event.key === "Escape") onClose(); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [item, onClose]);
   if (!item) return null;
   const src = mediaUrl(item.accountId, item.peerId, item.messageId, true);
   const download = mediaUrl(item.accountId, item.peerId, item.messageId);
+  const isImage = item.kind === "image";
   return (
-    <div className="modal-backdrop playback-backdrop">
-      <div className="modal playback-modal">
-        <button className="close" onClick={onClose} title="关闭"><X size={18} /></button>
-        <h2>{item.fileName || "视频播放"}</h2>
+    <div className="modal-backdrop playback-backdrop" onClick={onClose}>
+      <div className="modal playback-modal" onClick={(event) => event.stopPropagation()}>
+        <div className="viewer-header">
+          <button className="icon-button viewer-back" onClick={onClose} title="返回"><ArrowLeft size={20} /></button>
+          <h2 className="viewer-title">{item.fileName || (isImage ? "图片查看" : "视频播放")}</h2>
+          <button className="close" onClick={onClose} title="关闭"><X size={18} /></button>
+        </div>
         <div className="playback-stage">
-          {playerMode === "local"
-            ? <a className="video-load-button local-player-link" href={download}>下载后用本地播放器打开</a>
-            : <FeigramVideo src={src} onError={() => setFailed(true)} />}
+          {isImage ? (
+            <img src={src} alt={item.fileName || "图片"} className="fullscreen-image" />
+          ) : playerMode === "local" ? (
+            <a className="video-load-button local-player-link" href={download}>下载后用本地播放器打开</a>
+          ) : (
+            <FeigramVideo src={src} onError={() => setFailed(true)} />
+          )}
           {failed ? <div className="video-fallback">当前视频编码无法直接在线播放，请切换本地播放器模式或下载到本地播放。</div> : null}
+          <a className="viewer-download-link" href={download} download={item.fileName || ""} target="_blank" rel="noreferrer"><Download size={16} />下载</a>
         </div>
       </div>
     </div>
@@ -1143,12 +1158,17 @@ function App() {
   const [chatMediaLoadingMore, setChatMediaLoadingMore] = useState(false);
   const [autoCacheChats, setAutoCacheChats] = useState(() => JSON.parse(localStorage.getItem("feigrame.autoCacheChats") || "{}"));
   const [autoCacheBusy, setAutoCacheBusy] = useState(false);
-  const [playback, setPlayback] = useState(null);
+  const [mediaViewer, setMediaViewer] = useState(null);
   const socket = useSocket(token);
   const messagesRef = useRef(null);
   const messageNodeRefs = useRef(new Map());
   const shouldScrollBottomRef = useRef(false);
   const pendingScrollRef = useRef(null);
+  const appSettingsRef = useRef(appSettings);
+  appSettingsRef.current = appSettings;
+  const messagesCacheRef = useRef(new Map());
+  const activeChatRef = useRef(activeChat);
+  activeChatRef.current = activeChat;
   const [highlightMessageId, setHighlightMessageId] = useState(0);
   const activeAccount = accounts.find((account) => account.id === accountId);
   const newestAnnouncementId = announcements[0]?.id || "";
@@ -1188,8 +1208,10 @@ function App() {
   useEffect(() => {
     if (!token) return;
     api("/api/me").then(setMe).catch(() => setTokenState(""));
-    loadSettings();
-    refreshAccounts();
+    (async () => {
+      await loadSettings();
+      refreshAccounts();
+    })();
     window.setTimeout(() => {
       loadAnnouncements();
       loadAbout();
@@ -1201,6 +1223,9 @@ function App() {
   useEffect(() => {
     if (!accountId) return;
     socket?.emit("account:join", accountId);
+    messagesCacheRef.current.clear();
+    setActiveChat(null);
+    setMessages([]);
     loadChats();
     if (!appSettings.foldersEnabled) {
       setFolders([]);
@@ -1210,18 +1235,37 @@ function App() {
 
   useEffect(() => {
     if (!socket) return;
-    const handler = ({ accountId: incomingAccount, message }) => {
+    const handler = ({ accountId: incomingAccount, message, peerId }) => {
       if (incomingAccount !== accountId) return;
-      const stick = isNearBottom(messagesRef.current);
-      if (notifications && appSettings.notificationEnabled && !message.outgoing && message.text) {
-        new Notification("Feigram 新消息", { body: appSettings.notificationPreview ? message.text.slice(0, 120) : "收到一条新消息" });
+      const currentSettings = appSettingsRef.current;
+      const currentActiveChat = activeChatRef.current;
+      if (notifications && currentSettings.notificationEnabled && !message.outgoing && message.text) {
+        new Notification("Feigram 新消息", { body: currentSettings.notificationPreview ? message.text.slice(0, 120) : "收到一条新消息" });
       }
-      shouldScrollBottomRef.current = stick;
-      setMessages((current) => [...current, message]);
+      const isCurrentChat = currentActiveChat && peerId && currentActiveChat.id === peerId;
+      if (isCurrentChat) {
+        const stick = isNearBottom(messagesRef.current);
+        shouldScrollBottomRef.current = stick;
+        setMessages((current) => [...current, message]);
+      }
+      setChats((current) => {
+        const index = current.findIndex((c) => c.id === peerId);
+        if (index === -1) return current;
+        const chat = current[index];
+        const updated = {
+          ...chat,
+          unreadCount: isCurrentChat ? 0 : (chat.unreadCount || 0) + 1,
+          lastMessage: message
+        };
+        const next = [...current];
+        next.splice(index, 1);
+        next.unshift(updated);
+        return next;
+      });
     };
     socket.on("message:new", handler);
     return () => socket.off("message:new", handler);
-  }, [socket, accountId, notifications, appSettings.notificationEnabled, appSettings.notificationPreview]);
+  }, [socket, accountId, notifications]);
 
   useEffect(() => {
     if (!socket) return;
@@ -1323,9 +1367,10 @@ function App() {
     try {
       const data = await api(`/api/chats-with-folders?account=${encodeURIComponent(accountId)}&query=${encodeURIComponent(nextQuery)}`);
       setChats(data.chats || []);
-      if (appSettings.foldersEnabled && data.folders) setFolders(data.folders);
-      const visibleChatsList = appSettings.foldersShowArchived ? (data.chats || []) : (data.chats || []).filter((chat) => !chat.archived);
-      if (appSettings.foldersAutoSelectFirst && !activeChat && visibleChatsList[0]) selectChat(visibleChatsList[0]);
+      const currentSettings = appSettingsRef.current;
+      if (currentSettings.foldersEnabled && data.folders) setFolders(data.folders);
+      const visibleChatsList = currentSettings.foldersShowArchived ? (data.chats || []) : (data.chats || []).filter((chat) => !chat.archived);
+      if (currentSettings.foldersAutoSelectFirst && !activeChat && visibleChatsList[0]) selectChat(visibleChatsList[0]);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -1346,33 +1391,59 @@ function App() {
   }
 
   async function selectChat(chat, options = {}) {
+    if (activeChat && activeChat.id !== chat.id) {
+      messagesCacheRef.current.set(activeChat.id, {
+        messages,
+        hasOlder,
+        scrollTop: messagesRef.current?.scrollTop || 0
+      });
+    }
     setActiveChat(chat);
+    setChats((current) => current.map((c) => c.id === chat.id ? { ...c, unreadCount: 0 } : c));
     setChatInfoOpen(false);
     setChatDetails(null);
     messageNodeRefs.current.clear();
     const targetMessageId = Number(options.messageId || 0);
-    if (targetMessageId) {
-      shouldScrollBottomRef.current = false;
-      pendingScrollRef.current = { chatId: chat.id, messageId: targetMessageId };
-    } else if (Number.isFinite(options.restoreScrollTop)) {
-      shouldScrollBottomRef.current = false;
-      pendingScrollRef.current = { chatId: chat.id, scrollTop: options.restoreScrollTop };
+    const cached = !targetMessageId ? messagesCacheRef.current.get(chat.id) : null;
+    if (cached) {
+      setMessages(cached.messages);
+      setHasOlder(cached.hasOlder);
+      if (Number.isFinite(options.restoreScrollTop)) {
+        shouldScrollBottomRef.current = false;
+        pendingScrollRef.current = { chatId: chat.id, scrollTop: options.restoreScrollTop };
+      } else if (cached.scrollTop) {
+        shouldScrollBottomRef.current = false;
+        pendingScrollRef.current = { chatId: chat.id, scrollTop: cached.scrollTop };
+      } else {
+        shouldScrollBottomRef.current = true;
+        pendingScrollRef.current = null;
+      }
+      setBusy(false);
     } else {
-      shouldScrollBottomRef.current = true;
-      pendingScrollRef.current = null;
+      if (targetMessageId) {
+        shouldScrollBottomRef.current = false;
+        pendingScrollRef.current = { chatId: chat.id, messageId: targetMessageId };
+      } else if (Number.isFinite(options.restoreScrollTop)) {
+        shouldScrollBottomRef.current = false;
+        pendingScrollRef.current = { chatId: chat.id, scrollTop: options.restoreScrollTop };
+      } else {
+        shouldScrollBottomRef.current = true;
+        pendingScrollRef.current = null;
+      }
+      setBusy(true);
     }
-    setBusy(true);
     try {
       const around = targetMessageId ? `&around=${encodeURIComponent(targetMessageId)}` : "";
       const list = await api(`/api/messages?account=${encodeURIComponent(accountId)}&peer=${encodeURIComponent(chat.id)}&limit=80${around}`);
       setMessages(list);
       setHasOlder(list.length >= 80);
+      messagesCacheRef.current.set(chat.id, { messages: list, hasOlder: list.length >= 80, scrollTop: 0 });
       if (targetMessageId && !list.some((message) => Number(message.id) === targetMessageId)) {
         pendingScrollRef.current = null;
         notify("你要访问的内容已被删除");
       }
     } catch (err) {
-      setError(err.message);
+      if (!cached) setError(err.message);
     } finally {
       setBusy(false);
     }
@@ -1429,21 +1500,30 @@ function App() {
 
   function playDownload(item) {
     if (!item || item.kind !== "video") return;
-    setPlayback(item);
+    setMediaViewer(item);
   }
 
   function openInfoMedia(file) {
     if (!activeChat || !file) return;
-    const item = {
+    setMediaViewer({
       ...file,
       accountId,
       peerId: activeChat.id,
       messageId: file.id
-    };
-    if (file.kind === "video") {
-      setPlayback(item);
-    } else {
-      window.open(mediaUrl(accountId, activeChat.id, file.id, file.kind === "image"), "_blank", "noopener,noreferrer");
+    });
+  }
+
+  function openMessageMedia(message) {
+    if (!activeChat || !message?.media) return;
+    const media = message.media;
+    if (media.kind === "image" || media.kind === "video") {
+      setMediaViewer({
+        kind: media.kind,
+        fileName: media.fileName || "",
+        accountId,
+        peerId: activeChat.id,
+        messageId: message.id
+      });
     }
   }
 
@@ -1473,6 +1553,7 @@ function App() {
     const list = await api(`/api/messages?account=${encodeURIComponent(accountId)}&peer=${encodeURIComponent(activeChat.id)}&limit=80`);
     setMessages(list);
     setHasOlder(list.length >= 80);
+    messagesCacheRef.current.set(activeChat.id, { messages: list, hasOlder: list.length >= 80, scrollTop: top });
     requestAnimationFrame(() => {
       if (element) element.scrollTop = top;
     });
@@ -1825,6 +1906,7 @@ function App() {
                 onCacheMedia={cacheMedia}
                 downloadTasks={downloads}
                 highlighted={ids.includes(String(highlightMessageId))}
+                onOpenImage={openMessageMedia}
                 messageRef={(node) => {
                   ids.forEach((id) => {
                     if (node) messageNodeRefs.current.set(id, node);
@@ -1890,7 +1972,7 @@ function App() {
         onCancelSilentCache={cancelSilentCache}
       />
       <InfoModal announcements={announcements} about={about} open={announcementOpen} onClose={() => setAnnouncementOpen(false)} />
-      <PlaybackModal item={playback} playerMode={appSettings.playerMode} onClose={() => setPlayback(null)} />
+      <MediaViewer item={mediaViewer} playerMode={appSettings.playerMode} onClose={() => setMediaViewer(null)} />
     </main>
   );
 }
