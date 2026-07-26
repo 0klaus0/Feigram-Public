@@ -1297,11 +1297,12 @@ async function listFolders(userId, accountId) {
     withTimeout(client.invoke(new Api.messages.GetDialogFilters()), 15000, "获取 Telegram 分组超时").catch(() => []),
     withTimeout(client.getDialogs({ limit: DIALOG_FETCH_LIMIT }), 20000, "获取 Telegram 会话超时").catch(() => [])
   ]);
-  const archivedDialogs = await withTimeout(
+  const archivedResult = await withTimeout(
     client.invoke(new Api.messages.GetDialogs({ folderId: 1, offsetDate: 0, offsetId: 0, offsetPeer: new Api.InputPeerEmpty(), limit: DIALOG_FETCH_LIMIT, hash: 0 })),
     15000,
     "获取归档会话超时"
-  ).catch(() => []);
+  ).catch(() => null);
+  const archivedDialogs = (archivedResult && Array.isArray(archivedResult.dialogs)) ? archivedResult.dialogs : (Array.isArray(archivedResult) ? archivedResult : []);
   const dialogs = [...mainDialogs, ...archivedDialogs];
   const accountPeers = new Map();
   const chatsById = new Map();
@@ -1364,11 +1365,12 @@ async function listChatsAndFolders(userId, accountId, query = "") {
       withTimeout(client.invoke(new Api.messages.GetDialogFilters()), 15000, "获取 Telegram 分组超时").catch(() => []),
       withTimeout(client.getDialogs({ limit: DIALOG_FETCH_LIMIT }), 20000, "获取 Telegram 会话超时")
     ]);
-    const archivedDialogs = await withTimeout(
+    const archivedResult = await withTimeout(
       client.invoke(new Api.messages.GetDialogs({ folderId: 1, offsetDate: 0, offsetId: 0, offsetPeer: new Api.InputPeerEmpty(), limit: DIALOG_FETCH_LIMIT, hash: 0 })),
       15000,
       "获取归档会话超时"
-    ).catch(() => []);
+    ).catch(() => null);
+    const archivedDialogs = (archivedResult && Array.isArray(archivedResult.dialogs)) ? archivedResult.dialogs : (Array.isArray(archivedResult) ? archivedResult : []);
     const dialogs = [...mainDialogs, ...archivedDialogs];
     const accountPeers = new Map();
     const chatsById = new Map();
