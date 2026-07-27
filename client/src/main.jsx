@@ -1289,10 +1289,6 @@ function App() {
     setActiveChat(null);
     setMessages([]);
     loadChats();
-    if (!appSettings.foldersEnabled) {
-      setFolders([]);
-      setActiveFolder("all");
-    }
   }, [accountId, socket, appSettings.foldersEnabled]);
 
   useEffect(() => {
@@ -1430,7 +1426,7 @@ function App() {
       const data = await api(`/api/chats-with-folders?account=${encodeURIComponent(accountId)}&query=${encodeURIComponent(nextQuery)}`);
       setChats(data.chats || []);
       const currentSettings = appSettingsRef.current;
-      if (currentSettings.foldersEnabled && data.folders) setFolders(data.folders);
+      if (data.folders) setFolders(data.folders);
       const visibleChatsList = (data.chats || []).filter((chat) => !chat.archived);
       if (currentSettings.foldersAutoSelectFirst && !activeChat && visibleChatsList[0]) selectChat(visibleChatsList[0]);
     } catch (err) {
@@ -1908,7 +1904,7 @@ function App() {
               <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索" />
               {query && <button type="button" title="清除搜索" onClick={clearSearch}><X size={16} /></button>}
             </form>
-            {appSettings.foldersEnabled ? <nav className="folder-tabs">
+            <nav className="folder-tabs">
               <button className={cx(activeFolder === "all" && "active")} onClick={() => setActiveFolder("all")}>
                 <span>全部</span>
               </button>
@@ -1916,17 +1912,13 @@ function App() {
                 <span>{folder.emoticon ? `${folder.emoticon} ` : ""}{folder.title}</span>
                 {!!folder.chatIds?.length && <b>{folder.chatIds.length}</b>}
               </button>)}
-              <button className="folder-edit-btn" onClick={() => { setAdminInitialTab("folders"); setAdminOpen(true); }}>
-                <span>编辑</span>
-              </button>
-            </nav> : <nav className="folder-tabs">
-              <button className={cx(activeFolder === "all" && "active")} onClick={() => setActiveFolder("all")}>
-                <span>全部</span>
-              </button>
-              {chats.some((chat) => chat.archived) && <button className={cx(activeFolder === "archived" && "active")} onClick={() => setActiveFolder("archived")}>
+              {chats.some((chat) => chat.archived) && !folders.some((f) => f.isArchived) && <button className={cx(activeFolder === "archived" && "active")} onClick={() => setActiveFolder("archived")}>
                 <span>📦 归档</span>
               </button>}
-            </nav>}
+              {appSettings.foldersEnabled && <button className="folder-edit-btn" onClick={() => { setAdminInitialTab("folders"); setAdminOpen(true); }}>
+                <span>编辑</span>
+              </button>}
+            </nav>
             <div className="chat-list">
               {error && !activeChat && <div className="sidebar-error">
                 <strong>加载失败</strong>
