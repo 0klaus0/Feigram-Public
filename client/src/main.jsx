@@ -1238,7 +1238,11 @@ function App() {
       if (String(activeFolder) === "all") {
         return chats.filter((chat) => !chat.archived);
       }
-      return chats;
+      // 归档标签
+      if (String(activeFolder) === "archived") {
+        return chats.filter((chat) => chat.archived);
+      }
+      return chats.filter((chat) => !chat.archived);
     }
     if (folder.chatIds?.length) {
       const ids = new Set(folder.chatIds);
@@ -1904,7 +1908,7 @@ function App() {
               <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索" />
               {query && <button type="button" title="清除搜索" onClick={clearSearch}><X size={16} /></button>}
             </form>
-            {appSettings.foldersEnabled && <nav className="folder-tabs">
+            {appSettings.foldersEnabled ? <nav className="folder-tabs">
               <button className={cx(activeFolder === "all" && "active")} onClick={() => setActiveFolder("all")}>
                 <span>全部</span>
               </button>
@@ -1915,6 +1919,13 @@ function App() {
               <button className="folder-edit-btn" onClick={() => { setAdminInitialTab("folders"); setAdminOpen(true); }}>
                 <span>编辑</span>
               </button>
+            </nav> : <nav className="folder-tabs">
+              <button className={cx(activeFolder === "all" && "active")} onClick={() => setActiveFolder("all")}>
+                <span>全部</span>
+              </button>
+              {chats.some((chat) => chat.archived) && <button className={cx(activeFolder === "archived" && "active")} onClick={() => setActiveFolder("archived")}>
+                <span>📦 归档</span>
+              </button>}
             </nav>}
             <div className="chat-list">
               {error && !activeChat && <div className="sidebar-error">
