@@ -1181,7 +1181,8 @@ function App() {
   const visibleChats = useMemo(() => {
     const folder = folders.find((item) => String(item.id) === String(activeFolder));
     if (!folder) {
-      if (String(activeFolder) === "all" && !appSettings.foldersShowArchived) {
+      // "全部"永远不显示归档聊天
+      if (String(activeFolder) === "all") {
         return chats.filter((chat) => !chat.archived);
       }
       return chats;
@@ -1373,7 +1374,7 @@ function App() {
       setChats(data.chats || []);
       const currentSettings = appSettingsRef.current;
       if (currentSettings.foldersEnabled && data.folders) setFolders(data.folders);
-      const visibleChatsList = currentSettings.foldersShowArchived ? (data.chats || []) : (data.chats || []).filter((chat) => !chat.archived);
+      const visibleChatsList = (data.chats || []).filter((chat) => !chat.archived);
       if (currentSettings.foldersAutoSelectFirst && !activeChat && visibleChatsList[0]) selectChat(visibleChatsList[0]);
     } catch (err) {
       setError(err.message);
@@ -1844,25 +1845,24 @@ function App() {
           </> : <button className="secondary action-button" onClick={() => { setAdminInitialTab("accounts"); setAdminOpen(true); }}><Plus size={18} />添加 Telegram 账号</button>}
         </div>
         <div className="sidebar-main">
-          {appSettings.foldersEnabled && <nav className="folder-tabs">
-            <button className={cx(activeFolder === "all" && "active")} onClick={() => setActiveFolder("all")}>
-              <MessageSquare size={24} /><span>全部</span>
-            </button>
-            {folders.map((folder) => <button key={folder.id} className={cx(String(activeFolder) === String(folder.id) && "active")} onClick={() => setActiveFolder(folder.id)}>
-              <Folder size={24} /><span>{folder.emoticon ? `${folder.emoticon} ` : ""}{folder.title}</span>
-              {!!folder.chatIds?.length && <b>{folder.chatIds.length}</b>}
-            </button>)}
-            <button onClick={() => { setAdminInitialTab("folders"); setAdminOpen(true); }}>
-              <SlidersHorizontal size={24} /><span>编辑</span>
-            </button>
-          </nav>}
           <div className="chat-pane">
             <form className="search" onSubmit={(event) => { event.preventDefault(); loadChats(query); }}>
               <Search size={17} />
-              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索私聊、群组、频道" />
+              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索" />
               {query && <button type="button" title="清除搜索" onClick={clearSearch}><X size={16} /></button>}
-              <button title="搜索"><RefreshCw size={16} /></button>
             </form>
+            {appSettings.foldersEnabled && <nav className="folder-tabs">
+              <button className={cx(activeFolder === "all" && "active")} onClick={() => setActiveFolder("all")}>
+                <span>全部</span>
+              </button>
+              {folders.map((folder) => <button key={folder.id} className={cx(String(activeFolder) === String(folder.id) && "active")} onClick={() => setActiveFolder(folder.id)}>
+                <span>{folder.emoticon ? `${folder.emoticon} ` : ""}{folder.title}</span>
+                {!!folder.chatIds?.length && <b>{folder.chatIds.length}</b>}
+              </button>)}
+              <button className="folder-edit-btn" onClick={() => { setAdminInitialTab("folders"); setAdminOpen(true); }}>
+                <span>编辑</span>
+              </button>
+            </nav>}
             <div className="chat-list">
               {error && !activeChat && <div className="sidebar-error">
                 <strong>加载失败</strong>
@@ -1871,6 +1871,10 @@ function App() {
                   refreshAccounts(true);
                   if (accountId) loadChats(query);
                 }}>重新加载</button>
+              </div>}
+              {busy && !visibleChats.length && <div className="chat-list-loading">
+                <span className="skeleton-avatar" />
+                <span className="skeleton-text" />
               </div>}
               {visibleChats.map((chat) => <button key={chat.id} className={cx("chat-item", activeChat?.id === chat.id && "active")} onClick={() => selectChat(chat)}>
                 <Avatar accountId={accountId} peerId={chat.id} label={chat.title} />
