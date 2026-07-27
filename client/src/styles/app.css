@@ -310,7 +310,7 @@ textarea {
 .app-shell {
   background: var(--page);
   display: grid;
-  grid-template-columns: 420px minmax(0, 1fr) auto;
+  grid-template-columns: 380px minmax(0, 1fr) auto;
   height: 100dvh;
   max-height: 100%;
   min-height: 0;
@@ -331,12 +331,14 @@ textarea {
 .topbar {
   border-bottom: 1px solid var(--line);
   justify-content: space-between;
-  padding: 14px;
+  padding: 10px 14px;
+  min-height: 52px;
 }
 
 .brand-compact {
   font-weight: 700;
   gap: 8px;
+  font-size: 1.1rem;
 }
 
 .tools {
@@ -344,8 +346,8 @@ textarea {
 }
 
 .account-row {
-  gap: 8px;
-  padding: 12px 14px 0;
+  gap: 6px;
+  padding: 8px 14px 0;
 }
 
 .account-row select {
@@ -396,9 +398,10 @@ textarea {
   display: flex;
   gap: 0;
   overflow-x: auto;
-  padding: 0 8px;
+  padding: 0 4px;
   scrollbar-width: none;
   -ms-overflow-style: none;
+  background: var(--panel);
 }
 
 .folder-tabs::-webkit-scrollbar {
@@ -409,32 +412,47 @@ textarea {
   align-items: center;
   background: transparent;
   border: 0;
-  border-bottom: 2px solid transparent;
-  border-radius: 0;
+  border-radius: 8px 8px 0 0;
   color: var(--muted);
   display: flex;
   flex: 0 0 auto;
-  font-size: 0.92rem;
+  font-size: 0.9rem;
+  font-weight: 500;
   gap: 6px;
-  min-height: 44px;
-  padding: 0 14px;
+  min-height: 40px;
+  padding: 0 12px;
   position: relative;
+  transition: color 180ms ease, background 180ms ease;
   white-space: nowrap;
 }
 
+.folder-tabs button::after {
+  background: var(--accent);
+  border-radius: 2px;
+  bottom: 0;
+  content: "";
+  height: 2px;
+  left: 50%;
+  position: absolute;
+  transform: translateX(-50%) scaleX(0);
+  transition: transform 220ms ease;
+  width: calc(100% - 16px);
+}
+
 .folder-tabs button:hover {
-  background: var(--soft);
-  border-bottom-color: var(--soft);
   color: inherit;
 }
 
 .folder-tabs button.active {
-  border-bottom-color: var(--accent);
   color: var(--accent);
 }
 
+.folder-tabs button.active::after {
+  transform: translateX(-50%) scaleX(1);
+}
+
 .folder-tabs .folder-edit-btn {
-  opacity: 0.6;
+  opacity: 0.5;
   margin-left: auto;
 }
 
@@ -446,10 +464,10 @@ textarea {
   background: var(--accent);
   border-radius: 999px;
   color: white;
-  font-size: 0.7rem;
-  font-weight: 700;
+  font-size: 0.68rem;
+  font-weight: 600;
   line-height: 1;
-  min-width: 18px;
+  min-width: 16px;
   padding: 2px 5px;
   text-align: center;
 }
@@ -458,7 +476,7 @@ textarea {
   align-items: center;
   display: flex;
   gap: 0;
-  padding: 8px 12px;
+  padding: 6px 12px;
   position: relative;
 }
 
@@ -469,16 +487,17 @@ textarea {
   color: inherit;
   height: 36px;
   padding: 0 36px 0 36px;
+  transition: background 180ms ease, box-shadow 180ms ease;
   width: 100%;
 }
 
 .search input::placeholder {
   color: var(--muted);
-  opacity: 0.7;
+  opacity: 0.6;
 }
 
 .search input:focus {
-  background: var(--panel);
+  background: var(--input);
   box-shadow: 0 0 0 2px var(--accent);
   outline: none;
 }
@@ -490,6 +509,11 @@ textarea {
   position: absolute;
   top: 50%;
   transform: translateY(-50%);
+  transition: color 180ms ease;
+}
+
+.search:focus-within svg:first-child {
+  color: var(--accent);
 }
 
 .search button {
@@ -509,19 +533,44 @@ textarea {
   padding: 4px 4px;
   scrollbar-width: thin;
   -webkit-overflow-scrolling: touch;
+  scroll-behavior: smooth;
+}
+
+.chat-list > * {
+  animation: chat-fade-in 180ms ease-out both;
+}
+
+@keyframes chat-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .chat-list-loading {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 4px;
+}
+
+.skeleton-row {
   align-items: center;
   display: flex;
   gap: 10px;
-  padding: 12px;
+  min-height: 64px;
+  padding: 10px 10px;
 }
 
 .skeleton-avatar {
   animation: skeleton-pulse 1.5s infinite;
   background: var(--soft);
   border-radius: 50%;
+  flex: 0 0 auto;
   height: 48px;
   width: 48px;
 }
@@ -532,6 +581,15 @@ textarea {
   border-radius: 6px;
   flex: 1;
   height: 14px;
+  max-width: 180px;
+}
+
+.skeleton-time {
+  animation: skeleton-pulse 1.5s infinite;
+  background: var(--soft);
+  border-radius: 4px;
+  height: 12px;
+  width: 40px;
 }
 
 @keyframes skeleton-pulse {
@@ -545,11 +603,12 @@ textarea {
   border-radius: 10px;
   color: inherit;
   display: grid;
-  grid-template-columns: 48px minmax(0, 1fr) auto;
-  gap: 12px;
-  min-height: 64px;
-  padding: 10px 10px;
+  grid-template-columns: 54px minmax(0, 1fr) auto;
+  gap: 0 10px;
+  min-height: 72px;
+  padding: 8px 10px;
   text-align: left;
+  transition: background 160ms ease;
   width: 100%;
 }
 
@@ -562,8 +621,17 @@ textarea {
   color: white;
 }
 
+.chat-item .avatar {
+  align-self: center;
+  grid-row: span 1;
+}
+
 .chat-item.active .chat-copy small {
-  color: rgba(255, 255, 255, 0.7);
+  color: rgba(255, 255, 255, 0.65);
+}
+
+.chat-item.active .chat-meta time {
+  color: rgba(255, 255, 255, 0.65);
 }
 
 .chat-item.active .badge {
@@ -575,9 +643,9 @@ textarea {
   border-radius: 50%;
   flex: 0 0 auto;
   font-weight: 700;
-  height: 48px;
+  height: 54px;
   overflow: hidden;
-  width: 48px;
+  width: 54px;
 }
 
 .avatar img {
@@ -597,11 +665,12 @@ textarea {
   gap: 4px;
   justify-content: center;
   min-width: 0;
+  padding-top: 4px;
 }
 
 .chat-copy strong {
-  font-size: 0.95rem;
-  font-weight: 600;
+  font-size: 1rem;
+  font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -615,16 +684,33 @@ textarea {
   white-space: nowrap;
 }
 
+.chat-meta {
+  align-items: flex-end;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  justify-content: center;
+  padding-top: 4px;
+  min-width: 0;
+}
+
+.chat-meta time {
+  color: var(--muted);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
 .badge {
-  align-self: center;
+  align-self: flex-end;
   background: var(--accent);
   border-radius: 999px;
   color: white;
-  font-size: 0.78rem;
+  font-size: 0.75rem;
   font-weight: 600;
-  min-width: 22px;
-  padding: 3px 7px;
+  min-width: 20px;
+  padding: 2px 6px;
   text-align: center;
+  line-height: 1.4;
 }
 
 .conversation {
@@ -641,26 +727,39 @@ textarea {
   gap: 8px;
   justify-content: space-between;
   min-height: 56px;
-  padding: 8px 14px;
+  padding: 6px 12px;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
 }
 
 .conversation-title-button {
   align-items: center;
   background: transparent;
   border: 0;
+  border-radius: 8px;
   color: inherit;
   display: flex;
   flex: 1;
   gap: 10px;
   min-width: 0;
-  padding: 0;
+  padding: 4px 8px;
   text-align: left;
+  transition: background 140ms ease;
+}
+
+.conversation-title-button:hover {
+  background: var(--soft);
 }
 
 .conversation-title-button span {
   display: grid;
-  gap: 3px;
+  gap: 2px;
   min-width: 0;
+}
+
+.conversation-title-button h2 {
+  font-size: 1rem;
+  font-weight: 600;
 }
 
 .conversation-title-button h2,
@@ -668,6 +767,10 @@ textarea {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.conversation-title-button p {
+  font-size: 0.8rem;
 }
 
 .back-button {

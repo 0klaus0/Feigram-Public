@@ -18,7 +18,7 @@ const loggedTransportProfiles = new Set();
 const clientConnectLocks = new Map();
 const peerCache = new Map();
 const chatListCache = new Map();
-const CHAT_LIST_CACHE_TTL = 10000;
+const CHAT_LIST_CACHE_TTL = 60000;
 const pendingLogins = new Map();
 const downloadTasks = new Map();
 const silentCacheRecords = new Map();
@@ -1263,11 +1263,12 @@ async function logout(userId, accountId) {
 async function listChats(userId, accountId, query = "") {
   return foregroundTelegramOperation(accountId, async () => {
   const client = await getClient(userId, accountId);
-  const dialogs = await withTimeout(
+  const dialogsRaw = await withTimeout(
     client.getDialogs({ limit: DIALOG_FETCH_LIMIT }),
     20000,
     "连接 Telegram 超时，请检查网络或稍后重试"
   );
+  const dialogs = dialogsRaw.filter((d) => Number(d.folderId || 0) !== 1 && !d.archived);
   const accountPeers = new Map();
   const normalizedQuery = query.trim().toLowerCase();
   const items = dialogs
@@ -1295,7 +1296,7 @@ async function listChats(userId, accountId, query = "") {
 async function listFolders(userId, accountId) {
   return foregroundTelegramOperation(accountId, async () => {
   const client = await getClient(userId, accountId);
-  const [filterResult, mainDialogs, archivedDialogs] = await Promise.all([
+  const [filterResult, mainDialogsRaw, archivedDialogsRaw] = await Promise.all([
     withTimeout(client.invoke(new Api.messages.GetDialogFilters()), 15000, "获取 Telegram 分组超时").catch(() => []),
     withTimeout(client.getDialogs({ limit: DIALOG_FETCH_LIMIT }), 20000, "获取 Telegram 会话超时").catch(() => []),
     withTimeout(
@@ -1307,6 +1308,8 @@ async function listFolders(userId, accountId) {
       "获取归档会话超时"
     ).catch(() => [])
   ]);
+  const mainDialogs = mainDialogsRaw.filter((d) => Number(d.folderId || 0) !== 1 && !d.archived);
+  const archivedDialogs = archivedDialogsRaw.filter((d) => Number(d.folderId || 0) === 1 || d.archived);
   const dialogs = [...mainDialogs, ...archivedDialogs];
   const accountPeers = new Map();
   const chatsById = new Map();
@@ -1369,7 +1372,7 @@ async function listChatsAndFolders(userId, accountId, query = "") {
     const cached = chatListCache.get(cacheKey);
     if (cached && Date.now() - cached.time < CHAT_LIST_CACHE_TTL) return cached.data;
     const client = await getClient(userId, accountId);
-    const [filterResult, mainDialogs, archivedDialogs] = await Promise.all([
+    const [filterResult, mainDialogsRaw, archivedDialogsRaw] = await Promise.all([
       withTimeout(client.invoke(new Api.messages.GetDialogFilters()), 15000, "获取 Telegram 分组超时").catch(() => []),
       withTimeout(client.getDialogs({ limit: DIALOG_FETCH_LIMIT }), 20000, "获取 Telegram 会话超时"),
       withTimeout(
@@ -1381,6 +1384,8 @@ async function listChatsAndFolders(userId, accountId, query = "") {
         "获取归档会话超时"
       ).catch(() => [])
     ]);
+    const mainDialogs = mainDialogsRaw.filter((d) => Number(d.folderId || 0) !== 1 && !d.archived);
+    const archivedDialogs = archivedDialogsRaw.filter((d) => Number(d.folderId || 0) === 1 || d.archived);
     const dialogs = [...mainDialogs, ...archivedDialogs];
     const accountPeers = new Map();
     const chatsById = new Map();
@@ -1441,16 +1446,6 @@ async function listChatsAndFolders(userId, accountId, query = "") {
     const result = { chats: items, folders };
     if (!query) chatListCache.set(cacheKey, { data: result, time: Date.now() });
     return result;
-  });
-}
-
-async function markAsRead(userId, accountId, peerId, maxId) {
-  return foregroundTelegramOperation(accountId, async () => {
-    const client = await getClient(userId, accountId);
-    const entity = await resolvePeer(userId, accountId, peerId);
-    try {
-      await client.invoke(new Api.messages.ReadHistory({ peer: entity, maxId: Number(maxId) }));
-    } catch {}
   });
 }
 

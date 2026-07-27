@@ -75,6 +75,59 @@ function formatDuration(value) {
   return `${mins}:${String(secs).padStart(2, "0")}`;
 }
 
+function formatRelativeTime(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  const now = new Date();
+  const diff = now - date;
+  const mins = Math.floor(diff / 60000);
+  const hours = Math.floor(diff / 3600000);
+  const days = Math.floor(diff / 86400000);
+  if (mins < 1) return "刚刚";
+  if (mins < 60) return `${mins}分钟`;
+  if (hours < 24) return `${hours}小时`;
+  if (days < 7) return `${days}天`;
+  return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit" }).format(date);
+}
+
+function actionText(action) {
+  if (!action) return "";
+  const map = {
+    "phoneCall": "语音通话",
+    "groupCall": "群组通话",
+    "groupCreate": "创建了群组",
+    "groupAddUser": "加入了群组",
+    "groupDeleteUser": "离开了群组",
+    "channelCreate": "创建了频道",
+    "pinMessage": "置顶了消息",
+    "changePhoto": "更换了头像",
+    "changeTitle": "修改了群名",
+    "chatJoinedByLink": "通过链接加入",
+    "chatAddUser": "加入了群组",
+    "chatDeleteUser": "移除了成员",
+    "messagePinned": "消息已置顶",
+    "historyClear": "清除了历史记录",
+    "screenshotTaken": "截屏",
+    "customAction": "自定义操作",
+    "botAllowed": "启用了机器人",
+    "secureValuesSent": "发送了安全信息",
+    "geoProximityReached": "到达了附近",
+    "groupCallScheduled": "预约了群组通话",
+    "inviteToGroupCall": "邀请加入通话",
+    "setChatTheme": "设置了主题",
+    "webViewDataSent": "发送了网页数据",
+    "giftPremium": "赠送了高级会员",
+    "topicCreate": "创建了话题",
+    "topicEdit": "编辑了话题",
+    "suggestProfilePhoto": "建议了头像",
+    "attachMenuBotAllowed": "启用了菜单机器人",
+    "requestedPeerSent": "发送了联系人请求",
+    "setChatWallPaper": "设置了聊天壁纸",
+    "setSameChatWallPaper": "设置了相同聊天壁纸",
+  };
+  return map[action.type] || action.type || "";
+}
+
 function downloadDisplayKey(item) {
   const mediaKey = `${item.accountId}:${item.peerId}:${item.messageId}`;
   if (item.fileName && item.size) return `${item.accountId}:${item.peerId}:${item.fileName}:${item.size}`;
@@ -1873,13 +1926,20 @@ function App() {
                 }}>重新加载</button>
               </div>}
               {busy && !visibleChats.length && <div className="chat-list-loading">
-                <span className="skeleton-avatar" />
-                <span className="skeleton-text" />
+                <div className="skeleton-row"><span className="skeleton-avatar" /><span className="skeleton-text" /><span className="skeleton-time" /></div>
+                <div className="skeleton-row"><span className="skeleton-avatar" /><span className="skeleton-text" /><span className="skeleton-time" /></div>
+                <div className="skeleton-row"><span className="skeleton-avatar" /><span className="skeleton-text" /><span className="skeleton-time" /></div>
               </div>}
               {visibleChats.map((chat) => <button key={chat.id} className={cx("chat-item", activeChat?.id === chat.id && "active")} onClick={() => selectChat(chat)}>
                 <Avatar accountId={accountId} peerId={chat.id} label={chat.title} />
-                <span className="chat-copy"><strong>{chat.title}</strong><small>{chat.lastMessage?.text || chat.type}</small></span>
-                {chat.unreadCount > 0 && <span className="badge">{chat.unreadCount}</span>}
+                <span className="chat-copy">
+                  <strong>{chat.title}</strong>
+                  <small>{chat.lastMessage?.text || (chat.lastMessage?.action?.type ? actionText(chat.lastMessage.action) : chat.type)}</small>
+                </span>
+                <span className="chat-meta">
+                  {chat.lastMessage?.date ? <time>{formatRelativeTime(chat.lastMessage.date)}</time> : null}
+                  {chat.unreadCount > 0 && <span className="badge">{chat.unreadCount}</span>}
+                </span>
               </button>)}
               {!visibleChats.length && !error && <div className="empty">暂无会话</div>}
             </div>
