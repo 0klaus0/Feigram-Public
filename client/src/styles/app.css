@@ -382,8 +382,8 @@ textarea {
 }
 
 .sidebar-main {
-  display: grid;
-  grid-template-rows: auto auto auto minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
   min-height: 0;
 }
 
@@ -391,17 +391,20 @@ textarea {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  flex: 1;
 }
 
 .folder-tabs {
+  background: var(--soft);
   border-bottom: 1px solid var(--line);
   display: flex;
+  flex: 0 0 auto;
   gap: 0;
+  min-height: 40px;
   overflow-x: auto;
   padding: 0 4px;
   scrollbar-width: none;
   -ms-overflow-style: none;
-  background: var(--panel);
 }
 
 .folder-tabs::-webkit-scrollbar {
