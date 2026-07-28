@@ -24,6 +24,7 @@ const { checkForUpdates, downloadUpdate, diagnostics } = require("./diagnostics"
 const { migrateStore } = require("./migrations");
 const { rateLimit } = require("./rateLimit");
 const tg = require("./telegramService");
+const liveRelay = require("./liveStreamRelay");
 const { resolveTelegramProxy } = require("./telegramProxy");
 
 const port = Number(process.env.APP_PORT || 3088);
@@ -315,6 +316,106 @@ app.post("/api/downloads/:id/clear", asyncRoute(async (req, res) => {
 
 app.delete("/api/downloads/:id", asyncRoute(async (req, res) => {
   res.json(await tg.deleteDownloadTask(req.user.id, req.params.id, io));
+}));
+
+// === 直播流 HLS 轉發 API ===
+
+// 生成會話 ID
+function liveSessionId(userId, account, peer) {
+  const crypto = require("crypto");
+  return crypto.createHash("md5").update(`${userId}:${account}:${peer}`).digest("hex").slice(0, 12);
+}
+
+// 啟動直播流轉發
+app.post("/api/live-stream/:account/:peer/start", asyncRoute(async (req, res) => {
+  const { account, peer } = req.params;
+  const userId = req.user.id;
+
+  // 先獲取通話信息
+  const callInfo = await tg.getGroupCallInfo(userId, account, peer);
+  if (!callInfo?.active || !callInfo?.id || !callInfo?.accessHash) {
+    res.status(404).json({ error: "該群組目前沒有活躍的直播" });
+    return;
+  }
+
+  const sessionId = liveSessionId(userId, account, peer);
+  const client = await tg.getClientForRelay(userId, account);
+
+  const statusEvents = [];
+  const relay = await liveRelay.startRelay(
+    sessionId,
+    client,
+    { id: callInfo.id, accessHash: callInfo.accessHash },
+    (status) => statusEvents.push(status)
+  );
+
+  res.json({
+    sessionId,
+    status: relay.status,
+    playlistUrl: `/api/live-stream/${sessionId}/stream.m3u8`,
+    callInfo
+  });
+}));
+
+// 檢查直播流狀態
+app.get("/api/live-stream/:sessionId/status", asyncRoute(async (req, res) => {
+  const { sessionId } = req.params;
+  const ready = await liveRelay.isPlaylistReady(sessionId);
+  const relays = liveRelay.listActiveRelays();
+  const relay = relays.find((r) => r.sessionId === sessionId);
+  liveRelay.touchRelay(sessionId);
+  res.json({
+    sessionId,
+    ready,
+    status: relay?.status || "unknown",
+    chunkCount: relay?.chunkCount || 0
+  });
+}));
+
+// 心跳：更新最後觀看時間
+app.post("/api/live-stream/:sessionId/heartbeat", asyncRoute(async (req, res) => {
+  liveRelay.touchRelay(req.params.sessionId);
+  res.json({ ok: true });
+}));
+
+// 停止直播流轉發
+app.post("/api/live-stream/:sessionId/stop", asyncRoute(async (req, res) => {
+  await liveRelay.stopRelay(req.params.sessionId);
+  res.json({ ok: true });
+}));
+
+// HLS 文件服務（m3u8 和 ts 分片）
+app.get("/api/live-stream/:sessionId/:filename", asyncRoute(async (req, res) => {
+  const { sessionId, filename } = req.params;
+
+  // 安全檢查：防止路徑遍歷
+  if (!/^[\w.-]+$/.test(filename) || filename.includes("..")) {
+    res.status(400).json({ error: "無效的文件名" });
+    return;
+  }
+
+  // 更新心跳
+  liveRelay.touchRelay(sessionId);
+
+  const filePath = liveRelay.getHlsFilePath(sessionId, filename);
+  if (!await fs.pathExists(filePath)) {
+    // 如果 playlist 還沒準備好，返回 503 讓前端重試
+    res.status(503).setHeader("Retry-After", "1").json({ error: "直播流正在準備中，請稍候" });
+    return;
+  }
+
+  if (filename.endsWith(".m3u8")) {
+    res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
+    res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    // 禁用緩衝，確保客戶端即時拿到最新 playlist
+    res.setHeader("Access-Control-Allow-Origin", "*");
+  } else if (filename.endsWith(".ts")) {
+    res.setHeader("Content-Type", "video/mp2t");
+    res.setHeader("Cache-Control", "public, max-age=3600");
+    res.setHeader("Access-Control-Allow-Origin", "*");
+  }
+
+  fs.createReadStream(filePath).pipe(res);
 }));
 
 app.use(express.static(path.join(__dirname, "..", "public")));

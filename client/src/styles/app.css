@@ -994,6 +994,100 @@ textarea {
   margin: 0;
 }
 
+.live-join-section {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+  width: 100%;
+  max-width: 420px;
+}
+
+.live-join-hint {
+  color: rgba(255, 255, 255, 0.6) !important;
+  font-size: 0.85rem !important;
+  margin: 0 !important;
+}
+
+.live-link-box {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+}
+
+.live-link-input {
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 8px;
+  color: rgba(255, 255, 255, 0.9);
+  flex: 1;
+  font-size: 0.85rem;
+  min-width: 0;
+  padding: 8px 12px;
+  outline: none;
+}
+
+.live-link-input:focus {
+  border-color: rgba(255, 255, 255, 0.4);
+}
+
+.live-copy-btn {
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 500;
+  padding: 8px 16px;
+  white-space: nowrap;
+}
+
+.live-play-btn {
+  align-items: center;
+  background: #ff4d4f;
+  border: none;
+  border-radius: 24px;
+  color: white;
+  cursor: pointer;
+  display: flex;
+  font-size: 1rem;
+  font-weight: 600;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 12px 32px;
+  transition: background 0.2s, transform 0.1s;
+}
+
+.live-play-btn:hover {
+  background: #ff7875;
+}
+
+.live-play-btn:active {
+  transform: scale(0.97);
+}
+
+.live-video-container {
+  align-items: center;
+  background: #000;
+  display: flex;
+  flex: 1;
+  justify-content: center;
+  min-height: 200px;
+  position: relative;
+  width: 100%;
+}
+
+.live-video-player {
+  display: block;
+  max-height: 50vh;
+  object-fit: contain;
+  width: 100%;
+}
+
+.live-video-player::-webkit-media-controls {
+  z-index: 10;
+}
+
 .live-title-text {
   color: rgba(255, 255, 255, 0.7) !important;
   font-weight: 500;

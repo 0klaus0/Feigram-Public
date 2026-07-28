@@ -2991,6 +2991,16 @@ async function getGroupCallInfo(userId, accountId, peerId) {
   });
 }
 
+/**
+ * 為直播流轉發模組獲取 GramJS 客戶端實例
+ * 直接返回內部客戶端，避免多層包裝
+ */
+async function getClientForRelay(userId, accountId) {
+  return foregroundTelegramOperation(accountId, async () => {
+    return await getClient(userId, accountId);
+  });
+}
+
 module.exports = {
   clickMessageButton,
   completeCode,
@@ -3021,6 +3031,7 @@ module.exports = {
   listChatsAndFolders,
   listFolders,
   getGroupCallInfo,
+  getClientForRelay,
   listMessages,
   markAsRead,
   loadSavedClients,

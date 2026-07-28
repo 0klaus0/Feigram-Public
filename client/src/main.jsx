@@ -31,6 +31,7 @@ import {
   Video,
   X
 } from "lucide-react";
+import Hls from "hls.js";
 import { api, appLogin, getToken, setToken as saveToken } from "./api";
 import "./styles/app.css";
 
@@ -1130,12 +1131,21 @@ function LiveStreamViewer({ open, accountId, chat, onClose, onSetToast }) {
   const [callInfo, setCallInfo] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [relayStatus, setRelayStatus] = useState("idle"); // idle, starting, ready, playing, error
+  const [sessionId, setSessionId] = useState(null);
+  const [copied, setCopied] = useState(false);
   const pollRef = useRef(null);
+  const heartbeatRef = useRef(null);
+  const videoRef = useRef(null);
+  const hlsRef = useRef(null);
 
+  // 獲取直播通話信息
   useEffect(() => {
     if (!open || !chat) {
       setCallInfo(null);
       setError(null);
+      setRelayStatus("idle");
+      setSessionId(null);
       return;
     }
     const fetchInfo = async () => {
@@ -1159,6 +1169,136 @@ function LiveStreamViewer({ open, accountId, chat, onClose, onSetToast }) {
     };
   }, [open, chat, accountId]);
 
+  // 啟動直播流轉發
+  const startStream = async () => {
+    if (!callInfo?.active) return;
+    setRelayStatus("starting");
+    setError(null);
+    try {
+      const result = await api(`/api/live-stream/${encodeURIComponent(accountId)}/${encodeURIComponent(chat.id)}/start`, {
+        method: "POST"
+      });
+      if (result?.sessionId) {
+        setSessionId(result.sessionId);
+        // 輪詢檢查 playlist 是否就緒
+        const checkReady = async () => {
+          try {
+            const status = await api(`/api/live-stream/${result.sessionId}/status`);
+            if (status?.ready) {
+              setRelayStatus("ready");
+              startHlsPlayback(result.sessionId);
+              return true;
+            }
+          } catch {}
+          return false;
+        };
+        let attempts = 0;
+        const readyTimer = setInterval(async () => {
+          attempts++;
+          const ok = await checkReady();
+          if (ok || attempts > 30) {
+            clearInterval(readyTimer);
+            if (!ok) {
+              setRelayStatus("error");
+              setError("直播流啟動超時，請稍後重試");
+            }
+          }
+        }, 1000);
+      }
+    } catch (err) {
+      setRelayStatus("error");
+      setError(err.message || "啟動直播流失敗");
+    }
+  };
+
+  // 使用 HLS.js 播放
+  const startHlsPlayback = (sid) => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    const playlistUrl = `/api/live-stream/${sid}/stream.m3u8`;
+
+    // 清理舊的 HLS 實例
+    if (hlsRef.current) {
+      hlsRef.current.destroy();
+      hlsRef.current = null;
+    }
+
+    if (video.canPlayType("application/vnd.apple.mpegurl")) {
+      // Safari 原生支持 HLS
+      video.src = playlistUrl;
+      video.addEventListener("loadedmetadata", () => {
+        video.play().catch(() => {});
+        setRelayStatus("playing");
+      });
+    } else if (Hls.isSupported()) {
+      const hls = new Hls({
+        liveDurationInfinity: true,
+        liveBackBufferLength: 0,
+        maxBufferLength: 10,
+        maxMaxBufferLength: 20,
+        enableWorker: true,
+        lowLatencyMode: true
+      });
+      hlsRef.current = hls;
+      hls.loadSource(playlistUrl);
+      hls.attachMedia(video);
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        video.play().catch(() => {});
+        setRelayStatus("playing");
+      });
+      hls.on(Hls.Events.ERROR, (_event, data) => {
+        if (data.fatal) {
+          switch (data.type) {
+            case Hls.ErrorTypes.NETWORK_ERROR:
+              hls.startLoad();
+              break;
+            case Hls.ErrorTypes.MEDIA_ERROR:
+              hls.recoverMediaError();
+              break;
+            default:
+              setRelayStatus("error");
+              setError("視頻播放錯誤，請刷新重試");
+              hls.destroy();
+              break;
+          }
+        }
+      });
+    } else {
+      setRelayStatus("error");
+      setError("當前瀏覽器不支持 HLS 播放");
+    }
+  };
+
+  // 心跳：保持轉發會話活躍
+  useEffect(() => {
+    if (!sessionId) return;
+    heartbeatRef.current = setInterval(async () => {
+      try {
+        await api(`/api/live-stream/${sessionId}/heartbeat`, { method: "POST" });
+      } catch {}
+    }, 15000);
+    return () => {
+      if (heartbeatRef.current) clearInterval(heartbeatRef.current);
+    };
+  }, [sessionId]);
+
+  // 關閉時清理
+  useEffect(() => {
+    if (!open) {
+      if (hlsRef.current) {
+        hlsRef.current.destroy();
+        hlsRef.current = null;
+      }
+      if (sessionId) {
+        api(`/api/live-stream/${sessionId}/stop`, { method: "POST" }).catch(() => {});
+        setSessionId(null);
+      }
+      setRelayStatus("idle");
+    }
+  }, [open, sessionId]);
+
+  // ESC 關閉
   useEffect(() => {
     if (!open) return undefined;
     const handler = (event) => { if (event.key === "Escape") onClose(); };
@@ -1172,10 +1312,13 @@ function LiveStreamViewer({ open, accountId, chat, onClose, onSetToast }) {
   const videoParticipants = participants.filter((p) => p.videoJoined);
   const audioParticipants = participants.filter((p) => !p.videoJoined);
 
-  const joinLive = () => {
-    if (callInfo?.inviteLink) {
-      window.open(callInfo.inviteLink, "_blank", "noopener,noreferrer");
-    }
+  const copyLink = async () => {
+    if (!callInfo?.inviteLink) return;
+    try {
+      await navigator.clipboard.writeText(callInfo.inviteLink);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {}
   };
 
   return (
@@ -1197,12 +1340,6 @@ function LiveStreamViewer({ open, accountId, chat, onClose, onSetToast }) {
               </span>
             </p>
           </div>
-          {callInfo?.inviteLink && (
-            <button className="primary live-join-external-btn" onClick={joinLive}>
-              <PhoneIncoming size={16} />
-              加入直播
-            </button>
-          )}
         </div>
 
         <div className="live-viewer-body">
@@ -1217,12 +1354,45 @@ function LiveStreamViewer({ open, accountId, chat, onClose, onSetToast }) {
           {callInfo && (
             <>
               <div className="live-stage">
-                <div className="live-stage-placeholder">
-                  <Radio size={48} />
-                  <h3>直播进行中</h3>
-                  <p>{callInfo.inviteLink ? "点击「加入直播」在 Telegram 中观看视频直播" : "无法获取直播邀请链接，请在 Telegram 客户端中手动加入"}</p>
-                  {callInfo.title && <p className="live-title-text">主题：{callInfo.title}</p>}
-                </div>
+                {/* 視頻播放區域 */}
+                {relayStatus === "playing" || relayStatus === "ready" ? (
+                  <div className="live-video-container">
+                    <video
+                      ref={videoRef}
+                      className="live-video-player"
+                      autoPlay
+                      playsInline
+                      controls
+                    />
+                  </div>
+                ) : relayStatus === "starting" ? (
+                  <div className="live-stage-placeholder">
+                    <LoaderCircle size={40} className="button-spinner" />
+                    <h3>正在连接直播流...</h3>
+                    <p className="live-title-text">正在从 Telegram 获取视频数据</p>
+                  </div>
+                ) : (
+                  <div className="live-stage-placeholder">
+                    <Radio size={48} />
+                    <h3>直播进行中</h3>
+                    {callInfo.title && <p className="live-title-text">主题：{callInfo.title}</p>}
+                    <button className="live-play-btn" onClick={startStream}>
+                      <Play size={20} />
+                      观看直播
+                    </button>
+                    {callInfo.inviteLink && (
+                      <div className="live-join-section">
+                        <p className="live-join-hint">或复制链接在 Telegram 客户端中打开</p>
+                        <div className="live-link-box">
+                          <input className="live-link-input" value={callInfo.inviteLink} readOnly onClick={(e) => e.target.select()} />
+                          <button className="primary live-copy-btn" onClick={copyLink}>
+                            {copied ? "已复制" : "复制链接"}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
               <div className="live-participants-section">
