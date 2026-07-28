@@ -610,17 +610,19 @@ function peerFromId(peerId) {
 
 function serializeEntity(entity) {
   const title = entity.title || [entity.firstName, entity.lastName].filter(Boolean).join(" ") || entity.username || "Unknown";
-  const activeCall = entity.call ? {
+  // GramJS v2.26.22 Channel entities only expose callActive flag (bit 23), not the call object.
+  // The call details (InputGroupCall) are in ChatFull, fetched separately by getGroupCallInfo.
+  const activeCall = (entity.callActive || entity.callNotEmpty || entity.call) ? {
     active: true,
-    id: toText(entity.call.id),
-    accessHash: toText(entity.call.accessHash),
-    title: entity.call.title || "",
-    participantsCount: Number(entity.call.participantsCount || 0),
-    scheduledStartDate: entity.call.scheduleDate ? new Date(entity.call.scheduleDate * 1000).toISOString() : null,
-    startedDate: entity.call.startDate ? new Date(entity.call.startDate * 1000).toISOString() : null,
-    rtmpStream: Boolean(entity.call.rtmpStream),
-    recordVideoActive: Boolean(entity.call.recordVideoActive),
-    unmutedVideoLimit: Number(entity.call.unmutedVideoLimit || 0)
+    id: entity.call ? toText(entity.call.id) : "",
+    accessHash: entity.call ? toText(entity.call.accessHash) : "",
+    title: entity.call?.title || "",
+    participantsCount: Number(entity.call?.participantsCount || 0),
+    scheduledStartDate: entity.call?.scheduleDate ? new Date(entity.call.scheduleDate * 1000).toISOString() : null,
+    startedDate: entity.call?.startDate ? new Date(entity.call.startDate * 1000).toISOString() : null,
+    rtmpStream: Boolean(entity.call?.rtmpStream),
+    recordVideoActive: Boolean(entity.call?.recordVideoActive),
+    unmutedVideoLimit: Number(entity.call?.unmutedVideoLimit || 0)
   } : null;
   return {
     id: peerKey(entity),
@@ -2925,10 +2927,33 @@ async function getGroupCallInfo(userId, accountId, peerId) {
   return foregroundTelegramOperation(accountId, async () => {
     const client = await getClient(userId, accountId);
     const entity = await resolvePeer(userId, accountId, peerId);
-    if (!entity.call) return null;
+    // GramJS v2.26.22: Channel entity has callActive flag but not the call object.
+    // The InputGroupCall is in ChatFull, fetched via GetFullChannel.
+    const hasActiveCall = entity.callActive || entity.callNotEmpty || entity.call;
+    if (!hasActiveCall) return null;
+
+    let inputCall = entity.call || null;
+    if (!inputCall) {
+      try {
+        const fullResult = await client.invoke(new Api.channels.GetFullChannel({ channel: entity }));
+        inputCall = fullResult.fullChat?.call || null;
+      } catch {
+        // fallback: try to construct invite link from username
+      }
+    }
+    if (!inputCall) {
+      return {
+        active: true,
+        id: "",
+        accessHash: "",
+        title: "",
+        participantsCount: 0,
+        inviteLink: entity.username ? `https://t.me/${entity.username}?videochat` : null
+      };
+    }
     try {
       const call = await client.invoke(new Api.phone.GetGroupCall({
-        call: entity.call,
+        call: inputCall,
         limit: 100
       }));
       const inviteLink = call.call?.joinMuted !== undefined
@@ -2936,9 +2961,9 @@ async function getGroupCallInfo(userId, accountId, peerId) {
         : null;
       return {
         active: true,
-        id: toText(entity.call.id),
-        accessHash: toText(entity.call.accessHash),
-        title: entity.call.title || "",
+        id: toText(inputCall.id),
+        accessHash: toText(inputCall.accessHash),
+        title: entity.call?.title || "",
         participantsCount: Number(call.call?.participantsCount || 0),
         joinMuted: Boolean(call.call?.joinMuted),
         canStartVideo: Boolean(call.call?.canStartVideo),
@@ -2959,10 +2984,10 @@ async function getGroupCallInfo(userId, accountId, peerId) {
     } catch {
       return {
         active: true,
-        id: toText(entity.call.id),
-        accessHash: toText(entity.call.accessHash),
-        title: entity.call.title || "",
-        participantsCount: Number(entity.call.participantsCount || 0),
+        id: toText(inputCall.id),
+        accessHash: toText(inputCall.accessHash),
+        title: entity.call?.title || "",
+        participantsCount: 0,
         inviteLink: entity.username ? `https://t.me/${entity.username}?videochat` : null
       };
     }
