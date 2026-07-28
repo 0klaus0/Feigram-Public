@@ -1220,7 +1220,7 @@ function LiveStreamViewer({ open, accountId, chat, onClose, onSetToast }) {
                 <div className="live-stage-placeholder">
                   <Radio size={48} />
                   <h3>直播进行中</h3>
-                  <p>{callInfo.inviteLink ? "点击「加入直播」在 Telegram Web 中观看" : "该群组未设置公开用户名，无法在网页端加入"}</p>
+                  <p>{callInfo.inviteLink ? "点击「加入直播」在 Telegram 中观看视频直播" : "无法获取直播邀请链接，请在 Telegram 客户端中手动加入"}</p>
                   {callInfo.title && <p className="live-title-text">主题：{callInfo.title}</p>}
                 </div>
               </div>

@@ -2948,22 +2948,23 @@ async function getGroupCallInfo(userId, accountId, peerId) {
         accessHash: "",
         title: "",
         participantsCount: 0,
-        inviteLink: entity.username ? `https://web.telegram.org/#@${entity.username}` : null
+        inviteLink: null,
+        inviteLinkWeb: null
       };
     }
 
     // Fetch call details and invite link in parallel
     const [callResult, inviteResult] = await Promise.allSettled([
       client.invoke(new Api.phone.GetGroupCall({ call: inputCall, limit: 100 })),
-      client.invoke(new Api.phone.ExportGroupCallInvite({ call: inputCall })).catch(() => null)
+      client.invoke(new Api.phone.ExportGroupCallInvite({ call: inputCall }))
     ]);
 
     const call = callResult.status === "fulfilled" ? callResult.value : null;
     const inviteData = inviteResult.status === "fulfilled" ? inviteResult.value : null;
 
-    // Prefer the API-generated invite link (works for both public and private groups)
-    const inviteLink = inviteData?.link
-      || (entity.username ? `https://web.telegram.org/#@${entity.username}` : null);
+    // Only use the real videochat invite link from ExportGroupCallInvite.
+    // Do NOT fall back to group username link — that's a group link, not a livestream link.
+    const inviteLink = inviteData?.link || null;
 
     return {
       active: true,
