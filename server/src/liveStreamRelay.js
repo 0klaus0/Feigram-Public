@@ -21,13 +21,19 @@ const { dataDir } = require("./store");
 const execFileAsync = promisify(execFile);
 
 const HLS_BASE_DIR = path.join(dataDir, "live-hls");
-const SEGMENT_DURATION = 2; // 秒
+const SEGMENT_DURATION = 2; // 秒（HLS 分片時長）
 const WINDOW_SIZE = 6; // 保留 6 個分片
 const MAX_CONCURRENT_RELAYS = 3;
 const RELAY_IDLE_TIMEOUT = 60_000; // 無觀眾 60 秒後停止
-const CHUNK_RETRY_LIMIT = 3;
 const CHUNK_POLL_INTERVAL = 200; // ms
 const STARTUP_TIMEOUT = 30_000; // 啟動超時 30 秒
+
+// 直播流分片下載常量（來自 TGTV 參考實現 / 官方客戶端）
+const SEGMENT_DURATION_MS = 1000; // 1 秒分片
+const SEGMENT_BUFFER_MS = 2000; // 時間戳緩衝 2 秒
+const GET_FILE_LIMIT = 128 * 1024; // 128KB（官方客戶端使用的值）
+const STREAM_SCALE = 0; // scale=0 對應 1 秒分片
+const VIDEO_QUALITY_FULL = 2; // 最高質量
 
 // 活躍的轉發會話
 const activeRelays = new Map();
@@ -87,10 +93,10 @@ async function getStreamChannels(client, inputCall, streamDcId) {
     });
 
     // 取第一個頻道（通常是主視頻流）
+    // 注意：scale 固定使用 0（1秒分片），不使用 API 返回的 scale
     const channel = result.channels[0];
     return {
       channel: channel.channel,
-      scale: channel.scale || 0,
       lastTimestampMs: Number(channel.lastTimestampMs || 0),
       allChannels: result.channels.map((c) => ({
         channel: c.channel,
@@ -105,40 +111,63 @@ async function getStreamChannels(client, inputCall, streamDcId) {
 }
 
 /**
+ * 調整初始時間戳：對齊到 1 秒邊界並減去 2 秒緩衝
+ * 來自 Telegram 官方客戶端 StreamingMediaContext.cpp 的 AdjustBootstrapTimestamp
+ */
+function adjustBootstrapTimestamp(timestampMs) {
+  if (timestampMs <= 0) return 0;
+  const adjusted = Math.floor(timestampMs / SEGMENT_DURATION_MS) * SEGMENT_DURATION_MS - SEGMENT_BUFFER_MS;
+  return adjusted > 0 ? adjusted : 0;
+}
+
+/**
  * 下載單個直播流分片
  * @param {number} streamDcId - 流媒體所在的 DC ID
+ * @param {number} videoChannel - 視頻頻道 ID（來自 GetGroupCallStreamChannels）
+ * @returns {Promise<{data: Buffer|null, error: string|null}>}
  */
-async function downloadStreamChunk(client, inputCall, timeMs, scale, videoChannel, streamDcId) {
+async function downloadStreamChunk(client, inputCall, timeMs, videoChannel, streamDcId) {
+  // 構造 InputGroupCallStream：scale 固定為 0（1 秒分片）
   const location = new Api.InputGroupCallStream({
     call: inputCall,
     timeMs: bigInt(timeMs),
-    scale,
-    ...(videoChannel != null ? { videoChannel, videoQuality: 1 } : {})
+    scale: STREAM_SCALE,
+    ...(videoChannel != null ? { videoChannel, videoQuality: VIDEO_QUALITY_FULL } : {})
   });
 
-  let lastErr = null;
-  for (let attempt = 0; attempt < CHUNK_RETRY_LIMIT; attempt++) {
-    try {
-      const result = await client.invoke(
-        new Api.upload.GetFile({
-          location,
-          offset: bigInt(0),
-          limit: 1024 * 1024, // 1MB
-          precise: true
-        }),
-        streamDcId || undefined
-      );
-      if (result?.bytes?.length > 0) {
-        return Buffer.from(result.bytes);
-      }
-      return null;
-    } catch (err) {
-      lastErr = err;
-      await new Promise((r) => setTimeout(r, 300 * (attempt + 1)));
+  try {
+    const result = await client.invoke(
+      new Api.upload.GetFile({
+        location,
+        offset: bigInt(0),
+        limit: GET_FILE_LIMIT, // 128KB
+        precise: false // 官方客戶端不設置 precise 標誌
+      }),
+      streamDcId || undefined
+    );
+    if (result?.bytes?.length > 0) {
+      return { data: Buffer.from(result.bytes), error: null };
     }
+    return { data: null, error: "empty" };
+  } catch (err) {
+    const errMsg = err.message || String(err);
+    // 記錄詳細錯誤信息以便診斷
+    if (/TIME_TOO_BIG|timed? ?out/i.test(errMsg)) {
+      // 分片尚未生成，正常情況，不需重試
+      return { data: null, error: "TIME_TOO_BIG" };
+    }
+    if (/TIME_TOO_SMALL|TIME_INVALID/i.test(errMsg)) {
+      return { data: null, error: "TIME_TOO_SMALL" };
+    }
+    if (/GROUPCALL_JOIN_MISSING/i.test(errMsg)) {
+      return { data: null, error: "GROUPCALL_JOIN_MISSING" };
+    }
+    if (/GROUPCALL_INVALID/i.test(errMsg)) {
+      return { data: null, error: "GROUPCALL_INVALID" };
+    }
+    console.error(`[liveStreamRelay] downloadStreamChunk error (timeMs=${timeMs}):`, errMsg);
+    return { data: null, error: errMsg };
   }
-  console.error(`[liveStreamRelay] downloadStreamChunk failed (timeMs=${timeMs}):`, lastErr?.message);
-  return null;
 }
 
 /**
@@ -288,12 +317,11 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
   console.log("[liveStreamRelay] Spawning ffmpeg...");
   relay.ffmpeg = spawnFfmpeg(outputDir);
 
-  let lastTimestampMs = channels.lastTimestampMs;
-  const scale = channels.scale || 0;
+  // 使用 adjustBootstrapTimestamp 調整初始時間戳
+  let lastTimestampMs = adjustBootstrapTimestamp(channels.lastTimestampMs);
   const videoChannel = channels.channel;
-  const segmentDurationMs = Math.max(1000 >> scale, 100);
 
-  console.log(`[liveStreamRelay] Stream params: scale=${scale}, videoChannel=${videoChannel}, lastTimestampMs=${lastTimestampMs}, segmentDurationMs=${segmentDurationMs}`);
+  console.log(`[liveStreamRelay] Stream params: scale=0(fixed), videoChannel=${videoChannel}, rawTimestamp=${channels.lastTimestampMs}, bootstrapTimestamp=${lastTimestampMs}, segmentDurationMs=${SEGMENT_DURATION_MS}`);
 
   // 處理 ffmpeg 退出
   relay.ffmpeg.on("exit", (code, signal) => {
@@ -333,7 +361,10 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
         break;
       }
 
-      const chunk = await downloadStreamChunk(client, inputCall, lastTimestampMs, scale, videoChannel, streamDcId);
+      // 下載分片（scale 固定為 0，不再傳遞 scale 參數）
+      const { data: chunk, error: chunkError } = await downloadStreamChunk(
+        client, inputCall, lastTimestampMs, videoChannel, streamDcId
+      );
 
       if (chunk && chunk.length > 0) {
         consecutiveFailures = 0;
@@ -354,26 +385,53 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
           console.error("[liveStreamRelay] ffmpeg write error:", writeErr.message);
         }
 
-        // 推進時間戳
-        lastTimestampMs += segmentDurationMs;
+        // 推進時間戳（固定 1000ms = 1 秒）
+        lastTimestampMs += SEGMENT_DURATION_MS;
       } else {
-        consecutiveFailures++;
-        if (consecutiveFailures === 1) {
-          console.log(`[liveStreamRelay] Chunk download returned empty (timeMs=${lastTimestampMs}), attempt ${consecutiveFailures}`);
+        // 根據錯誤類型處理
+        if (chunkError === "TIME_TOO_BIG") {
+          // 分片尚未生成，等待後重試（正常情況）
+          consecutiveFailures = 0;
+          await new Promise((r) => setTimeout(r, 500));
+          continue;
         }
-        if (consecutiveFailures > 20) {
-          console.error("[liveStreamRelay] too many consecutive failures, stopping");
+
+        if (chunkError === "TIME_TOO_SMALL" || chunkError === "TIME_INVALID") {
+          // 時間戳過舊，重新同步
+          console.log("[liveStreamRelay] Time too small/invalid, re-syncing timestamp...");
+          const freshChannels = await getStreamChannels(client, inputCall, streamDcId);
+          if (freshChannels) {
+            lastTimestampMs = adjustBootstrapTimestamp(freshChannels.lastTimestampMs);
+            console.log(`[liveStreamRelay] Re-synced timestamp to ${lastTimestampMs}`);
+          }
+          continue;
+        }
+
+        if (chunkError === "GROUPCALL_INVALID") {
           relay.status = "error";
-          relay.errorMessage = "連續 20 次下載分片失敗，直播流可能已結束";
+          relay.errorMessage = "直播已結束或通話無效";
           relay.stop();
           break;
         }
-        // 嘗試重新獲取最新的時間戳
-        if (consecutiveFailures % 5 === 0) {
+
+        // 其他錯誤
+        consecutiveFailures++;
+        if (consecutiveFailures === 1) {
+          console.log(`[liveStreamRelay] Chunk download failed (timeMs=${lastTimestampMs}, error=${chunkError})`);
+        }
+        if (consecutiveFailures > 30) {
+          console.error("[liveStreamRelay] too many consecutive failures, stopping");
+          relay.status = "error";
+          relay.errorMessage = `連續 30 次下載分片失敗（${chunkError}），直播流可能已結束`;
+          relay.stop();
+          break;
+        }
+        // 每 10 次失敗嘗試重新獲取時間戳
+        if (consecutiveFailures % 10 === 0) {
           console.log("[liveStreamRelay] Re-fetching stream channels for fresh timestamp...");
           const freshChannels = await getStreamChannels(client, inputCall, streamDcId);
-          if (freshChannels && freshChannels.lastTimestampMs > lastTimestampMs) {
-            lastTimestampMs = freshChannels.lastTimestampMs;
+          if (freshChannels) {
+            lastTimestampMs = adjustBootstrapTimestamp(freshChannels.lastTimestampMs);
             console.log(`[liveStreamRelay] Updated timestamp to ${lastTimestampMs}`);
           }
         }
