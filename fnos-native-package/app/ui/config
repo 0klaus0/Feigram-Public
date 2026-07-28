@@ -1,7 +1,7 @@
 {
   ".url": {
     "feigrampub.proxy.Application": {
-      "title": "feigram",
+      "title": "Fngram",
       "icon": "images/icon_{0}.png",
       "type": "iframe",
       "protocol": "http",

@@ -4,10 +4,8 @@ Fngram 2.0 fnOS Client Edition 是基于 Feigram-Public 二次开发的非官方
 
 > 感谢原项目 [Feigram-Public (g-star1024)](https://github.com/g-star1024/Feigram-Public) 提供的优秀基础。
 
-- 官网：<http://feigram.dpdns.org>
-- Telegram 群：<https://t.me/feigram>
-- 原项目仓库：<https://github.com/g-star1024/Feigram-Public>
 - Fngram 仓库：<https://github.com/0klaus0/Feigram-Public>
+- 原项目仓库：<https://github.com/g-star1024/Feigram-Public>
 
 ## 功能特性
 
@@ -67,11 +65,11 @@ bash scripts/build-native-fpk.sh
 
 ## 官网部署
 
-`website/` 是 Feigram 官网静态页面，可直接部署到 Cloudflare Pages：
+`website/` 是 Fngram 官网静态页面，可直接部署到 Cloudflare Pages：
 
 - Build command 留空。
 - Build output directory 填 `website`。
-- 自定义域名绑定 `feigram.dpdns.org`。
+- 自定义域名绑定 `fngram.pages.dev`。
 
 ## 目录结构
 
@@ -84,7 +82,7 @@ bash scripts/build-native-fpk.sh
 
 ## 开源依赖与致谢
 
-Feigram 使用和打包了以下主要开源项目：
+Fngram 使用和打包了以下主要开源项目：
 
 - React、React DOM、Vite：前端界面和构建。
 - GramJS `telegram`：Telegram MTProto 客户端能力。
@@ -92,7 +90,7 @@ Feigram 使用和打包了以下主要开源项目：
 - lucide-react：界面图标。
 - Node.js：FPK 内置运行时。
 
-Telegram 名称、协议和相关商标归其各自权利人所有。Feigram 只是第三方客户端项目，不代表 Telegram 或飞牛官方。
+Telegram 名称、协议和相关商标归其各自权利人所有。Fngram 只是第三方客户端项目，不代表 Telegram 或飞牛官方。
 
 ## 文档
 
@@ -103,4 +101,4 @@ Telegram 名称、协议和相关商标归其各自权利人所有。Feigram 只
 
 ## 重要声明
 
-Feigram 使用 Telegram 公开协议能力连接 Telegram 服务。使用者需要遵守 Telegram 服务条款、本项目发布平台规则，以及所在地法律法规。请不要将 Feigram 用于任何违法、侵权、骚扰、垃圾信息或规避平台规则的用途。
+Fngram 使用 Telegram 公开协议能力连接 Telegram 服务。使用者需要遵守 Telegram 服务条款、本项目发布平台规则，以及所在地法律法规。请不要将 Fngram 用于任何违法、侵权、骚扰、垃圾信息或规避平台规则的用途。

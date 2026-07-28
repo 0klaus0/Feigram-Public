@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VERSION="${VERSION:-2.0.25}"
 TARGET_ARCH="${TARGET_ARCH:-arm64}"
-PKG_NAME="fngrampub-${VERSION}-${TARGET_ARCH}"
+PKG_NAME="feigrampub-${VERSION}-${TARGET_ARCH}"
 RELEASE_DIR="${ROOT_DIR}/release"
 WORK_DIR="${RELEASE_DIR}/${PKG_NAME}"
 PACKAGE_SRC="${ROOT_DIR}/fnos-native-package"

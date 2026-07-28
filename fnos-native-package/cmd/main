@@ -3,10 +3,10 @@
 APP_HOME="${TRIM_APPDEST}"
 NODE_BIN="${APP_HOME}/bin/node"
 SERVER_DIR="${APP_HOME}/server"
-DATA_HOME="/${TRIM_APPDEST_VOL}/@appshare/fngrampub"
-PID_FILE="${DATA_HOME}/fngram.pid"
-VERSION_FILE="${DATA_HOME}/fngram.version"
-LOG_FILE="${DATA_HOME}/fngram.log"
+DATA_HOME="/${TRIM_APPDEST_VOL}/@appshare/feigrampub"
+PID_FILE="${DATA_HOME}/feigram.pid"
+VERSION_FILE="${DATA_HOME}/feigram.version"
+LOG_FILE="${DATA_HOME}/feigram.log"
 PORT="${wizard_app_port:-3088}"
 
 export APP_PORT="$PORT"
@@ -84,7 +84,7 @@ start)
             exit 0
         fi
         {
-            echo "==== $(date '+%Y-%m-%d %H:%M:%S') Feigram upgrade restart ===="
+            echo "==== $(date '+%Y-%m-%d %H:%M:%S') Fngram upgrade restart ===="
             echo "From: ${running_version:-unknown}"
             echo "To: ${APP_VERSION}"
         } >> "$LOG_FILE"
@@ -92,7 +92,7 @@ start)
     fi
     cd "$SERVER_DIR" || exit 1
     {
-        echo "==== $(date '+%Y-%m-%d %H:%M:%S') Feigram start ===="
+        echo "==== $(date '+%Y-%m-%d %H:%M:%S') Fngram start ===="
         echo "Edition: ${APP_EDITION}"
         echo "Version: ${APP_VERSION}"
         echo "Port: ${APP_PORT}"

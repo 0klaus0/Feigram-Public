@@ -1,10 +1,10 @@
 [
   {
-    "stepTitle": "Feigram Public 配置",
+    "stepTitle": "Fngram 配置",
     "items": [
       {
         "type": "tips",
-        "helpText": "这是无需 Docker 镜像的 Feigram Public，内置 Linux x64 Node.js。Telegram API 已提供默认配置，管理员后台仍可覆盖。"
+        "helpText": "这是无需 Docker 镜像的 Fngram，内置 Linux x64 Node.js。Telegram API 已提供默认配置，管理员后台仍可覆盖。"
       },
       {
         "type": "text",

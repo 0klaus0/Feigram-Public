@@ -1,12 +1,12 @@
-# Feigram Public 服务条款
+# Fngram 服务条款
 
 生效日期：2026-06-10
 
-Feigram Public 是第三方开发的非官方 Telegram 客户端，仅适用于飞牛 OS / fnOS。使用 Feigram 即表示你同意以下条款。
+Fngram 是第三方开发的非官方 Telegram 客户端，仅适用于飞牛 OS / fnOS。使用 Feigram 即表示你同意以下条款。
 
 ## 非官方声明
 
-Feigram 不隶属于 Telegram、Telegram Messenger Inc. 或飞牛官方。Telegram 名称、标识和服务归其相应权利人所有。
+Fngram 不隶属于 Telegram、Telegram Messenger Inc. 或飞牛官方。Telegram 名称、标识和服务归其相应权利人所有。
 
 ## 使用条件
 
@@ -14,12 +14,12 @@ Feigram 不隶属于 Telegram、Telegram Messenger Inc. 或飞牛官方。Telegr
 
 - 遵守 Telegram 服务条款、飞牛 OS 使用规则和所在地法律法规。
 - 仅使用你有权登录的 Telegram 账号。
-- 不利用 Feigram 发送垃圾信息、诈骗、侵权内容、恶意软件或违法内容。
+- 不利用 Fngram 发送垃圾信息、诈骗、侵权内容、恶意软件或违法内容。
 - 妥善保管飞牛账户和 Telegram 账号凭据。
 
 ## 运行者责任
 
-公开部署 Feigram 的运行者负责：
+公开部署 Fngram 的运行者负责：
 
 - 配置 HTTPS、访问控制和安全更新。
 - 提供支持邮箱、隐私政策和服务条款。
@@ -28,7 +28,7 @@ Feigram 不隶属于 Telegram、Telegram Messenger Inc. 或飞牛官方。Telegr
 
 ## 功能限制
 
-Feigram 尽力接近 Telegram 官方客户端体验，但不保证完整支持所有官方功能。部分视频格式取决于浏览器解码能力，无法播放时可下载后用系统播放器打开。
+Fngram 尽力接近 Telegram 官方客户端体验，但不保证完整支持所有官方功能。部分视频格式取决于浏览器解码能力，无法播放时可下载后用系统播放器打开。
 
 ## Telegram API 配置
 
@@ -36,7 +36,7 @@ Feigram 尽力接近 Telegram 官方客户端体验，但不保证完整支持�
 
 ## 免责声明
 
-Feigram 按现状提供，不承诺服务不中断、无错误或完全兼容 Telegram 官方客户端。因使用、部署、公开发布或配置 Feigram 产生的风险由运行者和使用者自行承担。
+Fngram 按现状提供，不承诺服务不中断、无错误或完全兼容 Telegram 官方客户端。因使用、部署、公开发布或配置 Feigram 产生的风险由运行者和使用者自行承担。
 
 ## 终止
 

@@ -15,7 +15,7 @@ async function migrateStore() {
   const current = await fs.readJson(metaPath).catch(() => ({}));
   const next = {
     ...current,
-    edition: process.env.APP_EDITION || "Feigram 2.0 fnOS Client Edition",
+    edition: process.env.APP_EDITION || "Fngram 2.0 fnOS Client Edition",
     version: process.env.APP_VERSION || "dev",
     migratedAt: new Date().toISOString()
   };
