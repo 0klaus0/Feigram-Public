@@ -15,6 +15,18 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.26",
+    title: "Fngram 2.0.26 更新",
+    version: "2.0.26",
+    level: "success",
+    createdAt: "2026-07-28T20:00:00.000Z",
+    body: [
+      "全面品牌统一：构建产物名称由 feigrampub 改为 fngram，GitHub Actions 产物名同步更新。",
+      "修复服务条款中残留的旧名称引用。",
+      "前端代码内部组件命名统一为 Fngram。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.25",
     title: "Fngram 2.0.25 更新",
     version: "2.0.25",

@@ -27,5 +27,5 @@ jobs:
       - name: Upload FPK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: feigrampub-fpk
+          name: fngram-fpk
           path: release/*.fpk

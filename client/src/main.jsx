@@ -251,7 +251,7 @@ function thumbnailMediaUrl(accountId, chatId, messageId) {
   return `/api/media/${accountId}/${encodeURIComponent(chatId)}/${messageId}/thumbnail?${params.toString()}`;
 }
 
-function FeigramVideo({ src, onError }) {
+function FngramVideo({ src, onError }) {
   const ref = useRef(null);
   useEffect(() => {
     const video = ref.current;
@@ -311,7 +311,7 @@ function MessageMedia({ accountId, chatId, message, compact = false, onCache, ta
             <span><Play size={18} />点击播放视频</span>
             {!!media.duration && <b>{formatDuration(media.duration)}</b>}
           </button> : null}
-          {active && !failed && playerMode !== "local" ? <FeigramVideo src={previewUrl} onError={() => setFailed(true)} /> : null}
+          {active && !failed && playerMode !== "local" ? <FngramVideo src={previewUrl} onError={() => setFailed(true)} /> : null}
           {playerMode === "local" ? <a className="video-load-button local-player-link" href={downloadUrl}>下载后用本地播放器打开</a> : null}
           {failed ? <div className="video-fallback">当前视频编码无法直接在线播放，请先缓存后下载到本地播放。</div> : null}
         </div>
@@ -1242,7 +1242,7 @@ function MediaViewer({ item, playerMode, onClose }) {
           ) : playerMode === "local" ? (
             <a className="video-load-button local-player-link" href={download}>下载后用本地播放器打开</a>
           ) : (
-            <FeigramVideo src={src} onError={() => setFailed(true)} />
+            <FngramVideo src={src} onError={() => setFailed(true)} />
           )}
           {failed ? <div className="video-fallback">当前视频编码无法直接在线播放，请切换本地播放器模式或下载到本地播放。</div> : null}
           <a className="viewer-download-link" href={download} download={item.fileName || ""} target="_blank" rel="noreferrer"><Download size={16} />下载</a>

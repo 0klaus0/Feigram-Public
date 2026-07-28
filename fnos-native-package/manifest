@@ -1,5 +1,5 @@
 appname=feigrampub
-version=2.0.25
+version=2.0.26
 display_name=Fngram
 desc="""<p><strong>Fngram 2.0 fnOS Client Edition</strong> 是第三方开发的非官方 Telegram 客户端，支持管理员后台、飞牛账户隔离、加密 Telegram session、Telegram 文件夹、媒体预览、后台任务恢复、运行诊断和更新检测。</p><p>基于 Feigram-Public 二次开发，感谢原项目 g-star1024/Feigram-Public。</p><p>适用于 x86_64 / amd64 / arm64 飞牛 OS 设备。</p>"""
 platform=all
@@ -12,4 +12,4 @@ desktop_uidir=ui
 desktop_applaunchname=feigrampub.proxy.Application
 service_port=3088
 checkport=true
-changelog=新增内置直播查看器，显示实时参与人数和参与者列表；APP更名为Fngram；修复直播检测逻辑。
+changelog=全面品牌统一为Fngram；构建产物名称由feigrampub改为fngram；修复服务条款中残留的旧名称。
