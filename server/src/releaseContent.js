@@ -15,6 +15,19 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.35",
+    title: "Fngram 2.0.35 更新",
+    version: "2.0.35",
+    level: "success",
+    createdAt: "2026-07-29T00:00:00.000Z",
+    body: [
+      "修復 GROUPCALL_JOIN_MISSING 錯誤：下載直播流分片前，先以聽眾身份（muted + videoStopped）加入群組通話。",
+      "Telegram API 要求必須先 JoinGroupCall 才能通過 upload.GetFile 下載直播流分片，否則返回 JOIN_MISSING 錯誤。",
+      "直播轉發停止時自動調用 LeaveGroupCall 離開通話，清理資源。",
+      "使用 InputPeerSelf 作為 joinAs 參數，確保以當前帳號身份加入。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.34",
     title: "Fngram 2.0.34 更新",
     version: "2.0.34",

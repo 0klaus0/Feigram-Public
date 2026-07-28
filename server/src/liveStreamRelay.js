@@ -243,6 +243,87 @@ function makeInputCall(callInfo) {
 }
 
 /**
+ * 以聽眾身份加入群組通話
+ * Telegram 要求先 JoinGroupCall 才能下載直播流分片，否則返回 GROUPCALL_JOIN_MISSING
+ * @param {TelegramClient} client
+ * @param {InputGroupCall} inputCall
+ * @param {number} streamDcId - 流媒體所在 DC ID
+ * @returns {Promise<{joined: boolean, selfId: string|null, error: string|null}>}
+ */
+async function joinGroupCall(client, inputCall, streamDcId) {
+  try {
+    // 以聽眾身份加入：muted=true, videoStopped=true
+    // 這樣不會產生音頻/視頻流，只是作為觀眾接收流數據
+    const result = await client.invoke(
+      new Api.phone.JoinGroupCall({
+        call: inputCall,
+        joinAs: new Api.InputPeerSelf(),
+        muted: true,
+        videoStopped: true,
+        params: new Api.DataJSON({
+          data: JSON.stringify({
+            finger_printing_supported: true,
+            fingertips_supported: false,
+            sdp_semantics: "unified-plan"
+          })
+        })
+      }),
+      streamDcId || undefined
+    );
+
+    // 從 Updates 中提取自己的 source ID（用於後續 LeaveGroupCall）
+    let selfSource = null;
+    if (result?.updates) {
+      for (const update of result.updates) {
+        if (update?.className === "UpdateGroupCallParticipants" && update?.participants) {
+          for (const p of update.participants) {
+            if (p?.peer?.className === "PeerUser" || p?.isSelf) {
+              selfSource = String(p.source || p.peer?.userId || "");
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    console.log(`[liveStreamRelay] Joined group call as listener (selfSource=${selfSource})`);
+    return { joined: true, selfId: selfSource, error: null };
+  } catch (err) {
+    const errMsg = err.message || String(err);
+    // 如果已經在通話中，不算錯誤
+    if (/already.*join|JOIN_ALREADY/i.test(errMsg)) {
+      console.log("[liveStreamRelay] Already joined group call");
+      return { joined: true, selfId: null, error: null };
+    }
+    console.error("[liveStreamRelay] joinGroupCall error:", errMsg);
+    return { joined: false, selfId: null, error: errMsg };
+  }
+}
+
+/**
+ * 離開群組通話
+ * @param {TelegramClient} client
+ * @param {InputGroupCall} inputCall
+ * @param {number} streamDcId
+ * @param {string|null} selfSource - 自己的 source ID（來自 JoinGroupCall 返回）
+ */
+async function leaveGroupCall(client, inputCall, streamDcId, selfSource) {
+  try {
+    await client.invoke(
+      new Api.phone.LeaveGroupCall({
+        call: inputCall,
+        source: bigInt(selfSource || 0)
+      }),
+      streamDcId || undefined
+    );
+    console.log("[liveStreamRelay] Left group call");
+  } catch (err) {
+    // 離開失敗不影響流程，只需記錄
+    console.log("[liveStreamRelay] leaveGroupCall (non-critical):", err.message || String(err));
+  }
+}
+
+/**
  * 啟動直播流轉發會話
  */
 async function startRelay(sessionId, client, callInfo, onStatus) {
@@ -274,9 +355,22 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
     throw new Error("該群組通話尚未進入流模式。Telegram 僅在參與者超過一定數量或使用 RTMP 直播模式時才會啟用流模式。小型群組通話目前無法在應用內播放，請使用複製連結方式在 Telegram 客戶端中觀看。");
   }
 
+  // ★ 關鍵：先以聽眾身份加入群組通話
+  // Telegram 要求必須先 JoinGroupCall，否則下載分片時返回 GROUPCALL_JOIN_MISSING
+  console.log("[liveStreamRelay] Joining group call as listener...");
+  const joinResult = await joinGroupCall(client, inputCall, streamDcId);
+  if (!joinResult.joined) {
+    throw new Error(`無法加入群組通話：${joinResult.error}。請確保您有權限加入此直播。`);
+  }
+  const callSelfSource = joinResult.selfId;
+  let hasLeftCall = false;
+
   // 獲取流頻道信息（在正確的 DC 上調用）
   const channels = await getStreamChannels(client, inputCall, streamDcId);
   if (!channels) {
+    // 獲取頻道失敗也要離開通話
+    await leaveGroupCall(client, inputCall, streamDcId, callSelfSource);
+    hasLeftCall = true;
     throw new Error(`無法獲取直播流頻道信息（DC=${streamDcId}）。可能是 DC 路由問題或直播流暫時不可用，請稍後重試。`);
   }
 
@@ -303,6 +397,11 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
       setTimeout(() => {
         try { relay.ffmpeg?.kill("SIGKILL"); } catch {}
       }, 2000);
+      // ★ 離開群組通話（清理資源）
+      if (!hasLeftCall) {
+        hasLeftCall = true;
+        leaveGroupCall(client, inputCall, streamDcId, callSelfSource).catch(() => {});
+      }
       activeRelays.delete(sessionId);
       setTimeout(async () => {
         await fs.remove(outputDir).catch(() => {});
