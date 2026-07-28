@@ -67,11 +67,14 @@ async function ensureHlsDir(sessionId) {
 
 /**
  * 獲取直播流頻道信息
+ * @param {number} streamDcId - 流媒體所在的 DC ID（來自 GetGroupCall 的 stream_dc_id）
  */
-async function getStreamChannels(client, inputCall) {
+async function getStreamChannels(client, inputCall, streamDcId) {
   try {
+    // GetGroupCallStreamChannels 必須在 stream_dc_id 指定的 DC 上調用
     const result = await client.invoke(
-      new Api.phone.GetGroupCallStreamChannels({ call: inputCall })
+      new Api.phone.GetGroupCallStreamChannels({ call: inputCall }),
+      streamDcId || undefined
     );
     if (!result?.channels?.length) {
       console.log("[liveStreamRelay] GetGroupCallStreamChannels returned no channels");
@@ -103,8 +106,9 @@ async function getStreamChannels(client, inputCall) {
 
 /**
  * 下載單個直播流分片
+ * @param {number} streamDcId - 流媒體所在的 DC ID
  */
-async function downloadStreamChunk(client, inputCall, timeMs, scale, videoChannel) {
+async function downloadStreamChunk(client, inputCall, timeMs, scale, videoChannel, streamDcId) {
   const location = new Api.InputGroupCallStream({
     call: inputCall,
     timeMs: bigInt(timeMs),
@@ -121,7 +125,8 @@ async function downloadStreamChunk(client, inputCall, timeMs, scale, videoChanne
           offset: bigInt(0),
           limit: 1024 * 1024, // 1MB
           precise: true
-        })
+        }),
+        streamDcId || undefined
       );
       if (result?.bytes?.length > 0) {
         return Buffer.from(result.bytes);
@@ -231,13 +236,19 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
 
   const outputDir = await ensureHlsDir(sessionId);
   const inputCall = makeInputCall(callInfo);
+  const streamDcId = callInfo.streamDcId || 0;
 
-  console.log(`[liveStreamRelay] Starting relay for session ${sessionId}, callId=${callInfo.id}`);
+  console.log(`[liveStreamRelay] Starting relay for session ${sessionId}, callId=${callInfo.id}, streamDcId=${streamDcId}`);
 
-  // 獲取流頻道信息
-  const channels = await getStreamChannels(client, inputCall);
+  // 檢查 streamDcId：如果為 0，表示通話未進入流模式
+  if (!streamDcId) {
+    throw new Error("該群組通話尚未進入流模式。Telegram 僅在參與者超過一定數量或使用 RTMP 直播模式時才會啟用流模式。小型群組通話目前無法在應用內播放，請使用複製連結方式在 Telegram 客戶端中觀看。");
+  }
+
+  // 獲取流頻道信息（在正確的 DC 上調用）
+  const channels = await getStreamChannels(client, inputCall, streamDcId);
   if (!channels) {
-    throw new Error("無法獲取直播流頻道信息。該群組可能使用的是 WebRTC 視頻通話而非 RTMP 直播，目前不支持應用內播放。");
+    throw new Error(`無法獲取直播流頻道信息（DC=${streamDcId}）。可能是 DC 路由問題或直播流暫時不可用，請稍後重試。`);
   }
 
   // 創建 relay 對象（在啟動 ffmpeg 之前，以便錯誤追蹤）
@@ -322,7 +333,7 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
         break;
       }
 
-      const chunk = await downloadStreamChunk(client, inputCall, lastTimestampMs, scale, videoChannel);
+      const chunk = await downloadStreamChunk(client, inputCall, lastTimestampMs, scale, videoChannel, streamDcId);
 
       if (chunk && chunk.length > 0) {
         consecutiveFailures = 0;
@@ -360,7 +371,7 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
         // 嘗試重新獲取最新的時間戳
         if (consecutiveFailures % 5 === 0) {
           console.log("[liveStreamRelay] Re-fetching stream channels for fresh timestamp...");
-          const freshChannels = await getStreamChannels(client, inputCall);
+          const freshChannels = await getStreamChannels(client, inputCall, streamDcId);
           if (freshChannels && freshChannels.lastTimestampMs > lastTimestampMs) {
             lastTimestampMs = freshChannels.lastTimestampMs;
             console.log(`[liveStreamRelay] Updated timestamp to ${lastTimestampMs}`);

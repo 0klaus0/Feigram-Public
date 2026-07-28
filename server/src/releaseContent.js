@@ -15,6 +15,18 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.33",
+    title: "Fngram 2.0.33 更新",
+    version: "2.0.33",
+    level: "success",
+    createdAt: "2026-07-28T20:30:00.000Z",
+    body: [
+      "修復直播流 DC 路由問題：GetGroupCallStreamChannels 和 upload.GetFile API 現在正確使用 stream_dc_id 指定的 DC 進行調用。",
+      "改進錯誤提示：當群組通話未進入流模式（streamDcId=0）時，顯示明確的錯誤信息而非通用的「無法獲取頻道信息」。",
+      "Telegram 僅在參與者超過一定數量或使用 RTMP 直播模式時才會啟用流模式，小型群組通話仍需使用連結複製方式觀看。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.31",
     title: "Fngram 2.0.31 更新",
     version: "2.0.31",

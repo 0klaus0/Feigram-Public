@@ -345,7 +345,7 @@ app.post("/api/live-stream/:account/:peer/start", asyncRoute(async (req, res) =>
   const relay = await liveRelay.startRelay(
     sessionId,
     client,
-    { id: callInfo.id, accessHash: callInfo.accessHash },
+    { id: callInfo.id, accessHash: callInfo.accessHash, streamDcId: callInfo.streamDcId || 0 },
     (status) => statusEvents.push(status)
   );
 
