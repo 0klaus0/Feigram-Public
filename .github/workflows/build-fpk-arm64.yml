@@ -28,3 +28,21 @@ jobs:
         with:
           name: fngram-fpk-arm64
           path: release/*.fpk
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VERSION }}
+          name: Fngram v${{ env.VERSION }}
+          body: |
+            ## Fngram v${{ env.VERSION }}
+
+            ARM64 FPK 安装包，适用于飞牛 OS / fnOS ARM 设备。
+
+            ### 安装方式
+            1. 下载下方 .fpk 文件
+            2. 在 fnOS 应用中心上传安装
+            3. 或在 Fngram 管理后台「运行诊断」中一键下载更新
+          files: release/*.fpk
+        env:
+          VERSION: "2.0.27"

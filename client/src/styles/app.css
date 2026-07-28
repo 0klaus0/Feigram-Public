@@ -817,24 +817,35 @@ textarea {
 }
 
 .live-viewer-backdrop {
-  align-items: center;
-  background: rgba(0, 0, 0, 0.75);
+  align-items: flex-end;
+  background: rgba(0, 0, 0, 0.6);
   display: flex;
   justify-content: center;
-  padding: 24px;
   z-index: 80;
 }
 
-.live-viewer-modal {
+.live-viewer-sheet {
+  animation: live-sheet-slide-up 0.3s cubic-bezier(0.16, 1, 0.3, 1);
   background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: 16px 16px 0 0;
   display: flex;
   flex-direction: column;
-  max-height: 90vh;
-  max-width: 900px;
-  overflow: hidden;
+  max-height: 60vh;
   width: 100%;
+  overflow: hidden;
+}
+
+.live-viewer-handle {
+  background: var(--line);
+  border-radius: 3px;
+  height: 4px;
+  margin: 8px auto 0;
+  width: 40px;
+}
+
+@keyframes live-sheet-slide-up {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
 }
 
 .live-viewer-header {
@@ -876,18 +887,49 @@ textarea {
 
 .live-join-external-btn {
   background: #ff4d4f;
+  border: none;
   border-radius: 8px;
   color: white;
+  cursor: pointer;
   font-size: 0.9rem;
   font-weight: 500;
   gap: 6px;
   min-height: 36px;
   padding: 0 14px;
-  text-decoration: none;
 }
 
 .live-join-external-btn:hover {
   filter: brightness(1.1);
+}
+
+.update-actions {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.update-download-status {
+  margin-top: 12px;
+}
+
+.update-progress-bar {
+  background: var(--soft);
+  border-radius: 4px;
+  height: 8px;
+  margin-bottom: 4px;
+  overflow: hidden;
+  width: 100%;
+}
+
+.update-progress-fill {
+  background: var(--accent);
+  height: 100%;
+  transition: width 0.3s ease;
+}
+
+.update-download-complete {
+  margin-top: 8px;
 }
 
 .live-viewer-body {
@@ -919,7 +961,7 @@ textarea {
 .live-stage {
   background: #0a0c0b;
   display: flex;
-  min-height: 280px;
+  min-height: 180px;
   position: relative;
 }
 

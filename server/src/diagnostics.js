@@ -2,6 +2,8 @@ const fs = require("fs-extra");
 const fsp = require("fs/promises");
 const os = require("os");
 const path = require("path");
+const { pipeline } = require("stream/promises");
+const { createWriteStream } = require("fs");
 const { dataDir, downloadTasksPath, silentCachePath } = require("./store");
 const { metaPath } = require("./migrations");
 const { readSettings } = require("./settings");
@@ -75,11 +77,16 @@ async function checkForUpdates() {
     if (!response.ok) throw new Error(`GitHub ${response.status}`);
     const latest = await response.json();
     const latestVersion = String(latest.tag_name || latest.name || "").replace(/^v/i, "");
+    const fpkAsset = (latest.assets || []).find((a) => String(a.name).endsWith(".fpk"));
     return {
       current,
       latest: latestVersion,
       url: latest.html_url || "https://github.com/0klaus0/Feigram-Public/releases",
-      updateAvailable: Boolean(latestVersion && latestVersion !== current)
+      updateAvailable: Boolean(latestVersion && latestVersion !== current),
+      fpkDownloadUrl: fpkAsset?.browser_download_url || null,
+      fpkName: fpkAsset?.name || null,
+      fpkSize: fpkAsset?.size || 0,
+      releaseNotes: latest.body || ""
     };
   } catch (error) {
     return {
@@ -92,7 +99,40 @@ async function checkForUpdates() {
   }
 }
 
+async function downloadUpdate(onProgress) {
+  const updateInfo = await checkForUpdates();
+  if (!updateInfo.fpkDownloadUrl) {
+    throw new Error("最新 Release 中未找到 FPK 安装包");
+  }
+  const updateDir = path.join(dataDir, "updates");
+  await fs.ensureDir(updateDir);
+  const filePath = path.join(updateDir, updateInfo.fpkName);
+  const response = await fetch(updateInfo.fpkDownloadUrl, { headers: { "User-Agent": "Fngram" } });
+  if (!response.ok) throw new Error(`下载失败: HTTP ${response.status}`);
+  const total = Number(response.headers.get("content-length") || updateInfo.fpkSize || 0);
+  let downloaded = 0;
+  const writer = createWriteStream(filePath);
+  const reader = response.body.getReader();
+  let lastReport = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    await new Promise((resolve, reject) => {
+      writer.write(value, (err) => err ? reject(err) : resolve());
+    });
+    downloaded += value.length;
+    const now = Date.now();
+    if (onProgress && (now - lastReport > 500 || downloaded === total)) {
+      lastReport = now;
+      onProgress({ downloaded, total, percent: total ? Math.round((downloaded / total) * 100) : 0 });
+    }
+  }
+  await new Promise((resolve, reject) => writer.end(resolve));
+  return { filePath, version: updateInfo.latest, size: downloaded };
+}
+
 module.exports = {
   checkForUpdates,
+  downloadUpdate,
   diagnostics
 };

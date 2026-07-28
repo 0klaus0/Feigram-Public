@@ -2948,7 +2948,7 @@ async function getGroupCallInfo(userId, accountId, peerId) {
         accessHash: "",
         title: "",
         participantsCount: 0,
-        inviteLink: entity.username ? `https://t.me/${entity.username}?videochat` : null
+        inviteLink: entity.username ? `https://web.telegram.org/#@${entity.username}` : null
       };
     }
     try {
@@ -2956,8 +2956,8 @@ async function getGroupCallInfo(userId, accountId, peerId) {
         call: inputCall,
         limit: 100
       }));
-      const inviteLink = call.call?.joinMuted !== undefined
-        ? `https://t.me/${entity.username || ""}?videochat`
+      const inviteLink = entity.username
+        ? `https://web.telegram.org/#@${entity.username}`
         : null;
       return {
         active: true,
@@ -2988,7 +2988,7 @@ async function getGroupCallInfo(userId, accountId, peerId) {
         accessHash: toText(inputCall.accessHash),
         title: entity.call?.title || "",
         participantsCount: 0,
-        inviteLink: entity.username ? `https://t.me/${entity.username}?videochat` : null
+        inviteLink: entity.username ? `https://web.telegram.org/#@${entity.username}` : null
       };
     }
   });

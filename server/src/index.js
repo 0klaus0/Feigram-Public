@@ -20,7 +20,7 @@ const { hashPassword } = require("./cryptoBox");
 const { publicSettings, readSettings, writeSettings } = require("./settings");
 const { readPolicies } = require("./policies");
 const { readAbout, readAnnouncements } = require("./releaseContent");
-const { checkForUpdates, diagnostics } = require("./diagnostics");
+const { checkForUpdates, downloadUpdate, diagnostics } = require("./diagnostics");
 const { migrateStore } = require("./migrations");
 const { rateLimit } = require("./rateLimit");
 const tg = require("./telegramService");
@@ -86,6 +86,20 @@ app.post("/api/admin/cache-speed-diagnostics", adminOnly, asyncRoute(async (req,
 
 app.get("/api/admin/update-check", adminOnly, asyncRoute(async (_req, res) => {
   res.json(await checkForUpdates());
+}));
+
+app.post("/api/admin/download-update", adminOnly, asyncRoute(async (req, res) => {
+  const progressCallback = (info) => {
+    io.to(`user:${req.user.id}`).emit("update-download:progress", info);
+  };
+  try {
+    const result = await downloadUpdate(progressCallback);
+    io.to(`user:${req.user.id}`).emit("update-download:complete", result);
+    res.json(result);
+  } catch (error) {
+    io.to(`user:${req.user.id}`).emit("update-download:error", { error: error.message });
+    res.status(500).json({ error: error.message });
+  }
 }));
 
 app.post("/api/admin/users", adminOnly, asyncRoute(async (req, res) => {

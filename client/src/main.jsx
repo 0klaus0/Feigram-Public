@@ -570,6 +570,8 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
   const [cacheSpeedTest, setCacheSpeedTest] = useState(null);
   const [cacheSpeedTesting, setCacheSpeedTesting] = useState(false);
   const [updateInfo, setUpdateInfo] = useState(null);
+  const [updateDownload, setUpdateDownload] = useState(null);
+  const [updateDownloading, setUpdateDownloading] = useState(false);
   const [newUser, setNewUser] = useState({ username: "", password: "", displayName: "", role: "user" });
   const [dragSilentId, setDragSilentId] = useState("");
   const [selectedSilentIds, setSelectedSilentIds] = useState([]);
@@ -689,6 +691,34 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
       return null;
     }));
   }
+
+  async function downloadUpdate() {
+    setError("");
+    setUpdateDownloading(true);
+    setUpdateDownload(null);
+    try {
+      const result = await api("/api/admin/download-update", { method: "POST" });
+      setUpdateDownload(result);
+    } catch (err) {
+      setError(err.message);
+    }
+    setUpdateDownloading(false);
+  }
+
+  useEffect(() => {
+    if (!socket) return undefined;
+    const onProgress = (info) => setUpdateDownload(info);
+    const onComplete = (result) => { setUpdateDownload({ ...result, percent: 100 }); setUpdateDownloading(false); };
+    const onError = (data) => { setError(data.error); setUpdateDownloading(false); };
+    socket.on("update-download:progress", onProgress);
+    socket.on("update-download:complete", onComplete);
+    socket.on("update-download:error", onError);
+    return () => {
+      socket.off("update-download:progress", onProgress);
+      socket.off("update-download:complete", onComplete);
+      socket.off("update-download:error", onError);
+    };
+  }, [socket]);
 
   async function runCacheSpeedTest(forceProbe = false) {
     setError("");
@@ -960,10 +990,36 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
             <pre className="log-tail cache-speed-json">{JSON.stringify(cacheSpeedTest, null, 2)}</pre>
           </div>}
           {updateInfo && <div className="update-card">
-            <strong>{updateInfo.updateAvailable ? "发现新版本" : "当前版本已是最新或暂未发现发布版"}</strong>
-            <span>当前：{updateInfo.current || "-"} / 最新：{updateInfo.latest || "-"}</span>
+            <strong>{updateInfo.updateAvailable ? `发现新版本 v${updateInfo.latest}` : "当前版本已是最新或暂未发现发布版"}</strong>
+            <span>当前：v{updateInfo.current || "-"} / 最新：v{updateInfo.latest || "-"}</span>
             {updateInfo.error && <small>{updateInfo.error}</small>}
-            <a href={updateInfo.url} target="_blank" rel="noreferrer">打开发布页</a>
+            <div className="update-actions">
+              <a href={updateInfo.url} target="_blank" rel="noreferrer">打开发布页</a>
+              {updateInfo.updateAvailable && updateInfo.fpkDownloadUrl && (
+                <button className="primary" onClick={downloadUpdate} disabled={updateDownloading}>
+                  {updateDownloading ? "下载中..." : "一键下载更新"}
+                </button>
+              )}
+            </div>
+            {updateDownload && (
+              <div className="update-download-status">
+                {updateDownload.percent !== undefined && updateDownload.percent < 100 && (
+                  <>
+                    <div className="update-progress-bar">
+                      <div className="update-progress-fill" style={{ width: `${updateDownload.percent}%` }} />
+                    </div>
+                    <span>{updateDownload.percent}% {updateDownload.total ? `(${formatBytes(updateDownload.downloaded)} / ${formatBytes(updateDownload.total)})` : ""}</span>
+                  </>
+                )}
+                {updateDownload.filePath && (
+                  <div className="update-download-complete">
+                    <p className="success">更新包已下载完成！</p>
+                    <p className="hint">文件路径：{updateDownload.filePath}</p>
+                    <p className="hint">请通过 fnOS 应用中心上传此 FPK 文件完成安装升级。</p>
+                  </div>
+                )}
+              </div>
+            )}
           </div>}
           {diagnostics?.logTail && <pre className="log-tail system-log-tail">{diagnostics.logTail}</pre>}
         </div>}
@@ -1116,9 +1172,16 @@ function LiveStreamViewer({ open, accountId, chat, onClose, onSetToast }) {
   const videoParticipants = participants.filter((p) => p.videoJoined);
   const audioParticipants = participants.filter((p) => !p.videoJoined);
 
+  const joinLive = () => {
+    if (callInfo?.inviteLink) {
+      window.open(callInfo.inviteLink, "_blank", "noopener,noreferrer");
+    }
+  };
+
   return (
-    <div className="modal-backdrop live-viewer-backdrop">
-      <div className="modal live-viewer-modal" onClick={(event) => event.stopPropagation()}>
+    <div className="live-viewer-backdrop" onClick={onClose}>
+      <div className="live-viewer-sheet" onClick={(event) => event.stopPropagation()}>
+        <div className="live-viewer-handle" />
         <div className="live-viewer-header">
           <button className="icon-button" onClick={onClose} title="关闭"><X size={20} /></button>
           <div className="live-viewer-title">
@@ -1135,15 +1198,10 @@ function LiveStreamViewer({ open, accountId, chat, onClose, onSetToast }) {
             </p>
           </div>
           {callInfo?.inviteLink && (
-            <a
-              className="primary live-join-external-btn"
-              href={callInfo.inviteLink}
-              target="_blank"
-              rel="noreferrer"
-            >
+            <button className="primary live-join-external-btn" onClick={joinLive}>
               <PhoneIncoming size={16} />
               加入直播
-            </a>
+            </button>
           )}
         </div>
 
@@ -1160,9 +1218,9 @@ function LiveStreamViewer({ open, accountId, chat, onClose, onSetToast }) {
             <>
               <div className="live-stage">
                 <div className="live-stage-placeholder">
-                  <Radio size={64} />
+                  <Radio size={48} />
                   <h3>直播进行中</h3>
-                  <p>点击下方「加入直播」按钮在 Telegram 中观看视频</p>
+                  <p>{callInfo.inviteLink ? "点击「加入直播」在 Telegram Web 中观看" : "该群组未设置公开用户名，无法在网页端加入"}</p>
                   {callInfo.title && <p className="live-title-text">主题：{callInfo.title}</p>}
                 </div>
               </div>

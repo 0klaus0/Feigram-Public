@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="${VERSION:-2.0.26}"
+VERSION="${VERSION:-2.0.27}"
 TARGET_ARCH="${TARGET_ARCH:-arm64}"
 PKG_NAME="fngram-${VERSION}-${TARGET_ARCH}"
 RELEASE_DIR="${ROOT_DIR}/release"
