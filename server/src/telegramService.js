@@ -2938,7 +2938,7 @@ async function getGroupCallInfo(userId, accountId, peerId) {
         const fullResult = await client.invoke(new Api.channels.GetFullChannel({ channel: entity }));
         inputCall = fullResult.fullChat?.call || null;
       } catch {
-        // fallback: try to construct invite link from username
+        // fallback
       }
     }
     if (!inputCall) {
@@ -2951,46 +2951,42 @@ async function getGroupCallInfo(userId, accountId, peerId) {
         inviteLink: entity.username ? `https://web.telegram.org/#@${entity.username}` : null
       };
     }
-    try {
-      const call = await client.invoke(new Api.phone.GetGroupCall({
-        call: inputCall,
-        limit: 100
-      }));
-      const inviteLink = entity.username
-        ? `https://web.telegram.org/#@${entity.username}`
-        : null;
-      return {
-        active: true,
-        id: toText(inputCall.id),
-        accessHash: toText(inputCall.accessHash),
-        title: entity.call?.title || "",
-        participantsCount: Number(call.call?.participantsCount || 0),
-        joinMuted: Boolean(call.call?.joinMuted),
-        canStartVideo: Boolean(call.call?.canStartVideo),
-        streamDcId: Number(call.call?.streamDcId || 0),
-        recordVideoActive: Boolean(call.call?.recordVideoActive),
-        inviteLink,
-        participants: (call.participants || []).map((p) => ({
-          id: toText(p.peer?.userId || p.peer?.channelId || ""),
-          about: p.about || "",
-          muted: Boolean(p.muted),
-          canSelfUnmute: Boolean(p.canSelfUnmute),
-          videoJoined: Boolean(p.video),
-          presentation: Boolean(p.presentation),
-          volume: Number(p.volume || 0),
-          raiseHand: Boolean(p.raiseHandRating)
-        }))
-      };
-    } catch {
-      return {
-        active: true,
-        id: toText(inputCall.id),
-        accessHash: toText(inputCall.accessHash),
-        title: entity.call?.title || "",
-        participantsCount: 0,
-        inviteLink: entity.username ? `https://web.telegram.org/#@${entity.username}` : null
-      };
-    }
+
+    // Fetch call details and invite link in parallel
+    const [callResult, inviteResult] = await Promise.allSettled([
+      client.invoke(new Api.phone.GetGroupCall({ call: inputCall, limit: 100 })),
+      client.invoke(new Api.phone.ExportGroupCallInvite({ call: inputCall })).catch(() => null)
+    ]);
+
+    const call = callResult.status === "fulfilled" ? callResult.value : null;
+    const inviteData = inviteResult.status === "fulfilled" ? inviteResult.value : null;
+
+    // Prefer the API-generated invite link (works for both public and private groups)
+    const inviteLink = inviteData?.link
+      || (entity.username ? `https://web.telegram.org/#@${entity.username}` : null);
+
+    return {
+      active: true,
+      id: toText(inputCall.id),
+      accessHash: toText(inputCall.accessHash),
+      title: entity.call?.title || "",
+      participantsCount: Number(call?.call?.participantsCount || 0),
+      joinMuted: Boolean(call?.call?.joinMuted),
+      canStartVideo: Boolean(call?.call?.canStartVideo),
+      streamDcId: Number(call?.call?.streamDcId || 0),
+      recordVideoActive: Boolean(call?.call?.recordVideoActive),
+      inviteLink,
+      participants: (call?.participants || []).map((p) => ({
+        id: toText(p.peer?.userId || p.peer?.channelId || ""),
+        about: p.about || "",
+        muted: Boolean(p.muted),
+        canSelfUnmute: Boolean(p.canSelfUnmute),
+        videoJoined: Boolean(p.video),
+        presentation: Boolean(p.presentation),
+        volume: Number(p.volume || 0),
+        raiseHand: Boolean(p.raiseHandRating)
+      }))
+    };
   });
 }
 
