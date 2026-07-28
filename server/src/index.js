@@ -166,6 +166,11 @@ app.get("/api/chats-with-folders", asyncRoute(async (req, res) => {
   res.json(await tg.listChatsAndFolders(req.user.id, req.query.account, req.query.query || ""));
 }));
 
+app.get("/api/group-call/:account/:peer", asyncRoute(async (req, res) => {
+  const info = await tg.getGroupCallInfo(req.user.id, req.params.account, req.params.peer);
+  res.json(info || { active: false });
+}));
+
 app.get("/api/messages", asyncRoute(async (req, res) => {
   const messages = await tg.listMessages(req.user.id, req.query.account, req.query.peer, req.query.limit, req.query.before, req.query.around);
   if (messages.length) {

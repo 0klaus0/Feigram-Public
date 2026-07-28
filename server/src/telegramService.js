@@ -610,12 +610,25 @@ function peerFromId(peerId) {
 
 function serializeEntity(entity) {
   const title = entity.title || [entity.firstName, entity.lastName].filter(Boolean).join(" ") || entity.username || "Unknown";
+  const activeCall = entity.call ? {
+    active: true,
+    id: toText(entity.call.id),
+    accessHash: toText(entity.call.accessHash),
+    title: entity.call.title || "",
+    participantsCount: Number(entity.call.participantsCount || 0),
+    scheduledStartDate: entity.call.scheduleDate ? new Date(entity.call.scheduleDate * 1000).toISOString() : null,
+    startedDate: entity.call.startDate ? new Date(entity.call.startDate * 1000).toISOString() : null,
+    rtmpStream: Boolean(entity.call.rtmpStream),
+    recordVideoActive: Boolean(entity.call.recordVideoActive),
+    unmutedVideoLimit: Number(entity.call.unmutedVideoLimit || 0)
+  } : null;
   return {
     id: peerKey(entity),
     rawId: toText(entity.id),
     title,
     username: entity.username || "",
-    type: entity.broadcast ? "channel" : entity.megagroup || entity.gigagroup ? "group" : entity.className === "User" ? "private" : "chat"
+    type: entity.broadcast ? "channel" : entity.megagroup || entity.gigagroup ? "group" : entity.className === "User" ? "private" : "chat",
+    activeCall
   };
 }
 
@@ -2908,6 +2921,54 @@ async function cleanupCache() {
   }
 }
 
+async function getGroupCallInfo(userId, accountId, peerId) {
+  return foregroundTelegramOperation(accountId, async () => {
+    const client = await getClient(userId, accountId);
+    const entity = await resolvePeer(userId, accountId, peerId);
+    if (!entity.call) return null;
+    try {
+      const call = await client.invoke(new Api.phone.GetGroupCall({
+        call: entity.call,
+        limit: 100
+      }));
+      const inviteLink = call.call?.joinMuted !== undefined
+        ? `https://t.me/${entity.username || ""}?videochat`
+        : null;
+      return {
+        active: true,
+        id: toText(entity.call.id),
+        accessHash: toText(entity.call.accessHash),
+        title: entity.call.title || "",
+        participantsCount: Number(call.call?.participantsCount || 0),
+        joinMuted: Boolean(call.call?.joinMuted),
+        canStartVideo: Boolean(call.call?.canStartVideo),
+        streamDcId: Number(call.call?.streamDcId || 0),
+        recordVideoActive: Boolean(call.call?.recordVideoActive),
+        inviteLink,
+        participants: (call.participants || []).map((p) => ({
+          id: toText(p.peer?.userId || p.peer?.channelId || ""),
+          about: p.about || "",
+          muted: Boolean(p.muted),
+          canSelfUnmute: Boolean(p.canSelfUnmute),
+          videoJoined: Boolean(p.video),
+          presentation: Boolean(p.presentation),
+          volume: Number(p.volume || 0),
+          raiseHand: Boolean(p.raiseHandRating)
+        }))
+      };
+    } catch {
+      return {
+        active: true,
+        id: toText(entity.call.id),
+        accessHash: toText(entity.call.accessHash),
+        title: entity.call.title || "",
+        participantsCount: Number(entity.call.participantsCount || 0),
+        inviteLink: entity.username ? `https://t.me/${entity.username}?videochat` : null
+      };
+    }
+  });
+}
+
 module.exports = {
   clickMessageButton,
   completeCode,
@@ -2937,6 +2998,7 @@ module.exports = {
   listChats,
   listChatsAndFolders,
   listFolders,
+  getGroupCallInfo,
   listMessages,
   markAsRead,
   loadSavedClients,

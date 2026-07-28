@@ -1937,7 +1937,7 @@ function App() {
                 <Avatar accountId={accountId} peerId={chat.id} label={chat.title} />
                 <span className="chat-copy">
                   <strong>{chat.title}</strong>
-                  <small>{chat.lastMessage?.text || (chat.lastMessage?.action?.type ? actionText(chat.lastMessage.action) : chat.type)}</small>
+                  <small>{chat.activeCall?.active ? <span className="live-indicator"><span className="live-dot" />直播中</span> : chat.lastMessage?.text || (chat.lastMessage?.action?.type ? actionText(chat.lastMessage.action) : chat.type)}</small>
                 </span>
                 <span className="chat-meta">
                   {chat.lastMessage?.date ? <time>{formatRelativeTime(chat.lastMessage.date)}</time> : null}
@@ -1955,8 +1955,18 @@ function App() {
             <button className={cx("icon-button", chatStack.length ? "nav-back-button" : "back-button")} onClick={chatStack.length ? returnToPreviousChat : () => setActiveChat(null)} title={chatStack.length ? "返回上层位置" : "返回会话列表"}><ArrowLeft size={18} /></button>
             <button className="conversation-title-button" type="button" onClick={openChatInfo} title="查看群组信息">
               <Avatar accountId={accountId} peerId={activeChat.id} label={activeChat.title} size={42} />
-              <span><h2>{activeChat.title}</h2><p>{activeChat.type} {activeChat.username ? `@${activeChat.username}` : ""}</p></span>
+              <span>
+                <h2>{activeChat.title}</h2>
+                <p>{activeChat.activeCall?.active ? <span className="live-status"><span className="live-dot" />直播中 · {activeChat.activeCall.participantsCount} 人参与</span> : `${activeChat.type} ${activeChat.username ? `@${activeChat.username}` : ""}`}</p>
+              </span>
             </button>
+            {activeChat.activeCall?.active && <button className="icon-button live-join-btn" onClick={async () => {
+              try {
+                const info = await api(`/api/group-call/${encodeURIComponent(accountId)}/${encodeURIComponent(activeChat.id)}`);
+                if (info?.inviteLink) window.open(info.inviteLink, "_blank");
+                else setToast("无法获取直播链接");
+              } catch { setToast("获取直播信息失败"); }
+            }} title="加入直播"><PhoneIncoming size={18} /></button>}
             <button className="icon-button" onClick={openChatInfo} title="群组信息"><Info size={18} /></button>
           </header>
           {error && <p className="error inline">{error}</p>}
