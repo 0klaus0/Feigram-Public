@@ -1,5 +1,5 @@
 {
-  "name": "feigrame-client",
+  "name": "fngram-client",
   "private": true,
   "version": "0.1.0",
   "description": "A Docker-friendly Telegram web client for fnOS.",

@@ -43,8 +43,8 @@ async function diagnostics() {
   const cacheBase = settings.cacheBaseDir || process.env.DOWNLOAD_DIR || path.join(dataDir, "downloads");
   return {
     app: {
-      name: "Feigram",
-      edition: process.env.APP_EDITION || meta.edition || "Feigram 2.0 fnOS Client Edition",
+      name: "Fngram",
+      edition: process.env.APP_EDITION || meta.edition || "Fngram 2.0 fnOS Client Edition",
       version: process.env.APP_VERSION || meta.version || "dev",
       changelog: process.env.APP_CHANGELOG || "",
       uptime: Math.round(process.uptime()),
@@ -69,23 +69,23 @@ async function diagnostics() {
 
 async function checkForUpdates() {
   const current = process.env.APP_VERSION || "dev";
-  const endpoint = "https://api.github.com/repos/g-star1024/Feigram-Public/releases/latest";
+  const endpoint = "https://api.github.com/repos/0klaus0/Feigram-Public/releases/latest";
   try {
-    const response = await fetch(endpoint, { headers: { "User-Agent": "Feigram" } });
+    const response = await fetch(endpoint, { headers: { "User-Agent": "Fngram" } });
     if (!response.ok) throw new Error(`GitHub ${response.status}`);
     const latest = await response.json();
     const latestVersion = String(latest.tag_name || latest.name || "").replace(/^v/i, "");
     return {
       current,
       latest: latestVersion,
-      url: latest.html_url || "https://github.com/g-star1024/Feigram-Public/releases",
+      url: latest.html_url || "https://github.com/0klaus0/Feigram-Public/releases",
       updateAvailable: Boolean(latestVersion && latestVersion !== current)
     };
   } catch (error) {
     return {
       current,
       latest: "",
-      url: "https://github.com/g-star1024/Feigram-Public/releases",
+      url: "https://github.com/0klaus0/Feigram-Public/releases",
       updateAvailable: false,
       error: error.message
     };

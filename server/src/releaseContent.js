@@ -1,21 +1,35 @@
 const about = {
-  title: "关于 Feigram",
-  publisherName: "g-star1024",
+  title: "关于 Fngram",
+  publisherName: "0klaus0",
   supportEmail: "",
-  releaseUrl: "https://github.com/g-star1024/Feigram-Public",
-  privacyPolicyUrl: "https://github.com/g-star1024/Feigram-Public/blob/main/docs/privacy-policy.md",
-  termsUrl: "https://github.com/g-star1024/Feigram-Public/blob/main/docs/terms-of-service.md",
+  releaseUrl: "https://github.com/0klaus0/Feigram-Public",
+  privacyPolicyUrl: "https://github.com/0klaus0/Feigram-Public/blob/main/docs/privacy-policy.md",
+  termsUrl: "https://github.com/0klaus0/Feigram-Public/blob/main/docs/terms-of-service.md",
   body: [
-    "Feigram Public 是第三方开发的非官方 Telegram 客户端，仅适用于飞牛 OS / fnOS。",
-    "Feigram 不隶属于 Telegram、Telegram Messenger Inc. 或飞牛官方。",
+    "Fngram 是基于 Feigram-Public 二次开发的非官方 Telegram 客户端，仅适用于飞牛 OS / fnOS。",
+    "Fngram 不隶属于 Telegram、Telegram Messenger Inc. 或飞牛官方。",
+    "感谢原项目 Feigram-Public (g-star1024) 提供的优秀基础。",
     "公开部署前请配置 HTTPS，并在发布仓库中同步隐私政策、服务条款和支持邮箱。"
   ].join("\n")
 };
 
 const announcements = [
   {
+    id: "release-2.0.25",
+    title: "Fngram 2.0.25 更新",
+    version: "2.0.25",
+    level: "success",
+    createdAt: "2026-07-28T12:00:00.000Z",
+    body: [
+      "新增内置直播查看器：点击直播图标可打开直播详情弹窗，实时显示参与人数、参与者列表（视频/语音分组），支持一键跳转 Telegram 加入直播。",
+      "APP 正式更名为 Fngram，基于 Feigram-Public 二次开发，感谢原项目 g-star1024/Feigram-Public。",
+      "修复群组直播标识检测逻辑：适配 GramJS v2.26.22 的 callActive 标志位，直播状态可正确识别。",
+      "优化聊天列表加载与归档过滤，界面布局更贴近原生 Telegram 风格。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.76",
-    title: "Feigram 2.0.76 更新",
+    title: "Fngram 2.0.76 更新",
     version: "2.0.76",
     level: "success",
     createdAt: "2026-06-25T17:30:00.000Z",
@@ -27,7 +41,7 @@ const announcements = [
   },
   {
     id: "release-2.0.75",
-    title: "Feigram 2.0.75 更新",
+    title: "Fngram 2.0.75 更新",
     version: "2.0.75",
     level: "success",
     createdAt: "2026-06-25T16:50:00.000Z",
@@ -39,7 +53,7 @@ const announcements = [
   },
   {
     id: "release-2.0.74",
-    title: "Feigram 2.0.74 更新",
+    title: "Fngram 2.0.74 更新",
     version: "2.0.74",
     level: "success",
     createdAt: "2026-06-24T23:40:00.000Z",
@@ -51,7 +65,7 @@ const announcements = [
   },
   {
     id: "release-2.0.73",
-    title: "Feigram 2.0.73 更新",
+    title: "Fngram 2.0.73 更新",
     version: "2.0.73",
     level: "success",
     createdAt: "2026-06-24T22:40:00.000Z",
@@ -63,7 +77,7 @@ const announcements = [
   },
   {
     id: "release-2.0.72",
-    title: "Feigram 2.0.72 更新",
+    title: "Fngram 2.0.72 更新",
     version: "2.0.72",
     level: "success",
     createdAt: "2026-06-24T17:45:00.000Z",
@@ -75,7 +89,7 @@ const announcements = [
   },
   {
     id: "release-2.0.71",
-    title: "Feigram 2.0.71 更新",
+    title: "Fngram 2.0.71 更新",
     version: "2.0.71",
     level: "success",
     createdAt: "2026-06-24T17:10:00.000Z",
@@ -87,7 +101,7 @@ const announcements = [
   },
   {
     id: "release-2.0.70",
-    title: "Feigram 2.0.70 更新",
+    title: "Fngram 2.0.70 更新",
     version: "2.0.70",
     level: "success",
     createdAt: "2026-06-24T10:00:00.000Z",
@@ -100,7 +114,7 @@ const announcements = [
   },
   {
     id: "release-2.0.69",
-    title: "Feigram 2.0.69 更新",
+    title: "Fngram 2.0.69 更新",
     version: "2.0.69",
     level: "success",
     createdAt: "2026-06-24T02:00:00.000Z",
@@ -115,7 +129,7 @@ const announcements = [
   },
   {
     id: "release-2.0.68",
-    title: "Feigram 2.0.68 更新",
+    title: "Fngram 2.0.68 更新",
     version: "2.0.68",
     level: "success",
     createdAt: "2026-06-24T01:20:00.000Z",
@@ -130,7 +144,7 @@ const announcements = [
   },
   {
     id: "release-2.0.67",
-    title: "Feigram 2.0.67 更新",
+    title: "Fngram 2.0.67 更新",
     version: "2.0.67",
     level: "success",
     createdAt: "2026-06-23T09:45:00.000Z",
@@ -145,7 +159,7 @@ const announcements = [
   },
   {
     id: "release-2.0.66",
-    title: "Feigram 2.0.66 更新",
+    title: "Fngram 2.0.66 更新",
     version: "2.0.66",
     level: "success",
     createdAt: "2026-06-23T07:30:00.000Z",
@@ -159,7 +173,7 @@ const announcements = [
   },
   {
     id: "release-2.0.65",
-    title: "Feigram 2.0.65 更新",
+    title: "Fngram 2.0.65 更新",
     version: "2.0.65",
     level: "success",
     createdAt: "2026-06-23T06:30:00.000Z",
@@ -173,7 +187,7 @@ const announcements = [
   },
   {
     id: "release-2.0.64",
-    title: "Feigram 2.0.64 更新",
+    title: "Fngram 2.0.64 更新",
     version: "2.0.64",
     level: "success",
     createdAt: "2026-06-23T06:00:00.000Z",
@@ -187,7 +201,7 @@ const announcements = [
   },
   {
     id: "release-2.0.63",
-    title: "Feigram 2.0.63 更新",
+    title: "Fngram 2.0.63 更新",
     version: "2.0.63",
     level: "success",
     createdAt: "2026-06-23T05:30:00.000Z",
@@ -201,7 +215,7 @@ const announcements = [
   },
   {
     id: "release-2.0.62",
-    title: "Feigram 2.0.62 更新",
+    title: "Fngram 2.0.62 更新",
     version: "2.0.62",
     level: "success",
     createdAt: "2026-06-23T04:30:00.000Z",
@@ -216,7 +230,7 @@ const announcements = [
   },
   {
     id: "release-2.0.61",
-    title: "Feigram 2.0.61 更新",
+    title: "Fngram 2.0.61 更新",
     version: "2.0.61",
     level: "success",
     createdAt: "2026-06-23T02:10:00.000Z",
@@ -230,7 +244,7 @@ const announcements = [
   },
   {
     id: "release-2.0.60",
-    title: "Feigram 2.0.60 更新",
+    title: "Fngram 2.0.60 更新",
     version: "2.0.60",
     level: "success",
     createdAt: "2026-06-22T15:10:00.000Z",
@@ -245,7 +259,7 @@ const announcements = [
   },
   {
     id: "release-2.0.59",
-    title: "Feigram 2.0.59 更新",
+    title: "Fngram 2.0.59 更新",
     version: "2.0.59",
     level: "success",
     createdAt: "2026-06-22T14:20:00.000Z",
@@ -260,7 +274,7 @@ const announcements = [
   },
   {
     id: "release-2.0.58",
-    title: "Feigram 2.0.58 更新",
+    title: "Fngram 2.0.58 更新",
     version: "2.0.58",
     level: "success",
     createdAt: "2026-06-22T08:30:00.000Z",
@@ -275,7 +289,7 @@ const announcements = [
   },
   {
     id: "release-2.0.57",
-    title: "Feigram 2.0.57 更新",
+    title: "Fngram 2.0.57 更新",
     version: "2.0.57",
     level: "success",
     createdAt: "2026-06-22T09:10:00.000Z",
@@ -290,7 +304,7 @@ const announcements = [
   },
   {
     id: "release-2.0.56",
-    title: "Feigram 2.0.56 更新",
+    title: "Fngram 2.0.56 更新",
     version: "2.0.56",
     level: "success",
     createdAt: "2026-06-22T00:10:00.000Z",
@@ -305,7 +319,7 @@ const announcements = [
   },
   {
     id: "release-2.0.55",
-    title: "Feigram 2.0.55 更新",
+    title: "Fngram 2.0.55 更新",
     version: "2.0.55",
     level: "success",
     createdAt: "2026-06-21T21:55:00.000Z",
@@ -319,7 +333,7 @@ const announcements = [
   },
   {
     id: "release-2.0.54",
-    title: "Feigram 2.0.54 更新",
+    title: "Fngram 2.0.54 更新",
     version: "2.0.54",
     level: "success",
     createdAt: "2026-06-21T21:20:00.000Z",
@@ -333,7 +347,7 @@ const announcements = [
   },
   {
     id: "release-2.0.53",
-    title: "Feigram 2.0.53 更新",
+    title: "Fngram 2.0.53 更新",
     version: "2.0.53",
     level: "success",
     createdAt: "2026-06-21T20:35:00.000Z",
@@ -348,7 +362,7 @@ const announcements = [
   },
   {
     id: "release-2.0.52",
-    title: "Feigram 2.0.52 更新",
+    title: "Fngram 2.0.52 更新",
     version: "2.0.52",
     level: "success",
     createdAt: "2026-06-21T20:00:00.000Z",
@@ -363,7 +377,7 @@ const announcements = [
   },
   {
     id: "release-2.0.51",
-    title: "Feigram 2.0.51 更新",
+    title: "Fngram 2.0.51 更新",
     version: "2.0.51",
     level: "success",
     createdAt: "2026-06-21T19:10:00.000Z",
@@ -378,7 +392,7 @@ const announcements = [
   },
   {
     id: "release-2.0.50",
-    title: "Feigram 2.0.50 更新",
+    title: "Fngram 2.0.50 更新",
     version: "2.0.50",
     level: "success",
     createdAt: "2026-06-21T18:20:00.000Z",
@@ -393,7 +407,7 @@ const announcements = [
   },
   {
     id: "release-2.0.49",
-    title: "Feigram 2.0.49 更新",
+    title: "Fngram 2.0.49 更新",
     version: "2.0.49",
     level: "success",
     createdAt: "2026-06-21T17:20:00.000Z",
@@ -407,7 +421,7 @@ const announcements = [
   },
   {
     id: "release-2.0.48",
-    title: "Feigram 2.0.48 更新",
+    title: "Fngram 2.0.48 更新",
     version: "2.0.48",
     level: "success",
     createdAt: "2026-06-21T00:05:00.000Z",
@@ -421,7 +435,7 @@ const announcements = [
   },
   {
     id: "release-2.0.47",
-    title: "Feigram 2.0.47 更新",
+    title: "Fngram 2.0.47 更新",
     version: "2.0.47",
     level: "success",
     createdAt: "2026-06-20T19:20:00.000Z",
@@ -435,7 +449,7 @@ const announcements = [
   },
   {
     id: "release-2.0.46",
-    title: "Feigram 2.0.46 更新",
+    title: "Fngram 2.0.46 更新",
     version: "2.0.46",
     level: "success",
     createdAt: "2026-06-20T19:30:00.000Z",
@@ -449,7 +463,7 @@ const announcements = [
   },
   {
     id: "release-2.0.45",
-    title: "Feigram 2.0.45 更新",
+    title: "Fngram 2.0.45 更新",
     version: "2.0.45",
     level: "success",
     createdAt: "2026-06-20T17:45:00.000Z",
@@ -463,7 +477,7 @@ const announcements = [
   },
   {
     id: "release-2.0.44",
-    title: "Feigram 2.0.44 更新",
+    title: "Fngram 2.0.44 更新",
     version: "2.0.44",
     level: "success",
     createdAt: "2026-06-20T13:30:00.000Z",
@@ -477,7 +491,7 @@ const announcements = [
   },
   {
     id: "release-2.0.43",
-    title: "Feigram 2.0.43 更新",
+    title: "Fngram 2.0.43 更新",
     version: "2.0.43",
     level: "success",
     createdAt: "2026-06-20T12:00:00.000Z",
@@ -491,7 +505,7 @@ const announcements = [
   },
   {
     id: "release-2.0.42",
-    title: "Feigram 2.0.42 更新",
+    title: "Fngram 2.0.42 更新",
     version: "2.0.42",
     level: "success",
     createdAt: "2026-06-15T12:20:00.000Z",
@@ -505,7 +519,7 @@ const announcements = [
   },
   {
     id: "release-2.0.41",
-    title: "Feigram 2.0.41 更新",
+    title: "Fngram 2.0.41 更新",
     version: "2.0.41",
     level: "success",
     createdAt: "2026-06-15T11:30:00.000Z",
@@ -519,7 +533,7 @@ const announcements = [
   },
   {
     id: "release-2.0.40",
-    title: "Feigram 2.0.40 更新",
+    title: "Fngram 2.0.40 更新",
     version: "2.0.40",
     level: "success",
     createdAt: "2026-06-14T18:30:00.000Z",
@@ -533,7 +547,7 @@ const announcements = [
   },
   {
     id: "release-2.0.39",
-    title: "Feigram 2.0.39 更新",
+    title: "Fngram 2.0.39 更新",
     version: "2.0.39",
     level: "success",
     createdAt: "2026-06-14T23:30:00.000Z",
@@ -547,7 +561,7 @@ const announcements = [
   },
   {
     id: "release-2.0.38",
-    title: "Feigram 2.0.38 更新",
+    title: "Fngram 2.0.38 更新",
     version: "2.0.38",
     level: "success",
     createdAt: "2026-06-14T20:30:00.000Z",
@@ -561,7 +575,7 @@ const announcements = [
   },
   {
     id: "release-2.0.37",
-    title: "Feigram 2.0.37 更新",
+    title: "Fngram 2.0.37 更新",
     version: "2.0.37",
     level: "success",
     createdAt: "2026-06-14T17:30:00.000Z",
@@ -575,7 +589,7 @@ const announcements = [
   },
   {
     id: "release-2.0.36",
-    title: "Feigram 2.0.36 更新",
+    title: "Fngram 2.0.36 更新",
     version: "2.0.36",
     level: "success",
     createdAt: "2026-06-14T23:30:00.000Z",
@@ -589,13 +603,13 @@ const announcements = [
   },
   {
     id: "release-2.0.35",
-    title: "Feigram 2.0.35 更新",
+    title: "Fngram 2.0.35 更新",
     version: "2.0.35",
     level: "success",
     createdAt: "2026-06-14T21:30:00.000Z",
     body: [
       "修复启动阶段 Telegram 账号恢复或旧下载任务迁移失败时，Node 后端直接退出导致飞牛客户端显示“拒绝连接”的问题。",
-      "Feigram 现在会先启动 HTTP 服务，再在后台恢复 Telegram 账号和下载任务；恢复失败只写入日志，不再拖垮整个 App。",
+      "Fngram 现在会先启动 HTTP 服务，再在后台恢复 Telegram 账号和下载任务；恢复失败只写入日志，不再拖垮整个 App。",
       "Go 下载服务开始接管大文件下载队列：任务排序、并发、限速、断点 .part 文件和完成校验都由 Go sidecar 维护。",
       "Node 下载管线不再直接执行大文件下载，只保留本机受保护的 Telegram 媒体流桥接，避免双状态管线互相打架。",
       "手动缓存和群后台自动缓存统一进入管理后台的缓存信息列表，聊天窗口不再显示独立下载状态。",
@@ -605,7 +619,7 @@ const announcements = [
   },
   {
     id: "release-2.0.33",
-    title: "Feigram 2.0.33 更新",
+    title: "Fngram 2.0.33 更新",
     version: "2.0.33",
     level: "success",
     createdAt: "2026-06-14T17:30:00.000Z",
@@ -618,7 +632,7 @@ const announcements = [
   },
   {
     id: "release-2.0.32",
-    title: "Feigram 2.0.32 更新",
+    title: "Fngram 2.0.32 更新",
     version: "2.0.32",
     level: "success",
     createdAt: "2026-06-14T09:30:00.000Z",
@@ -632,7 +646,7 @@ const announcements = [
   },
   {
     id: "release-2.0.31",
-    title: "Feigram 2.0.31 更新",
+    title: "Fngram 2.0.31 更新",
     version: "2.0.31",
     level: "success",
     createdAt: "2026-06-13T23:45:00.000Z",
@@ -646,7 +660,7 @@ const announcements = [
   },
   {
     id: "release-2.0.30",
-    title: "Feigram 2.0.30 更新",
+    title: "Fngram 2.0.30 更新",
     version: "2.0.30",
     level: "success",
     createdAt: "2026-06-13T22:05:00.000Z",
@@ -660,7 +674,7 @@ const announcements = [
   },
   {
     id: "release-2.0.29",
-    title: "Feigram 2.0.29 更新",
+    title: "Fngram 2.0.29 更新",
     version: "2.0.29",
     level: "success",
     createdAt: "2026-06-13T20:05:00.000Z",
@@ -674,7 +688,7 @@ const announcements = [
   },
   {
     id: "release-2.0.28",
-    title: "Feigram 2.0.28 更新",
+    title: "Fngram 2.0.28 更新",
     version: "2.0.28",
     level: "success",
     createdAt: "2026-06-13T15:05:00.000Z",
@@ -687,7 +701,7 @@ const announcements = [
   },
   {
     id: "release-2.0.27",
-    title: "Feigram 2.0.27 更新",
+    title: "Fngram 2.0.27 更新",
     version: "2.0.27",
     level: "success",
     createdAt: "2026-06-13T14:25:00.000Z",
@@ -700,7 +714,7 @@ const announcements = [
   },
   {
     id: "release-2.0.26",
-    title: "Feigram 2.0.26 更新",
+    title: "Fngram 2.0.26 更新",
     version: "2.0.26",
     level: "success",
     createdAt: "2026-06-13T11:30:00.000Z",
@@ -713,7 +727,7 @@ const announcements = [
   },
   {
     id: "release-2.0.25",
-    title: "Feigram 2.0.25 更新",
+    title: "Fngram 2.0.25 更新",
     version: "2.0.25",
     level: "success",
     createdAt: "2026-06-13T09:30:00.000Z",
@@ -728,7 +742,7 @@ const announcements = [
   },
   {
     id: "release-2.0.24",
-    title: "Feigram 2.0.24 更新",
+    title: "Fngram 2.0.24 更新",
     version: "2.0.24",
     level: "success",
     createdAt: "2026-06-12T18:15:00.000Z",
@@ -742,7 +756,7 @@ const announcements = [
   },
   {
     id: "release-2.0.23",
-    title: "Feigram 2.0.23 更新",
+    title: "Fngram 2.0.23 更新",
     version: "2.0.23",
     level: "success",
     createdAt: "2026-06-12T17:55:00.000Z",
@@ -754,7 +768,7 @@ const announcements = [
   },
   {
     id: "release-2.0.22",
-    title: "Feigram 2.0.22 更新",
+    title: "Fngram 2.0.22 更新",
     version: "2.0.22",
     level: "success",
     createdAt: "2026-06-12T17:20:00.000Z",
@@ -766,7 +780,7 @@ const announcements = [
   },
   {
     id: "release-2.0.21",
-    title: "Feigram 2.0.21 更新",
+    title: "Fngram 2.0.21 更新",
     version: "2.0.21",
     level: "success",
     createdAt: "2026-06-12T16:05:00.000Z",
@@ -780,7 +794,7 @@ const announcements = [
   },
   {
     id: "release-2.0.20",
-    title: "Feigram 2.0.20 更新",
+    title: "Fngram 2.0.20 更新",
     version: "2.0.20",
     level: "success",
     createdAt: "2026-06-12T15:45:00.000Z",
@@ -794,7 +808,7 @@ const announcements = [
   },
   {
     id: "release-2.0.20",
-    title: "Feigram 2.0.20 更新",
+    title: "Fngram 2.0.20 更新",
     version: "2.0.20",
     level: "success",
     createdAt: "2026-07-25T10:00:00.000Z",
@@ -810,7 +824,7 @@ const announcements = [
   },
   {
     id: "release-2.0.19",
-    title: "Feigram 2.0.19 更新",
+    title: "Fngram 2.0.19 更新",
     version: "2.0.19",
     level: "success",
     createdAt: "2026-06-12T15:05:00.000Z",
@@ -824,7 +838,7 @@ const announcements = [
   },
   {
     id: "release-2.0.18",
-    title: "Feigram 2.0.18 更新",
+    title: "Fngram 2.0.18 更新",
     version: "2.0.18",
     level: "success",
     createdAt: "2026-06-12T14:20:00.000Z",
@@ -838,7 +852,7 @@ const announcements = [
   },
   {
     id: "release-2.0.17",
-    title: "Feigram 2.0.17 更新",
+    title: "Fngram 2.0.17 更新",
     version: "2.0.17",
     level: "success",
     createdAt: "2026-06-12T13:30:00.000Z",
@@ -851,7 +865,7 @@ const announcements = [
   },
   {
     id: "release-2.0.16",
-    title: "Feigram 2.0.16 更新",
+    title: "Fngram 2.0.16 更新",
     version: "2.0.16",
     level: "success",
     createdAt: "2026-06-12T12:45:00.000Z",
@@ -864,7 +878,7 @@ const announcements = [
   },
   {
     id: "release-2.0.15",
-    title: "Feigram 2.0.15 更新",
+    title: "Fngram 2.0.15 更新",
     version: "2.0.15",
     level: "success",
     createdAt: "2026-06-12T12:20:00.000Z",
@@ -877,7 +891,7 @@ const announcements = [
   },
   {
     id: "release-2.0.14",
-    title: "Feigram 2.0.14 更新",
+    title: "Fngram 2.0.14 更新",
     version: "2.0.14",
     level: "success",
     createdAt: "2026-06-12T11:30:00.000Z",
@@ -890,7 +904,7 @@ const announcements = [
   },
   {
     id: "release-2.0.13",
-    title: "Feigram 2.0.13 更新",
+    title: "Fngram 2.0.13 更新",
     version: "2.0.13",
     level: "success",
     createdAt: "2026-06-12T10:30:00.000Z",
@@ -903,7 +917,7 @@ const announcements = [
   },
   {
     id: "release-2.0.12",
-    title: "Feigram 2.0.12 更新",
+    title: "Fngram 2.0.12 更新",
     version: "2.0.12",
     level: "success",
     createdAt: "2026-06-12T08:40:00.000Z",
@@ -916,7 +930,7 @@ const announcements = [
   },
   {
     id: "release-2.0.11",
-    title: "Feigram 2.0.11 更新",
+    title: "Fngram 2.0.11 更新",
     version: "2.0.11",
     level: "success",
     createdAt: "2026-06-12T05:00:00.000Z",
@@ -929,7 +943,7 @@ const announcements = [
   },
   {
     id: "release-2.0.10",
-    title: "Feigram 2.0.10 更新",
+    title: "Fngram 2.0.10 更新",
     version: "2.0.10",
     level: "success",
     createdAt: "2026-06-12T04:00:00.000Z",
@@ -942,7 +956,7 @@ const announcements = [
   },
   {
     id: "release-2.0.9",
-    title: "Feigram 2.0.9 更新",
+    title: "Fngram 2.0.9 更新",
     version: "2.0.9",
     level: "success",
     createdAt: "2026-06-12T03:00:00.000Z",
@@ -955,7 +969,7 @@ const announcements = [
   },
   {
     id: "release-2.0.8",
-    title: "Feigram 2.0.8 更新",
+    title: "Fngram 2.0.8 更新",
     version: "2.0.8",
     level: "success",
     createdAt: "2026-06-12T02:00:00.000Z",
@@ -968,7 +982,7 @@ const announcements = [
   },
   {
     id: "release-2.0.7",
-    title: "Feigram 2.0.7 更新",
+    title: "Fngram 2.0.7 更新",
     version: "2.0.7",
     level: "success",
     createdAt: "2026-06-12T01:00:00.000Z",
@@ -981,7 +995,7 @@ const announcements = [
   },
   {
     id: "release-2.0.6",
-    title: "Feigram 2.0.6 更新",
+    title: "Fngram 2.0.6 更新",
     version: "2.0.6",
     level: "success",
     createdAt: "2026-06-12T00:00:00.000Z",
@@ -994,7 +1008,7 @@ const announcements = [
   },
   {
     id: "release-2.0.5",
-    title: "Feigram 2.0.5 更新",
+    title: "Fngram 2.0.5 更新",
     version: "2.0.5",
     level: "success",
     createdAt: "2026-06-11T23:30:00.000Z",
@@ -1007,7 +1021,7 @@ const announcements = [
   },
   {
     id: "release-2.0.4",
-    title: "Feigram 2.0.4 更新",
+    title: "Fngram 2.0.4 更新",
     version: "2.0.4",
     level: "success",
     createdAt: "2026-06-11T23:00:00.000Z",
@@ -1022,7 +1036,7 @@ const announcements = [
   },
   {
     id: "release-2.0.3",
-    title: "Feigram 2.0.3 更新",
+    title: "Fngram 2.0.3 更新",
     version: "2.0.3",
     level: "success",
     createdAt: "2026-06-11T22:00:00.000Z",
@@ -1036,7 +1050,7 @@ const announcements = [
   },
   {
     id: "release-2.0.2",
-    title: "Feigram 2.0.2 更新",
+    title: "Fngram 2.0.2 更新",
     version: "2.0.2",
     level: "success",
     createdAt: "2026-06-11T21:00:00.000Z",
@@ -1051,7 +1065,7 @@ const announcements = [
   },
   {
     id: "release-2.0.1",
-    title: "Feigram 2.0.1 更新",
+    title: "Fngram 2.0.1 更新",
     version: "2.0.1",
     level: "success",
     createdAt: "2026-06-11T20:00:00.000Z",
@@ -1065,12 +1079,12 @@ const announcements = [
   },
   {
     id: "release-2.0.0",
-    title: "Feigram 2.0 fnOS Client Edition",
+    title: "Fngram 2.0 fnOS Client Edition",
     version: "2.0.0",
     level: "success",
     createdAt: "2026-06-11T18:00:00.000Z",
     body: [
-      "Feigram 2.0 开始按 fnOS Client Edition 方向整合，保留现有稳定功能。",
+      "Fngram 2.0 开始按 fnOS Client Edition 方向整合，保留现有稳定功能。",
       "新增系统诊断页，可查看版本、缓存大小、任务数量、数据目录和日志尾部。",
       "新增应用内更新检测，可跳转到 GitHub 发布页。",
       "用户主动下载任务和群组后台静默缓存任务支持落盘，重启或升级后自动恢复。",
@@ -1080,7 +1094,7 @@ const announcements = [
   },
   {
     id: "release-1.5.9",
-    title: "Feigram 1.5.9 更新",
+    title: "Fngram 1.5.9 更新",
     version: "1.5.9",
     level: "success",
     createdAt: "2026-06-11T15:30:00.000Z",
@@ -1094,7 +1108,7 @@ const announcements = [
   },
   {
     id: "release-1.5.8",
-    title: "Feigram 1.5.8 更新",
+    title: "Fngram 1.5.8 更新",
     version: "1.5.8",
     level: "success",
     createdAt: "2026-06-11T12:00:00.000Z",
@@ -1109,7 +1123,7 @@ const announcements = [
   },
   {
     id: "release-1.5.7",
-    title: "Feigram 1.5.7 更新",
+    title: "Fngram 1.5.7 更新",
     version: "1.5.7",
     level: "success",
     createdAt: "2026-06-10T11:00:00.000Z",
@@ -1124,7 +1138,7 @@ const announcements = [
   },
   {
     id: "release-1.5.6",
-    title: "Feigram 1.5.6 更新",
+    title: "Fngram 1.5.6 更新",
     version: "1.5.6",
     level: "success",
     createdAt: "2026-06-10T10:00:00.000Z",
@@ -1138,7 +1152,7 @@ const announcements = [
   },
   {
     id: "release-1.5.5",
-    title: "Feigram 1.5.5 更新",
+    title: "Fngram 1.5.5 更新",
     version: "1.5.5",
     level: "success",
     createdAt: "2026-06-10T08:00:00.000Z",
@@ -1152,7 +1166,7 @@ const announcements = [
   },
   {
     id: "release-1.5.4",
-    title: "Feigram 1.5.4 更新",
+    title: "Fngram 1.5.4 更新",
     version: "1.5.4",
     level: "success",
     createdAt: "2026-06-10T00:00:00.000Z",

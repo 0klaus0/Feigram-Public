@@ -10,10 +10,13 @@ import {
   LoaderCircle,
   LogOut,
   MessageSquare,
+  Mic,
+  MicOff,
   Moon,
   PhoneIncoming,
   Play,
   Plus,
+  Radio,
   RefreshCw,
   Search,
   Send,
@@ -25,6 +28,7 @@ import {
   Trash2,
   UserRound,
   Users,
+  Video,
   X
 } from "lucide-react";
 import { api, appLogin, getToken, setToken as saveToken } from "./api";
@@ -411,7 +415,7 @@ function AuthGate({ onReady }) {
         <div className="brand-row">
           <div className="brand-mark"><MessageSquare size={24} /></div>
           <div>
-            <h1>Feigram</h1>
+            <h1>Fngram</h1>
             <p>{mode === "bootstrap" ? "创建第一个管理员" : "公开版登录"}</p>
           </div>
         </div>
@@ -781,7 +785,7 @@ function AdminPanel({ accounts, accountId, canAdmin, onAccountChange, onAccountL
         </div>}
         {canAdmin && tab === "server" && <form className="stack" onSubmit={saveSettings}>
           <h3>服务端设置</h3>
-          <label><span>公开访问地址</span><input value={settings.publicBaseUrl} onChange={(e) => setSettings({ ...settings, publicBaseUrl: e.target.value })} placeholder="https://feigram.example.com" required /></label>
+          <label><span>公开访问地址</span><input value={settings.publicBaseUrl} onChange={(e) => setSettings({ ...settings, publicBaseUrl: e.target.value })} placeholder="https://fngram.example.com" required /></label>
           <label><span>Telegram API ID</span><input type="password" inputMode="numeric" autoComplete="off" value={settings.telegramApiId} onChange={(e) => setSettings({ ...settings, telegramApiId: e.target.value })} placeholder={apiIdPlaceholder} /></label>
           <label><span>Telegram API Hash</span><input type="password" value={settings.telegramApiHash} onChange={(e) => setSettings({ ...settings, telegramApiHash: e.target.value })} placeholder={hashPlaceholder} /></label>
           <h3>Telegram 网络</h3>
@@ -984,8 +988,8 @@ function InfoModal({ announcements, about, open, onClose }) {
           </article>)}
           {!announcements.length && <div className="empty">暂无公告</div>}
           <article className="announcement-item about-item">
-            <strong>{about?.title || "关于 Feigram"}</strong>
-            <p>{about?.body || "Feigram 是第三方开发的非官方 Telegram 客户端。"}</p>
+            <strong>{about?.title || "关于 Fngram"}</strong>
+            <p>{about?.body || "Fngram 是基于 Feigram-Public 二次开发的非官方 Telegram 客户端。"}</p>
             {about?.releaseUrl && <a href={about.releaseUrl} target="_blank" rel="noreferrer">发布仓库</a>}
             {about?.privacyPolicyUrl && <a href={about.privacyPolicyUrl} target="_blank" rel="noreferrer">隐私政策</a>}
             {about?.termsUrl && <a href={about.termsUrl} target="_blank" rel="noreferrer">服务条款</a>}
@@ -1062,6 +1066,152 @@ function DownloadCenter({ open, downloads, onStart, onCancel, onClear, onDelete,
           {!deduped.length && <div className="empty">点击视频右上角缓存后，任务会出现在这里。</div>}
         </div>
       </section>
+    </div>
+  );
+}
+
+function LiveStreamViewer({ open, accountId, chat, onClose, onSetToast }) {
+  const [callInfo, setCallInfo] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const pollRef = useRef(null);
+
+  useEffect(() => {
+    if (!open || !chat) {
+      setCallInfo(null);
+      setError(null);
+      return;
+    }
+    const fetchInfo = async () => {
+      try {
+        const info = await api(`/api/group-call/${encodeURIComponent(accountId)}/${encodeURIComponent(chat.id)}`);
+        if (info?.active) {
+          setCallInfo(info);
+          setError(null);
+        } else {
+          setError("直播已结束");
+        }
+      } catch (err) {
+        setError("获取直播信息失败");
+      }
+    };
+    setLoading(true);
+    fetchInfo().finally(() => setLoading(false));
+    pollRef.current = setInterval(fetchInfo, 10000);
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, [open, chat, accountId]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const handler = (event) => { if (event.key === "Escape") onClose(); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [open, onClose]);
+
+  if (!open || !chat) return null;
+
+  const participants = callInfo?.participants || [];
+  const videoParticipants = participants.filter((p) => p.videoJoined);
+  const audioParticipants = participants.filter((p) => !p.videoJoined);
+
+  return (
+    <div className="modal-backdrop live-viewer-backdrop">
+      <div className="modal live-viewer-modal" onClick={(event) => event.stopPropagation()}>
+        <div className="live-viewer-header">
+          <button className="icon-button" onClick={onClose} title="关闭"><X size={20} /></button>
+          <div className="live-viewer-title">
+            <h2>{chat.title}</h2>
+            <p>
+              <span className="live-status">
+                <span className="live-dot" />
+                直播中
+              </span>
+              <span className="live-viewer-count">
+                <Users size={14} />
+                {callInfo?.participantsCount ?? 0} 人观看
+              </span>
+            </p>
+          </div>
+          {callInfo?.inviteLink && (
+            <a
+              className="primary live-join-external-btn"
+              href={callInfo.inviteLink}
+              target="_blank"
+              rel="noreferrer"
+            >
+              <PhoneIncoming size={16} />
+              加入直播
+            </a>
+          )}
+        </div>
+
+        <div className="live-viewer-body">
+          {loading && !callInfo && (
+            <div className="live-viewer-loading">
+              <LoaderCircle size={32} className="button-spinner" />
+              <span>加载直播信息...</span>
+            </div>
+          )}
+          {error && <div className="live-viewer-error">{error}</div>}
+
+          {callInfo && (
+            <>
+              <div className="live-stage">
+                <div className="live-stage-placeholder">
+                  <Radio size={64} />
+                  <h3>直播进行中</h3>
+                  <p>点击下方「加入直播」按钮在 Telegram 中观看视频</p>
+                  {callInfo.title && <p className="live-title-text">主题：{callInfo.title}</p>}
+                </div>
+              </div>
+
+              <div className="live-participants-section">
+                <div className="live-participants-header">
+                  <strong>
+                    <Users size={16} />
+                    参与者 ({callInfo.participantsCount})
+                  </strong>
+                </div>
+                <div className="live-participants-list">
+                  {videoParticipants.length > 0 && (
+                    <div className="live-participants-group">
+                      <span className="live-participants-group-title">视频</span>
+                      {videoParticipants.map((p) => (
+                        <div key={p.id} className="live-participant-item">
+                          <div className="live-participant-avatar">
+                            <Video size={14} />
+                          </div>
+                          <span className="live-participant-name">用户 {p.id.slice(-6)}</span>
+                          {p.presentation && <span className="live-participant-badge">共享屏幕</span>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {audioParticipants.length > 0 && (
+                    <div className="live-participants-group">
+                      <span className="live-participants-group-title">语音</span>
+                      {audioParticipants.map((p) => (
+                        <div key={p.id} className="live-participant-item">
+                          <div className="live-participant-avatar audio-only">
+                            {p.muted ? <MicOff size={14} /> : <Mic size={14} />}
+                          </div>
+                          <span className="live-participant-name">用户 {p.id.slice(-6)}</span>
+                          {p.raiseHand && <span className="live-participant-badge">举手</span>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {participants.length === 0 && (
+                    <div className="live-participants-empty">暂无参与者信息</div>
+                  )}
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -1216,6 +1366,7 @@ function App() {
   const [autoCacheChats, setAutoCacheChats] = useState(() => JSON.parse(localStorage.getItem("feigrame.autoCacheChats") || "{}"));
   const [autoCacheBusy, setAutoCacheBusy] = useState(false);
   const [mediaViewer, setMediaViewer] = useState(null);
+  const [liveViewerOpen, setLiveViewerOpen] = useState(false);
   const socket = useSocket(token);
   const messagesRef = useRef(null);
   const messageNodeRefs = useRef(new Map());
@@ -1298,7 +1449,7 @@ function App() {
       const currentSettings = appSettingsRef.current;
       const currentActiveChat = activeChatRef.current;
       if (notifications && currentSettings.notificationEnabled && !message.outgoing && message.text) {
-        new Notification("Feigram 新消息", { body: currentSettings.notificationPreview ? message.text.slice(0, 120) : "收到一条新消息" });
+        new Notification("Fngram 新消息", { body: currentSettings.notificationPreview ? message.text.slice(0, 120) : "收到一条新消息" });
       }
       const isCurrentChat = currentActiveChat && peerId && currentActiveChat.id === peerId;
       if (isCurrentChat) {
@@ -1873,7 +2024,7 @@ function App() {
       {toast && <div className="toast-banner">{toast}</div>}
       <aside className="sidebar">
         <div className="topbar">
-          <div className="brand-compact"><MessageSquare size={20} /> Feigram</div>
+          <div className="brand-compact"><MessageSquare size={20} /> Fngram</div>
           <div className="tools">
             <button className="icon-button" onClick={() => setTheme(theme === "dark" ? "light" : "dark")} title="切换主题">{theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}</button>
             <button className={cx("icon-button", unreadAnnouncement && "has-notice")} onClick={enableNotifications} title="通知与公告"><Bell size={18} /></button>
@@ -1960,13 +2111,7 @@ function App() {
                 <p>{activeChat.activeCall?.active ? <span className="live-status"><span className="live-dot" />直播中 · {activeChat.activeCall.participantsCount} 人参与</span> : `${activeChat.type} ${activeChat.username ? `@${activeChat.username}` : ""}`}</p>
               </span>
             </button>
-            {activeChat.activeCall?.active && <button className="icon-button live-join-btn" onClick={async () => {
-              try {
-                const info = await api(`/api/group-call/${encodeURIComponent(accountId)}/${encodeURIComponent(activeChat.id)}`);
-                if (info?.inviteLink) window.open(info.inviteLink, "_blank");
-                else setToast("无法获取直播链接");
-              } catch { setToast("获取直播信息失败"); }
-            }} title="加入直播"><PhoneIncoming size={18} /></button>}
+            {activeChat.activeCall?.active && <button className="icon-button live-join-btn" onClick={() => setLiveViewerOpen(true)} title="查看直播"><Radio size={18} /></button>}
             <button className="icon-button" onClick={openChatInfo} title="群组信息"><Info size={18} /></button>
           </header>
           {error && <p className="error inline">{error}</p>}
@@ -2054,6 +2199,13 @@ function App() {
       />
       <InfoModal announcements={announcements} about={about} open={announcementOpen} onClose={() => setAnnouncementOpen(false)} />
       <MediaViewer item={mediaViewer} playerMode={appSettings.playerMode} onClose={() => setMediaViewer(null)} />
+      <LiveStreamViewer
+        open={liveViewerOpen}
+        accountId={accountId}
+        chat={activeChat}
+        onClose={() => setLiveViewerOpen(false)}
+        onSetToast={setToast}
+      />
     </main>
   );
 }

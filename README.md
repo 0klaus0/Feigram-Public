@@ -1,10 +1,13 @@
-# Feigram 2.0 fnOS Client Edition
+# Fngram 2.0 fnOS Client Edition
 
-Feigram 2.0 fnOS Client Edition 是第三方开发的非官方 Telegram 客户端，仅面向飞牛 OS / fnOS 设备。Feigram 不隶属于 Telegram、Telegram Messenger Inc. 或飞牛官方。
+Fngram 2.0 fnOS Client Edition 是基于 Feigram-Public 二次开发的非官方 Telegram 客户端，仅面向飞牛 OS / fnOS 设备。Fngram 不隶属于 Telegram、Telegram Messenger Inc. 或飞牛官方。
+
+> 感谢原项目 [Feigram-Public (g-star1024)](https://github.com/g-star1024/Feigram-Public) 提供的优秀基础。
 
 - 官网：<http://feigram.dpdns.org>
 - Telegram 群：<https://t.me/feigram>
-- 官方仓库：<https://github.com/g-star1024/Feigram-Public>
+- 原项目仓库：<https://github.com/g-star1024/Feigram-Public>
+- Fngram 仓库：<https://github.com/0klaus0/Feigram-Public>
 
 ## 功能特性
 
@@ -22,7 +25,7 @@ Feigram 2.0 fnOS Client Edition 是第三方开发的非官方 Telegram 客户�
 
 ## 播放与缓存策略
 
-Feigram 运行在 Web 容器中，和 Telegram 官方桌面客户端不同，无法直接复用官方本地播放器或系统解码栈。当前策略是：
+Fngram 运行在 Web 容器中，和 Telegram 官方桌面客户端不同，无法直接复用官方本地播放器或系统解码栈。当前策略是：
 
 - 默认使用原始视频在线播放，尽量减少等待。
 - 图片默认缓存。
@@ -34,8 +37,8 @@ Feigram 运行在 Web 容器中，和 Telegram 官方桌面客户端不同，无
 
 ## 首次使用
 
-1. 在飞牛 OS 安装 Feigram Public FPK。
-2. 打开 Feigram，创建第一个管理员飞牛账户。
+1. 在飞牛 OS 安装 Fngram FPK。
+2. 打开 Fngram，创建第一个管理员飞牛账户。
 3. 进入管理员后台添加 Telegram 账号。
 4. 如需使用自己的 Telegram API 配置，可在“覆盖 API 设置”中填写。
 5. 公开部署前请配置 HTTPS，并确认隐私政策、服务条款、支持邮箱和发布说明符合你的发布场景。

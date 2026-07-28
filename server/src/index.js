@@ -377,7 +377,7 @@ ensureStore()
       }
     }, 30 * 1000).unref?.();
     server.listen(port, "0.0.0.0", () => {
-      console.log(`Feigram Public is listening on http://0.0.0.0:${port}`);
+      console.log(`Fngram is listening on http://0.0.0.0:${port}`);
       readSettings()
         .then(() => tg.loadSavedClients(io))
         .catch((error) => console.warn("Telegram account restore failed:", error.message))

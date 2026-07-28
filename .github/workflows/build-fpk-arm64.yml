@@ -1,4 +1,4 @@
-name: Build Feigram Public FPK (ARM64)
+name: Build Fngram FPK (ARM64)
 
 on:
   workflow_dispatch:
@@ -26,5 +26,5 @@ jobs:
       - name: Upload FPK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: feigrampub-fpk-arm64
+          name: fngrampub-fpk-arm64
           path: release/*.fpk
