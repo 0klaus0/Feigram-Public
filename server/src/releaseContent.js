@@ -15,6 +15,19 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.34",
+    title: "Fngram 2.0.34 更新",
+    version: "2.0.34",
+    level: "success",
+    createdAt: "2026-07-28T21:30:00.000Z",
+    body: [
+      "修復直播流分片下載參數（對齊官方客戶端實現）：",
+      "scale 固定為 0（1秒分片）、precise 改為 false、limit 從 1MB 改為 128KB、videoQuality 從 1 改為 2（最高質量）。",
+      "修復時間戳計算：初始時間戳對齊到 1 秒邊界並減去 2 秒緩衝，避免 TIME_TOO_BIG 錯誤。",
+      "新增詳細錯誤處理：區分 TIME_TOO_BIG（等待重試）、TIME_TOO_SMALL（重新同步）、GROUPCALL_INVALID（直播結束）等情況。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.33",
     title: "Fngram 2.0.33 更新",
     version: "2.0.33",
