@@ -360,15 +360,14 @@ app.post("/api/live-stream/:account/:peer/start", asyncRoute(async (req, res) =>
 // 檢查直播流狀態
 app.get("/api/live-stream/:sessionId/status", asyncRoute(async (req, res) => {
   const { sessionId } = req.params;
-  const ready = await liveRelay.isPlaylistReady(sessionId);
-  const relays = liveRelay.listActiveRelays();
-  const relay = relays.find((r) => r.sessionId === sessionId);
+  const relayStatus = liveRelay.getRelayStatus(sessionId);
   liveRelay.touchRelay(sessionId);
   res.json({
     sessionId,
-    ready,
-    status: relay?.status || "unknown",
-    chunkCount: relay?.chunkCount || 0
+    ready: relayStatus?.ready || false,
+    status: relayStatus?.status || "unknown",
+    errorMessage: relayStatus?.errorMessage || null,
+    chunkCount: relayStatus?.chunkCount || 0
   });
 }));
 

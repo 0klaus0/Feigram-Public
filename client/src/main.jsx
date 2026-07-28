@@ -1184,6 +1184,12 @@ function LiveStreamViewer({ open, accountId, chat, onClose, onSetToast }) {
         const checkReady = async () => {
           try {
             const status = await api(`/api/live-stream/${result.sessionId}/status`);
+            // 如果後端報告錯誤，立即顯示
+            if (status?.status === "error" && status?.errorMessage) {
+              setRelayStatus("error");
+              setError(status.errorMessage);
+              return true;
+            }
             if (status?.ready) {
               setRelayStatus("ready");
               startHlsPlayback(result.sessionId);
@@ -1200,7 +1206,7 @@ function LiveStreamViewer({ open, accountId, chat, onClose, onSetToast }) {
             clearInterval(readyTimer);
             if (!ok) {
               setRelayStatus("error");
-              setError("直播流啟動超時，請稍後重試");
+              setError("直播流啟動超時（30秒內未收到數據），該直播可能不支持應用內播放。");
             }
           }
         }, 1000);

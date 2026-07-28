@@ -15,16 +15,41 @@ const about = {
 
 const announcements = [
   {
-    id: "release-2.0.27",
-    title: "Fngram 2.0.27 更新",
-    version: "2.0.27",
+    id: "release-2.0.31",
+    title: "Fngram 2.0.31 更新",
+    version: "2.0.31",
     level: "success",
-    createdAt: "2026-07-28T21:30:00.000Z",
+    createdAt: "2026-07-28T22:00:00.000Z",
     body: [
-      "直播查看器改为半屏底部弹窗，更贴近原生 Telegram 风格。",
-      "修复直播加入链接跳转失败：改用 Telegram Web 打开，不再触发无效的应用跳转。",
-      "清理旧版本公告，只保留 Fngram 相关更新内容。",
-      "新增应用内更新检测与一键下载功能：后台可检查新版本并直接下载 FPK 安装包。"
+      "新增應用內直播觀看功能：基於 MTProto 直播流分片下載 + ffmpeg HLS 轉發，支持在 Fngram 內直接播放群組直播。",
+      "點擊直播圖標後可選擇「觀看直播」，系統會自動從 Telegram 獲取視頻數據並轉為 HLS 流播放。",
+      "直播查看器改進：新增 ffmpeg 可用性檢查、啟動超時檢測、錯誤信息回傳，失敗時顯示具體原因。",
+      "保留直播邀請連結複製功能作為備用方案。"
+    ].join("\n")
+  },
+  {
+    id: "release-2.0.30",
+    title: "Fngram 2.0.30 更新",
+    version: "2.0.30",
+    level: "success",
+    createdAt: "2026-07-28T21:00:00.000Z",
+    body: [
+      "修復更新檢測 403 錯誤：添加 Accept 頭和 HTML 後備方案。",
+      "優化直播邀請連結獲取邏輯。",
+      "GitHub Actions 構建工作流修復：ARM64 工作流添加 tag push 觸發器。"
+    ].join("\n")
+  },
+  {
+    id: "release-2.0.28",
+    title: "Fngram 2.0.28 更新",
+    version: "2.0.28",
+    level: "success",
+    createdAt: "2026-07-28T20:00:00.000Z",
+    body: [
+      "直播查看器改為半屏底部彈窗，更貼近原生 Telegram 風格。",
+      "修復直播加入連結跳轉失敗：改用 Telegram Web 打開，不再觸發無效的應用跳轉。",
+      "清理舊版本公告，只保留 Fngram 相關更新內容。",
+      "新增應用內更新檢測與一鍵下載功能：後台可檢查新版本並直接下載 FPK 安裝包。"
     ].join("\n")
   },
   {
@@ -32,11 +57,11 @@ const announcements = [
     title: "Fngram 2.0.26 更新",
     version: "2.0.26",
     level: "success",
-    createdAt: "2026-07-28T20:00:00.000Z",
+    createdAt: "2026-07-28T12:00:00.000Z",
     body: [
-      "全面品牌统一：构建产物名称由 feigrampub 改为 fngram，GitHub Actions 产物名同步更新。",
-      "修复服务条款中残留的旧名称引用。",
-      "前端代码内部组件命名统一为 Fngram。"
+      "全面品牌統一：構建產物名稱由 feigrampub 改為 fngram，GitHub Actions 產物名同步更新。",
+      "修復服務條款中殘留的舊名稱引用。",
+      "前端代碼內部組件命名統一為 Fngram。"
     ].join("\n")
   },
   {
@@ -44,12 +69,12 @@ const announcements = [
     title: "Fngram 2.0.25 更新",
     version: "2.0.25",
     level: "success",
-    createdAt: "2026-07-28T12:00:00.000Z",
+    createdAt: "2026-07-28T10:00:00.000Z",
     body: [
-      "新增内置直播查看器：点击直播图标可打开直播详情弹窗，实时显示参与人数、参与者列表（视频/语音分组）。",
-      "APP 正式更名为 Fngram，基于 Feigram-Public 二次开发，感谢原项目 g-star1024/Feigram-Public。",
-      "修复群组直播标识检测逻辑：适配 GramJS v2.26.22 的 callActive 标志位。",
-      "优化聊天列表加载与归档过滤，界面布局更贴近原生 Telegram 风格。"
+      "新增內置直播查看器：點擊直播圖標可打開直播詳情彈窗，實時顯示參與人數、參與者列表（視頻/語音分組）。",
+      "APP 正式更名為 Fngram，基於 Feigram-Public 二次開發，感謝原項目 g-star1024/Feigram-Public。",
+      "修復群組直播標識檢測邏輯：適配 GramJS v2.26.22 的 callActive 標誌位。",
+      "優化聊天列表加載與歸檔過濾，界面佈局更貼近原生 Telegram 風格。"
     ].join("\n")
   }
 ];
