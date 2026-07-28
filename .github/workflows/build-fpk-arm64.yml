@@ -47,4 +47,4 @@ jobs:
             3. 或在 Fngram 管理后台「运行诊断」中一键下载更新
           files: release/*.fpk
         env:
-          VERSION: "2.0.28"
+          VERSION: "2.0.29"

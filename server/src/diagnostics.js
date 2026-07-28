@@ -73,7 +73,12 @@ async function checkForUpdates() {
   const current = process.env.APP_VERSION || "dev";
   const endpoint = "https://api.github.com/repos/0klaus0/Feigram-Public/releases/latest";
   try {
-    const response = await fetch(endpoint, { headers: { "User-Agent": "Fngram" } });
+    const response = await fetch(endpoint, {
+      headers: {
+        "User-Agent": "Fngram",
+        "Accept": "application/vnd.github+json"
+      }
+    });
     if (!response.ok) throw new Error(`GitHub ${response.status}`);
     const latest = await response.json();
     const latestVersion = String(latest.tag_name || latest.name || "").replace(/^v/i, "");
@@ -89,6 +94,33 @@ async function checkForUpdates() {
       releaseNotes: latest.body || ""
     };
   } catch (error) {
+    // Fallback: try parsing the releases HTML page for the latest version
+    try {
+      const htmlResponse = await fetch("https://github.com/0klaus0/Feigram-Public/releases/latest", {
+        headers: { "User-Agent": "Fngram" },
+        redirect: "follow"
+      });
+      if (htmlResponse.ok) {
+        const finalUrl = htmlResponse.url || "";
+        const versionMatch = finalUrl.match(/\/releases\/tag\/v?([\d.]+)/);
+        const latestVersion = versionMatch ? versionMatch[1] : "";
+        if (latestVersion) {
+          return {
+            current,
+            latest: latestVersion,
+            url: finalUrl,
+            updateAvailable: Boolean(latestVersion && latestVersion !== current),
+            fpkDownloadUrl: null,
+            fpkName: null,
+            fpkSize: 0,
+            releaseNotes: "",
+            note: "API 受限，仅检测到版本号。请手动下载。"
+          };
+        }
+      }
+    } catch {
+      // ignore fallback errors
+    }
     return {
       current,
       latest: "",
