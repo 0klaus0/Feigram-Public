@@ -15,6 +15,19 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.38",
+    title: "Fngram 2.0.38 更新",
+    version: "2.0.38",
+    level: "success",
+    createdAt: "2026-07-29T06:00:00.000Z",
+    body: [
+      "調整直播流獲取流程順序：先獲取流頻道信息（GetGroupCallStreamChannels），再加入通話（JoinGroupCall），最後下載分片。",
+      "修復 JoinGroupCall 導致 GetGroupCallStreamChannels 失敗的問題：v2.0.32 中頻道獲取正常，加入 JoinGroupCall 後反而失敗，現已調整順序。",
+      "新增降級方案：頻道信息獲取失敗時使用預設參數（videoChannel=1）繼續嘗試下載，不再直接報錯。",
+      "加入通話後再次嘗試獲取頻道信息，雙重保障。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.37",
     title: "Fngram 2.0.37 更新",
     version: "2.0.37",
