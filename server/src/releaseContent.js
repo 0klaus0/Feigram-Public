@@ -15,6 +15,20 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.43",
+    title: "Fngram 2.0.43 更新",
+    version: "2.0.43",
+    level: "success",
+    createdAt: "2026-07-29T22:00:00.000Z",
+    body: [
+      "修復 ffmpeg 無法解析直播流數據問題：Telegram 直播流分片是 ftyp+free+mdat 結構（無 moov atom），ffmpeg 的 MP4 解復用器無法解析。",
+      "新增 H.264 Annex B 提取：從 MP4 mdat box 中提取 AVCC 格式 NAL units，轉換為 Annex B 格式（00 00 00 01 起始碼）。",
+      "ffmpeg 輸入格式從 -f mp4 改為 -f h264（原始 H.264 位流，不需要 moov atom）。",
+      "視頻改為 -c:v copy 直通（不重編碼），大幅降低 ARM 設備 CPU 需求。",
+      "禁用音頻處理（-an）：直播流分片只有視頻軌道。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.42",
     title: "Fngram 2.0.42 更新",
     version: "2.0.42",

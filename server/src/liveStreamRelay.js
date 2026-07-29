@@ -222,6 +222,83 @@ function stripTelegramHeader(rawBuffer) {
 }
 
 /**
+ * 從 MP4 容器中提取 H.264 Annex B 格式位流
+ *
+ * Telegram 直播流分片的 MP4 結構：ftyp + free + mdat（無 moov atom）
+ * mdat 中的數據為 AVCC 格式（4字節大端長度前綴 + NAL unit）
+ * 轉換為 Annex B 格式（00 00 00 01 起始碼 + NAL unit）供 ffmpeg 直接解碼
+ *
+ * @param {Buffer} mp4Data - 剝離 Telegram 頭後的 MP4 數據
+ * @returns {Buffer} H.264 Annex B 位流
+ */
+let h264DebugDone = false;
+
+function extractH264AnnexB(mp4Data) {
+  let offset = 0;
+  const chunks = [];
+
+  while (offset + 8 <= mp4Data.length) {
+    let boxSize = mp4Data.readUInt32BE(offset);
+    const boxType = mp4Data.slice(offset + 4, offset + 8).toString("ascii");
+
+    // box size 0 = 到文件末尾
+    if (boxSize === 0) {
+      boxSize = mp4Data.length - offset;
+    }
+
+    // box size 1 = 64 位擴展大小（簡化處理，取低 32 位）
+    if (boxSize === 1) {
+      if (offset + 16 > mp4Data.length) break;
+      boxSize = mp4Data.readUInt32BE(offset + 12);
+    }
+
+    if (boxSize < 8 || offset + boxSize > mp4Data.length) break;
+
+    if (boxType === "mdat") {
+      const mdatData = mp4Data.slice(offset + 8, offset + boxSize);
+
+      // 將 AVCC 格式（4字節長度前綴）轉為 Annex B 格式（起始碼 00 00 00 01）
+      let pos = 0;
+      let nalCount = 0;
+      while (pos + 4 <= mdatData.length) {
+        const nalLength = mdatData.readUInt32BE(pos);
+        pos += 4;
+
+        if (nalLength <= 0 || nalLength > mdatData.length - pos) break;
+
+        // Annex B 起始碼
+        chunks.push(Buffer.from([0x00, 0x00, 0x00, 0x01]));
+        // NAL unit 數據
+        chunks.push(mdatData.slice(pos, pos + nalLength));
+
+        if (!h264DebugDone && nalCount < 5) {
+          const nalType = mdatData[pos] & 0x1f;
+          const nalNames = { 1: "non-IDR", 5: "IDR", 6: "SEI", 7: "SPS", 8: "PPS" };
+          console.log(`[liveStreamRelay]   NAL[${nalCount}]: type=${nalType} (${nalNames[nalType] || "unknown"}), size=${nalLength}`);
+          nalCount++;
+        }
+
+        pos += nalLength;
+      }
+    }
+
+    offset += boxSize;
+  }
+
+  if (chunks.length === 0) {
+    console.log("[liveStreamRelay] extractH264AnnexB: no mdat found, returning raw data");
+    return mp4Data;
+  }
+
+  const result = Buffer.concat(chunks);
+  if (!h264DebugDone) {
+    h264DebugDone = true;
+    console.log(`[liveStreamRelay] extractH264AnnexB: extracted ${result.length} bytes H.264 from ${mp4Data.length} bytes MP4`);
+  }
+  return result;
+}
+
+/**
  * 獲取直播流頻道信息（GramJS retries=1 限制最多 2 次嘗試）
  * 必須在 JoinGroupCall 之後調用，否則返回 GROUPCALL_JOIN_MISSING
  * @param {number} streamDcId - 流媒體所在的 DC ID（來自 GetGroupCall 的 stream_dc_id）
@@ -329,49 +406,38 @@ async function downloadStreamChunk(client, inputCall, timeMs, videoChannel, stre
   }
 }
 
-/**
- * 啟動 ffmpeg 進程，將輸入文件轉為 HLS 輸出
- *
- * 策略變更：不再使用 pipe:0 管道輸入，因為 ffmpeg 的 MP4 解復用器需要 seek 來解析 moov atom，
- * 而管道不支持 seek。改為寫入臨時文件，然後通過 tail -F 持續跟蹤文件增長並管道傳給 ffmpeg。
- * 這樣 ffmpeg 在啟動時可以從文件讀取完整的 init segment（ftyp + moov），後續通過 tail -F 持續接收新數據。
- */
-function spawnFfmpeg(outputDir, inputFile) {
-  const playlistPath = path.join(outputDir, "stream.m3u8");
-  const segmentPattern = path.join(outputDir, "seg_%04d.ts");
-
-  // 使用 tail -F 跟蹤增長中的文件，並管道給 ffmpeg
-  // tail -c +1 從頭開始，-F 跟蹤文件（即使被刪除重建也會繼續跟蹤）
-  const tail = spawn("tail", ["-c", "+1", "-F", inputFile], {
-    stdio: ["ignore", "pipe", "pipe"]
-  });
-
-  const args = [
-    "-y",
-    "-fflags", "+genpts+nobuffer",
-    "-flags", "low_delay",
-    "-f", "mp4",              // 輸入格式：fragmented MP4
-    "-i", "pipe:0",
-    "-c:v", "libx264",
-    "-preset", "veryfast",
-    "-tune", "zerolatency",
-    "-profile:v", "baseline",
-    "-level", "3.1",
-    "-g", String(SEGMENT_DURATION * 30),
-    "-bf", "0",
-    "-b:v", "800k",
-    "-maxrate", "1000k",
-    "-bufsize", "1600k",
-    "-c:a", "aac",
-    "-b:a", "128k",
-    "-ac", "2",
-    "-ar", "44100",
-    "-f", "hls",
-    "-hls_time", String(SEGMENT_DURATION),
-    "-hls_list_size", String(WINDOW_SIZE),
-    "-hls_flags", "delete_segments+append_list+omit_endlist",
-    "-hls_segment_filename", segmentPattern,
-    playlistPath
+/**
+ * 啟動 ffmpeg 進程，將 H.264 Annex B 位流轉為 HLS 輸出
+ *
+ * 策略變更：Telegram 直播流分片是 ftyp+free+mdat（無 moov），無法用 -f mp4 解析。
+ * 現改為從 mdat 提取 H.264 Annex B 位流，用 -f h264 輸入（不需要 moov atom）。
+ * 視頻使用 -c:v copy 直通（不重編碼），大幅降低 CPU 需求。
+ * 直播流分片只有視頻軌道，無音頻，因此禁用音頻處理。
+ */
+function spawnFfmpeg(outputDir, inputFile) {
+  const playlistPath = path.join(outputDir, "stream.m3u8");
+  const segmentPattern = path.join(outputDir, "seg_%04d.ts");
+
+  // 使用 tail -F 跟蹤增長中的文件，並管道給 ffmpeg
+  const tail = spawn("tail", ["-c", "+1", "-F", inputFile], {
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+
+  const args = [
+    "-y",
+    "-fflags", "+genpts+nobuffer",
+    "-flags", "low_delay",
+    "-f", "h264",             // 輸入格式：原始 H.264 Annex B 位流
+    "-i", "pipe:0",
+    "-c:v", "copy",           // 視頻直接拷貝，不重編碼（降低 CPU 需求）
+    "-an",                    // 無音頻（直播流分片只有視頻）
+    "-f", "hls",
+    "-hls_time", String(SEGMENT_DURATION),
+    "-hls_list_size", String(WINDOW_SIZE),
+    "-hls_flags", "delete_segments+append_list+omit_endlist",
+    "-hls_segment_filename", segmentPattern,
+    "-hls_segment_type", "mpegts",
+    playlistPath
   ];
 
   const ffmpeg = spawn("ffmpeg", args, { stdio: ["pipe", "pipe", "pipe"] });
@@ -704,16 +770,17 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
           console.log(`[liveStreamRelay] First chunk received: ${rawChunk.length} bytes (raw), status=running`);
         }
 
-        // ★ 關鍵：剝離 Telegram 自定義頭，提取純 MP4 媒體數據
-        const mediaData = stripTelegramHeader(rawChunk);
-
-        if (mediaData.length > 0) {
-          try {
-            // 寫入 input 文件（tail -F 會自動跟蹤並管道給 ffmpeg）
-            await fs.appendFile(relay.inputFile, mediaData);
-          } catch (writeErr) {
-            console.error("[liveStreamRelay] file write error:", writeErr.message);
-          }
+        // ★ 關鍵：剝離 Telegram 自定義頭，提取 MP4，再從 mdat 提取 H.264 Annex B 位流
+        const mp4Data = stripTelegramHeader(rawChunk);
+        const h264Data = extractH264AnnexB(mp4Data);
+
+        if (h264Data.length > 0) {
+          try {
+            // 寫入 input 文件（tail -F 會自動跟蹤並管道給 ffmpeg）
+            await fs.appendFile(relay.inputFile, h264Data);
+          } catch (writeErr) {
+            console.error("[liveStreamRelay] file write error:", writeErr.message);
+          }
         }
 
         lastTimestampMs += SEGMENT_DURATION_MS;
