@@ -15,56 +15,16 @@ const about = {
 
 const announcements = [
   {
-    id: "release-2.0.39",
-    title: "Fngram 2.0.39 更新",
-    version: "2.0.39",
+    id: "release-2.0.40",
+    title: "Fngram 2.0.40 更新",
+    version: "2.0.40",
     level: "success",
-    createdAt: "2026-07-29T08:30:00.000Z",
+    createdAt: "2026-07-29T12:00:00.000Z",
     body: [
-      "修正直播流流程順序：先 JoinGroupCall 加入通話，再 GetGroupCallStreamChannels 獲取頻道（根據 TGTV 參考實現和 gram.js 文檔，加入通話是獲取頻道的前置條件）。",
-      "移除所有重試邏輯：GetGroupCallStreamChannels 改為單次調用，避免觸發 Telegram Flood Wait 限流。",
-      "新增 FLOOD_WAIT 指數退避處理：遇到限流時自動退避，最多 5 次後停止。",
-      "簡化整體代碼邏輯，移除冗餘的 streamDcId 刷新和重複頻道獲取。"
-    ].join("\n")
-  },
-  {
-    id: "release-2.0.38",
-    title: "Fngram 2.0.38 更新",
-    version: "2.0.38",
-    level: "success",
-    createdAt: "2026-07-29T06:00:00.000Z",
-    body: [
-      "調整直播流獲取流程順序：先獲取流頻道信息（GetGroupCallStreamChannels），再加入通話（JoinGroupCall），最後下載分片。",
-      "修復 JoinGroupCall 導致 GetGroupCallStreamChannels 失敗的問題：v2.0.32 中頻道獲取正常，加入 JoinGroupCall 後反而失敗，現已調整順序。",
-      "新增降級方案：頻道信息獲取失敗時使用預設參數（videoChannel=1）繼續嘗試下載，不再直接報錯。",
-      "加入通話後再次嘗試獲取頻道信息，雙重保障。"
-    ].join("\n")
-  },
-  {
-    id: "release-2.0.37",
-    title: "Fngram 2.0.37 更新",
-    version: "2.0.37",
-    level: "success",
-    createdAt: "2026-07-29T04:30:00.000Z",
-    body: [
-      "修復 GetGroupCallStreamChannels 在流媒體 DC 上失敗的問題：",
-      "加入通話後等待 1.5 秒讓服務器同步參與者狀態，再獲取流頻道信息。",
-      "GetGroupCallStreamChannels 增加 3 次重試機制，每次間隔 2 秒。",
-      "首次獲取失敗後，重新調用 GetGroupCall 刷新 streamDcId 並重試。",
-      "改進錯誤日誌，記錄每次重試的詳細信息。"
-    ].join("\n")
-  },
-  {
-    id: "release-2.0.36",
-    title: "Fngram 2.0.36 更新",
-    version: "2.0.36",
-    level: "success",
-    createdAt: "2026-07-29T03:00:00.000Z",
-    body: [
-      "修復 GROUPCALL_SSRC_DUPLICATE_MUCH 錯誤：JoinGroupCall 現在生成唯一 SSRC 和完整 WebRTC params。",
-      "修復 JoinGroupCall 的 DC 路由：在用戶主 DC 調用 JoinGroupCall，而非 stream_dc_id 指定的 DC。",
-      "正確提取參與者 source ID 用於 LeaveGroupCall。",
-      "生成隨機 ufrag、fingerprint 和 SSRC，模擬 WebRTC 客戶端 SDP offer。"
+      "直播流轉發重大修復：改為文件寫入 + tail -F 管道方式，解決 ffmpeg MP4 解復用器無法從管道讀取 fMP4 數據的問題。",
+      "ffmpeg 啟動時從文件讀取完整的 init segment（ftyp + moov），後續通過 tail -F 持續跟蹤文件增長。",
+      "新增 Telegram chunk 頭部解析調試日誌，方便排查數據格式問題。",
+      "修復 ffmpeg stdin EPIPE 崩潰問題（已在上版生效，此版進一步加固）。"
     ].join("\n")
   },
   {

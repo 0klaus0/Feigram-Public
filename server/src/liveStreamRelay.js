@@ -6,11 +6,12 @@
  * 2. phone.JoinGroupCall — 以聽眾身份加入通話（必須在獲取頻道之前）
  * 3. phone.GetGroupCallStreamChannels — 獲取直播頻道信息（單次調用，不重試）
  * 4. upload.GetFile + InputGroupCallStream — 循環下載 1 秒視頻分片
- * 5. ffmpeg 轉碼為 HLS（.m3u8 + .ts）
+ * 5. 剝離 Telegram 自定義頭（魔數 0xA12E810D），提取純 MP4 媒體數據
+ * 6. 將純媒體數據餵給 ffmpeg，轉碼為 HLS（.m3u8 + .ts）
  *
- * 關鍵：GetGroupCallStreamChannels 要求先 JoinGroupCall，否則返回 GROUPCALL_JOIN_MISSING
- * 參考：https://gram.js.org/ — GetGroupCallStreamChannels 錯誤表
- *       TGTV 設計文檔 — "join the group call, then poll upload.getFile"
+ * 關鍵：download.GetFile 返回的數據有 Telegram 自定義頭，必須剝離後才能餵給 ffmpeg
+ * 參考：tgcalls/VideoStreamingPart.cpp — consumeVideoStreamInfo() 解析頭部
+ *       tgroupcall-dl/chunk.go — UnmarshalBinary() 反序列化
  */
 
 const { execFile } = require("child_process");
@@ -38,6 +39,9 @@ const SEGMENT_BUFFER_MS = 2000; // 時間戳緩衝 2 秒
 const GET_FILE_LIMIT = 128 * 1024; // 128KB（官方客戶端使用的值）
 const STREAM_SCALE = 0; // scale=0 對應 1 秒分片
 const VIDEO_QUALITY_FULL = 2; // 最高質量
+
+// Telegram 直播流 chunk 魔數
+const TELEGRAM_CHUNK_MAGIC = 0xA12E810D;
 
 // 活躍的轉發會話
 const activeRelays = new Map();
@@ -67,12 +71,153 @@ async function checkFfmpeg() {
 async function ensureHlsDir(sessionId) {
   const dir = path.join(HLS_BASE_DIR, sessionId);
   await fs.ensureDir(dir);
-  // 清空舊文件
   const existing = await fs.readdir(dir).catch(() => []);
   for (const f of existing) {
     await fs.remove(path.join(dir, f)).catch(() => {});
   }
   return dir;
+}
+
+/**
+ * 讀取 Telegram 序列化字符串
+ * 格式：
+ * - 首字节 < 254: 1 字節長度 + 字符串 + 填充至 4 字節對齊
+ * - 首字节 == 254: 接下來 3 字節為長度 + 字符串 + 填充至 4 字節對齊
+ * @returns {[string, number]} [字符串值, 新的偏移量]
+ */
+function readSerializedString(buffer, offset) {
+  if (offset >= buffer.length) return ["", offset];
+
+  const firstByte = buffer[offset];
+  let length, headerLen;
+
+  if (firstByte < 254) {
+    length = firstByte;
+    headerLen = 1;
+  } else {
+    // 3 bytes for length (little-endian)
+    length = buffer[offset + 1] | (buffer[offset + 2] << 8) | (buffer[offset + 3] << 16);
+    headerLen = 4;
+  }
+
+  const strStart = offset + headerLen;
+  const str = buffer.slice(strStart, strStart + length).toString("utf-8");
+
+  // 計算填充至 4 字節對齊
+  const totalWithoutPadding = headerLen + length;
+  const padding = (4 - (totalWithoutPadding % 4)) % 4;
+  const newOffset = strStart + length + padding;
+
+  return [str, newOffset];
+}
+
+/**
+ * 解析並剝離 Telegram 自定義直播流頭，提取純 MP4 媒體數據
+ *
+ * 頭部格式（參考 tgcalls/VideoStreamingPart.cpp, tgroupcall-dl/chunk.go）：
+ * [4 bytes: signature 0xA12E810D (LE)]
+ * [serialized string: container, e.g. "mp4"]
+ * [4 bytes: mask (uint32)]
+ * [4 bytes: event count (uint32)]
+ * [for each event:
+ *   [4 bytes: offset (uint32)]
+ *   [serialized string: endpoint]
+ *   [4 bytes: rotation (uint32)]
+ *   [4 bytes: extra (uint32)]
+ * ]
+ * [remaining: media data split by event offsets]
+ *
+ * @param {Buffer} rawBuffer - upload.GetFile 返回的原始數據
+ * @returns {Buffer} 剝離頭部後的純 MP4 媒體數據
+ */
+let headerDebugDone = false; // 只打印一次調試信息
+
+function stripTelegramHeader(rawBuffer) {
+  if (rawBuffer.length < 4) return rawBuffer;
+
+  // 檢查魔數
+  const signature = rawBuffer.readUInt32LE(0);
+  if (signature !== TELEGRAM_CHUNK_MAGIC) {
+    // 不是 Telegram chunk — 打印前 32 字節用於調試
+    if (!headerDebugDone) {
+      headerDebugDone = true;
+      const hex = rawBuffer.slice(0, Math.min(64, rawBuffer.length)).toString("hex");
+      console.log("[liveStreamRelay] stripTelegramHeader: NO MAGIC, first 64 bytes hex:", hex);
+      console.log("[liveStreamRelay] stripTelegramHeader: expected magic=0x" + TELEGRAM_CHUNK_MAGIC.toString(16) + ", got=0x" + signature.toString(16));
+    }
+    return rawBuffer;
+  }
+
+  let offset = 4;
+
+  // 讀取 container 字符串（如 "mp4"）
+  const [container, offsetAfterContainer] = readSerializedString(rawBuffer, offset);
+  offset = offsetAfterContainer;
+
+  // 讀取 mask
+  if (offset + 4 > rawBuffer.length) return rawBuffer.slice(offset);
+  const mask = rawBuffer.readUInt32LE(offset);
+  offset += 4;
+
+  // 讀取 event count
+  if (offset + 4 > rawBuffer.length) return rawBuffer.slice(offset);
+  const eventCount = rawBuffer.readUInt32LE(offset);
+  offset += 4;
+
+  // 讀取每個 event 的元數據
+  const events = [];
+  for (let i = 0; i < eventCount; i++) {
+    if (offset + 4 > rawBuffer.length) break;
+    const eventOffset = rawBuffer.readUInt32LE(offset);
+    offset += 4;
+
+    const [endpoint, offsetAfterEndpoint] = readSerializedString(rawBuffer, offset);
+    offset = offsetAfterEndpoint;
+
+    if (offset + 8 > rawBuffer.length) break;
+    const rotation = rawBuffer.readUInt32LE(offset);
+    offset += 4;
+    const extra = rawBuffer.readUInt32LE(offset);
+    offset += 4;
+
+    events.push({ offset: eventOffset, endpoint, rotation, extra });
+  }
+
+  // 剩餘數據就是媒體數據
+  const mediaData = rawBuffer.slice(offset);
+
+  if (!headerDebugDone) {
+    headerDebugDone = true;
+    console.log(`[liveStreamRelay] stripTelegramHeader: magic=0x${signature.toString(16)}, container="${container}", mask=${mask}, eventCount=${eventCount}, headerSize=${offset}, rawSize=${rawBuffer.length}`);
+    events.forEach((ev, i) => {
+      console.log(`[liveStreamRelay]   event[${i}]: offset=${ev.offset}, endpoint="${ev.endpoint}", rotation=${ev.rotation}, extra=${ev.extra}`);
+    });
+    if (events.length > 0) {
+      const finalStart = events[0].offset;
+      const finalEnd = events.length > 1 ? events[1].offset : mediaData.length;
+      console.log(`[liveStreamRelay]   mediaData total=${mediaData.length}, slice [${finalStart}:${finalEnd}] = ${finalEnd - finalStart} bytes`);
+      // 打印剝離後數據的前 32 字節
+      const stripped = mediaData.slice(finalStart, finalStart + Math.min(64, finalEnd - finalStart));
+      console.log(`[liveStreamRelay]   stripped data first 64 bytes hex: ${stripped.toString("hex")}`);
+      // 檢查是否以 MP4 ftyp box 開頭
+      const ftypMagic = stripped.slice(0, 4).toString("ascii");
+      console.log(`[liveStreamRelay]   stripped data first 4 ascii: "${ftypMagic}" (expected "ftyp" for fMP4)`);
+    }
+  }
+
+  if (events.length === 0) {
+    return mediaData;
+  }
+
+  // 通常只有一個 event，返回從其 offset 到末尾的數據
+  if (events.length === 1) {
+    return mediaData.slice(events[0].offset);
+  }
+
+  // 多個 event：取第一個 event 的數據（從其 offset 到下一個 event 的 offset）
+  const start = events[0].offset;
+  const end = events.length > 1 ? events[1].offset : mediaData.length;
+  return mediaData.slice(start, end);
 }
 
 /**
@@ -96,10 +241,11 @@ async function getStreamChannels(client, inputCall, streamDcId) {
       console.log(`  Channel ${i}: channel=${ch.channel}, scale=${ch.scale}, lastTimestampMs=${ch.lastTimestampMs}`);
     });
 
-    const channel = result.channels[0];
+    // 選擇視頻頻道：優先 channel=1（視頻），否則取第一個
+    const videoCh = result.channels.find((c) => c.channel === 1) || result.channels[0];
     return {
-      channel: channel.channel,
-      lastTimestampMs: Number(channel.lastTimestampMs || 0),
+      channel: videoCh.channel,
+      lastTimestampMs: Number(videoCh.lastTimestampMs || 0),
       allChannels: result.channels.map((c) => ({
         channel: c.channel,
         scale: c.scale || 0,
@@ -174,16 +320,27 @@ async function downloadStreamChunk(client, inputCall, timeMs, videoChannel, stre
 }
 
 /**
- * 啟動 ffmpeg 進程，將輸入管道轉為 HLS 輸出
+ * 啟動 ffmpeg 進程，將輸入文件轉為 HLS 輸出
+ *
+ * 策略變更：不再使用 pipe:0 管道輸入，因為 ffmpeg 的 MP4 解復用器需要 seek 來解析 moov atom，
+ * 而管道不支持 seek。改為寫入臨時文件，然後通過 tail -F 持續跟蹤文件增長並管道傳給 ffmpeg。
+ * 這樣 ffmpeg 在啟動時可以從文件讀取完整的 init segment（ftyp + moov），後續通過 tail -F 持續接收新數據。
  */
-function spawnFfmpeg(outputDir) {
+function spawnFfmpeg(outputDir, inputFile) {
   const playlistPath = path.join(outputDir, "stream.m3u8");
   const segmentPattern = path.join(outputDir, "seg_%04d.ts");
+
+  // 使用 tail -F 跟蹤增長中的文件，並管道給 ffmpeg
+  // tail -c +1 從頭開始，-F 跟蹤文件（即使被刪除重建也會繼續跟蹤）
+  const tail = spawn("tail", ["-c", "+1", "-F", inputFile], {
+    stdio: ["ignore", "pipe", "pipe"]
+  });
 
   const args = [
     "-y",
     "-fflags", "+genpts+nobuffer",
     "-flags", "low_delay",
+    "-f", "mp4",              // 輸入格式：fragmented MP4
     "-i", "pipe:0",
     "-c:v", "libx264",
     "-preset", "veryfast",
@@ -209,6 +366,9 @@ function spawnFfmpeg(outputDir) {
 
   const ffmpeg = spawn("ffmpeg", args, { stdio: ["pipe", "pipe", "pipe"] });
 
+  // 將 tail 的 stdout 管道到 ffmpeg 的 stdin
+  tail.stdout.pipe(ffmpeg.stdin);
+
   let stderrBuffer = "";
   ffmpeg.stderr.on("data", (data) => {
     const text = data.toString();
@@ -229,7 +389,15 @@ function spawnFfmpeg(outputDir) {
     }
   });
 
-  return ffmpeg;
+  tail.on("exit", (code, signal) => {
+    console.log(`[liveStreamRelay] tail exited: code=${code} signal=${signal}`);
+  });
+
+  tail.stderr.on("data", (data) => {
+    console.log("[liveStreamRelay] tail stderr:", data.toString().trim());
+  });
+
+  return { ffmpeg, tail };
 }
 
 /**
@@ -351,10 +519,9 @@ async function leaveGroupCall(client, inputCall, selfSource) {
  * 正確流程：
  * 1. JoinGroupCall — 加入通話（前置條件）
  * 2. GetGroupCallStreamChannels — 獲取頻道（單次，不重試）
- * 3. 下載分片循環
+ * 3. 下載分片循環（剝離 Telegram 頭部後餵給 ffmpeg）
  */
 async function startRelay(sessionId, client, callInfo, onStatus) {
-  // 如果已存在，返回現有會話
   if (activeRelays.has(sessionId)) {
     const existing = activeRelays.get(sessionId);
     existing.lastViewerAt = Date.now();
@@ -365,7 +532,6 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
     throw new Error("已達到最大並發直播轉發數限制");
   }
 
-  // 先檢查 ffmpeg
   const hasFfmpeg = await checkFfmpeg();
   if (!hasFfmpeg) {
     throw new Error("服務器未安裝 ffmpeg，無法轉發直播流。請在 fnOS 上安裝 ffmpeg 後重試。");
@@ -377,7 +543,6 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
 
   console.log(`[liveStreamRelay] Starting relay for session ${sessionId}, callId=${callInfo.id}, streamDcId=${streamDcId}`);
 
-  // 檢查 streamDcId：如果為 0，表示通話未進入流模式
   if (!streamDcId) {
     throw new Error("該群組通話尚未進入流模式。Telegram 僅在參與者超過一定數量或使用 RTMP 直播模式時才會啟用流模式。小型群組通話目前無法在應用內播放，請使用複製連結方式在 Telegram 客戶端中觀看。");
   }
@@ -395,7 +560,7 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
   console.log("[liveStreamRelay] Step 2: Fetching stream channels...");
   const channels = await getStreamChannels(client, inputCall, streamDcId);
 
-  let videoChannel = 1; // 預設視頻頻道
+  let videoChannel = 1;
   let lastTimestampMs = 0;
 
   if (channels) {
@@ -403,11 +568,9 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
     lastTimestampMs = adjustBootstrapTimestamp(channels.lastTimestampMs);
     console.log(`[liveStreamRelay] Got channels: videoChannel=${videoChannel}, lastTimestampMs=${channels.lastTimestampMs}, bootstrapTs=${lastTimestampMs}`);
   } else {
-    // 頻道信息獲取失敗，使用預設參數繼續嘗試
     console.log("[liveStreamRelay] GetGroupCallStreamChannels failed, using fallback defaults (videoChannel=1, ts=0)");
   }
 
-  // 創建 relay 對象
   let stopped = false;
   let consecutiveFailures = 0;
   let consecutiveFloodWaits = 0;
@@ -416,7 +579,9 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
     sessionId,
     outputDir,
     playlistPath: path.join(outputDir, "stream.m3u8"),
+    inputFile: path.join(outputDir, "input.mp4"),
     ffmpeg: null,
+    tail: null,
     startedAt: Date.now(),
     lastViewerAt: Date.now(),
     chunkCount: 0,
@@ -426,11 +591,12 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
       if (stopped) return;
       stopped = true;
       relay.status = "stopped";
+      try { relay.tail?.kill("SIGTERM"); } catch {}
       try { relay.ffmpeg?.stdin?.end(); } catch {}
       setTimeout(() => {
         try { relay.ffmpeg?.kill("SIGKILL"); } catch {}
+        try { relay.tail?.kill("SIGKILL"); } catch {}
       }, 2000);
-      // 離開群組通話（清理資源）
       if (!hasLeftCall) {
         hasLeftCall = true;
         leaveGroupCall(client, inputCall, callSelfSource).catch(() => {});
@@ -445,13 +611,27 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
 
   activeRelays.set(sessionId, relay);
 
-  // 啟動 ffmpeg
-  console.log("[liveStreamRelay] Spawning ffmpeg...");
-  relay.ffmpeg = spawnFfmpeg(outputDir);
+  // 先初始化空的 input 文件（tail -F 需要文件存在才能開始跟蹤）
+  await fs.writeFile(relay.inputFile, "");
+
+  // 啟動 tail + ffmpeg（tail -F 跟蹤文件增長，ffmpeg 從管道讀取）
+  console.log("[liveStreamRelay] Spawning tail + ffmpeg...");
+  const { ffmpeg, tail } = spawnFfmpeg(outputDir, relay.inputFile);
+  relay.ffmpeg = ffmpeg;
+  relay.tail = tail;
+
+  // ★ 關鍵：處理 ffmpeg stdin 的 EPIPE 錯誤，防止服務器崩潰
+  relay.ffmpeg.stdin.on("error", (err) => {
+    if (err.code === "EPIPE") {
+      console.log("[liveStreamRelay] ffmpeg stdin EPIPE (ffmpeg exited), stopping gracefully...");
+    } else {
+      console.error("[liveStreamRelay] ffmpeg stdin error:", err.message);
+    }
+    // 不讓錯誤冒泡到 process 級別
+  });
 
   console.log(`[liveStreamRelay] Stream params: scale=0(fixed), videoChannel=${videoChannel}, bootstrapTs=${lastTimestampMs}, segmentDurationMs=${SEGMENT_DURATION_MS}`);
 
-  // 處理 ffmpeg 退出
   relay.ffmpeg.on("exit", (code, signal) => {
     if (!stopped) {
       relay.status = "error";
@@ -461,7 +641,6 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
     activeRelays.delete(sessionId);
   });
 
-  // 啟動超時檢查
   const startupTimer = setTimeout(() => {
     if (relay.status === "starting" && relay.chunkCount === 0) {
       console.error("[liveStreamRelay] Startup timeout - no chunks received in 30s");
@@ -471,17 +650,15 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
     }
   }, STARTUP_TIMEOUT);
 
-  // ★ 步驟 3：主循環 — 持續下載分片並寫入 ffmpeg
+  // ★ 步驟 3：主循環 — 持續下載分片、剝離頭部、寫入 ffmpeg
   (async () => {
     while (!stopped) {
-      // 檢查無觀眾超時
       if (Date.now() - relay.lastViewerAt > RELAY_IDLE_TIMEOUT) {
         console.log("[liveStreamRelay] idle timeout, stopping relay");
         relay.stop();
         break;
       }
 
-      // 檢查 ffmpeg 是否還活著
       if (relay.ffmpeg.exitCode !== null || relay.ffmpeg.signalCode) {
         console.log("[liveStreamRelay] ffmpeg dead, stopping loop");
         relay.status = "error";
@@ -489,44 +666,42 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
         break;
       }
 
-      // 下載分片
-      const { data: chunk, error: chunkError } = await downloadStreamChunk(
+      const { data: rawChunk, error: chunkError } = await downloadStreamChunk(
         client, inputCall, lastTimestampMs, videoChannel, streamDcId
       );
 
-      if (chunk && chunk.length > 0) {
+      if (rawChunk && rawChunk.length > 0) {
         consecutiveFailures = 0;
         consecutiveFloodWaits = 0;
         relay.chunkCount++;
 
-        // 第一個分片成功，清除啟動超時
         if (relay.chunkCount === 1) {
           clearTimeout(startupTimer);
           relay.status = "running";
-          console.log(`[liveStreamRelay] First chunk received: ${chunk.length} bytes, status=running`);
+          console.log(`[liveStreamRelay] First chunk received: ${rawChunk.length} bytes (raw), status=running`);
         }
 
-        try {
-          if (!relay.ffmpeg.stdin.destroyed) {
-            relay.ffmpeg.stdin.write(chunk);
+        // ★ 關鍵：剝離 Telegram 自定義頭，提取純 MP4 媒體數據
+        const mediaData = stripTelegramHeader(rawChunk);
+
+        if (mediaData.length > 0) {
+          try {
+            // 寫入 input 文件（tail -F 會自動跟蹤並管道給 ffmpeg）
+            await fs.appendFile(relay.inputFile, mediaData);
+          } catch (writeErr) {
+            console.error("[liveStreamRelay] file write error:", writeErr.message);
           }
-        } catch (writeErr) {
-          console.error("[liveStreamRelay] ffmpeg write error:", writeErr.message);
         }
 
-        // 推進時間戳（固定 1000ms = 1 秒）
         lastTimestampMs += SEGMENT_DURATION_MS;
       } else {
-        // 根據錯誤類型處理
         if (chunkError === "TIME_TOO_BIG") {
-          // 分片尚未生成，正常情況，等待後重試
           consecutiveFailures = 0;
           await new Promise((r) => setTimeout(r, 500));
           continue;
         }
 
         if (chunkError === "TIME_TOO_SMALL" || chunkError === "TIME_INVALID") {
-          // 時間戳過舊，重新同步（單次獲取，不重試）
           console.log("[liveStreamRelay] Time too small/invalid, re-syncing timestamp...");
           const freshChannels = await getStreamChannels(client, inputCall, streamDcId);
           if (freshChannels) {
@@ -544,7 +719,6 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
         }
 
         if (chunkError === "FLOOD_WAIT") {
-          // Flood wait：指數退避，最多等待 10 秒
           consecutiveFloodWaits++;
           const waitMs = Math.min(1000 * Math.pow(2, consecutiveFloodWaits), 10000);
           console.log(`[liveStreamRelay] Flood wait, backing off ${waitMs}ms (count=${consecutiveFloodWaits})`);
@@ -558,7 +732,6 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
           continue;
         }
 
-        // 其他錯誤
         consecutiveFailures++;
         if (consecutiveFailures === 1) {
           console.log(`[liveStreamRelay] Chunk download failed (timeMs=${lastTimestampMs}, error=${chunkError})`);
@@ -572,7 +745,6 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
         }
       }
 
-      // 短暫等待
       await new Promise((r) => setTimeout(r, CHUNK_POLL_INTERVAL));
     }
   })().catch((err) => {
