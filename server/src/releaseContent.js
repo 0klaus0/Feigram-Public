@@ -15,6 +15,19 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.44",
+    title: "Fngram 2.0.44 更新",
+    version: "2.0.44",
+    level: "success",
+    createdAt: "2026-07-29T23:00:00.000Z",
+    body: [
+      "HLS 分片時長從 2 秒改為 1 秲：與 Telegram chunk 時長一致，1 個 chunk 即可生成 1 個 HLS 分片。",
+      "chunk 下載間隔從 3 秒改為 1 秒：保證實時下載，避免時間戳落後導致 Time too small。",
+      "idle timeout 從 60 秒增加到 120 秒：給觀眾更多等待時間。",
+      "HLS 窗口大小從 6 改為 10：保留 10 秒的播放緩衝。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.43",
     title: "Fngram 2.0.43 更新",
     version: "2.0.43",

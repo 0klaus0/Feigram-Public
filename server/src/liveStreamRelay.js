@@ -25,13 +25,13 @@ const { dataDir } = require("./store");
 
 const execFileAsync = promisify(execFile);
 
-const HLS_BASE_DIR = path.join(dataDir, "live-hls");
-const SEGMENT_DURATION = 2; // 秒（HLS 分片時長）
-const WINDOW_SIZE = 6; // 保留 6 個分片
-const MAX_CONCURRENT_RELAYS = 3;
-const RELAY_IDLE_TIMEOUT = 60_000; // 無觀眾 60 秒後停止
-const CHUNK_POLL_INTERVAL = 3000; // ms（增加到 3 秒，大幅降低 Telegram API 請求頻率）
-const RATE_LIMIT_COOLDOWN = 60_000; // 連續 flood wait 後冷卻 60 秒
+const HLS_BASE_DIR = path.join(dataDir, "live-hls");
+const SEGMENT_DURATION = 1; // 秒（HLS 分片時長，與 chunk 時長一致，1 個 chunk 即可生成 1 個分片）
+const WINDOW_SIZE = 10; // 保留 10 個分片（10 秒窗口）
+const MAX_CONCURRENT_RELAYS = 3;
+const RELAY_IDLE_TIMEOUT = 120_000; // 無觀眾 120 秒後停止
+const CHUNK_POLL_INTERVAL = 1000; // ms（與 chunk 時長一致，保證實時下載）
+const RATE_LIMIT_COOLDOWN = 60_000; // 連續 flood wait 後冷卻 60 秒
 const STARTUP_TIMEOUT = 30_000; // 啟動超時 30 秒
 
 // 直播流分片下載常量（來自 TGTV 參考實現 / 官方客戶端）
