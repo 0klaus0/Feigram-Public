@@ -15,6 +15,19 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.36",
+    title: "Fngram 2.0.36 更新",
+    version: "2.0.36",
+    level: "success",
+    createdAt: "2026-07-29T03:00:00.000Z",
+    body: [
+      "修復 GROUPCALL_SSRC_DUPLICATE_MUCH 錯誤：JoinGroupCall 現在生成唯一 SSRC 和完整 WebRTC params。",
+      "修復 JoinGroupCall 的 DC 路由：在用戶主 DC 調用 JoinGroupCall，而非 stream_dc_id 指定的 DC。",
+      "正確提取參與者 source ID 用於 LeaveGroupCall。",
+      "生成隨機 ufrag、fingerprint 和 SSRC，模擬 WebRTC 客戶端 SDP offer。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.35",
     title: "Fngram 2.0.35 更新",
     version: "2.0.35",
