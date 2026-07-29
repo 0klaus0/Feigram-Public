@@ -1,12 +1,16 @@
 /**
  * liveStreamRelay.js — Telegram 群組直播流 HLS 轉發模組
  *
- * 工作流程：
+ * 正確流程（基於 TGTV / tgroupcall-dl 參考實現）：
  * 1. 檢查 ffmpeg 是否可用
- * 2. 通過 phone.GetGroupCallStreamChannels 獲取直播頻道信息
- * 3. 循環使用 InputGroupCallStream + upload.GetFile 下載視頻分片
- * 4. 將分片餵給 ffmpeg，轉碼為 HLS（.m3u8 + .ts）
- * 5. 通過 Express 靜態文件提供 HLS 播放
+ * 2. phone.JoinGroupCall — 以聽眾身份加入通話（必須在獲取頻道之前）
+ * 3. phone.GetGroupCallStreamChannels — 獲取直播頻道信息（單次調用，不重試）
+ * 4. upload.GetFile + InputGroupCallStream — 循環下載 1 秒視頻分片
+ * 5. ffmpeg 轉碼為 HLS（.m3u8 + .ts）
+ *
+ * 關鍵：GetGroupCallStreamChannels 要求先 JoinGroupCall，否則返回 GROUPCALL_JOIN_MISSING
+ * 參考：https://gram.js.org/ — GetGroupCallStreamChannels 錯誤表
+ *       TGTV 設計文檔 — "join the group call, then poll upload.getFile"
  */
 
 const { execFile } = require("child_process");
@@ -72,64 +76,41 @@ async function ensureHlsDir(sessionId) {
 }
 
 /**
- * 獲取直播流頻道信息
+ * 獲取直播流頻道信息（單次調用，不重試）
+ * 必須在 JoinGroupCall 之後調用，否則返回 GROUPCALL_JOIN_MISSING
  * @param {number} streamDcId - 流媒體所在的 DC ID（來自 GetGroupCall 的 stream_dc_id）
  */
 async function getStreamChannels(client, inputCall, streamDcId) {
-  const maxRetries = 3;
-  const retryDelay = 2000;
-
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      // GetGroupCallStreamChannels 必須在 stream_dc_id 指定的 DC 上調用
-      const result = await client.invoke(
-        new Api.phone.GetGroupCallStreamChannels({ call: inputCall }),
-        streamDcId || undefined
-      );
-      if (!result?.channels?.length) {
-        console.log(`[liveStreamRelay] GetGroupCallStreamChannels returned no channels (attempt ${attempt})`);
-        if (attempt < maxRetries) {
-          await new Promise((r) => setTimeout(r, retryDelay));
-          continue;
-        }
-        return null;
-      }
-
-      console.log(`[liveStreamRelay] Found ${result.channels.length} stream channel(s) (attempt ${attempt}):`);
-      result.channels.forEach((ch, i) => {
-        console.log(`  Channel ${i}: channel=${ch.channel}, scale=${ch.scale}, lastTimestampMs=${ch.lastTimestampMs}`);
-      });
-
-      // 取第一個頻道（通常是主視頻流）
-      // 注意：scale 固定使用 0（1秒分片），不使用 API 返回的 scale
-      const channel = result.channels[0];
-      return {
-        channel: channel.channel,
-        lastTimestampMs: Number(channel.lastTimestampMs || 0),
-        allChannels: result.channels.map((c) => ({
-          channel: c.channel,
-          scale: c.scale || 0,
-          lastTimestampMs: Number(c.lastTimestampMs || 0)
-        }))
-      };
-    } catch (err) {
-      const errMsg = err.message || String(err);
-      console.error(`[liveStreamRelay] getStreamChannels error (attempt ${attempt}/${maxRetries}):`, errMsg);
-
-      // 如果是 DC 授權問題，等待後重試（GramJS 會自動導出授權）
-      if (/auth|AUTH_KEY_UNREG|DC_ID_INVALID|timeout|connection/i.test(errMsg) && attempt < maxRetries) {
-        console.log(`[liveStreamRelay] Retrying in ${retryDelay}ms...`);
-        await new Promise((r) => setTimeout(r, retryDelay));
-        continue;
-      }
-
-      // 如果是最後一次嘗試，返回 null
-      if (attempt === maxRetries) {
-        return null;
-      }
+  try {
+    const result = await client.invoke(
+      new Api.phone.GetGroupCallStreamChannels({ call: inputCall }),
+      streamDcId || undefined
+    );
+    if (!result?.channels?.length) {
+      console.log("[liveStreamRelay] GetGroupCallStreamChannels returned no channels");
+      return null;
     }
+
+    console.log(`[liveStreamRelay] Found ${result.channels.length} stream channel(s):`);
+    result.channels.forEach((ch, i) => {
+      console.log(`  Channel ${i}: channel=${ch.channel}, scale=${ch.scale}, lastTimestampMs=${ch.lastTimestampMs}`);
+    });
+
+    const channel = result.channels[0];
+    return {
+      channel: channel.channel,
+      lastTimestampMs: Number(channel.lastTimestampMs || 0),
+      allChannels: result.channels.map((c) => ({
+        channel: c.channel,
+        scale: c.scale || 0,
+        lastTimestampMs: Number(c.lastTimestampMs || 0)
+      }))
+    };
+  } catch (err) {
+    const errMsg = err.message || String(err);
+    console.error("[liveStreamRelay] getStreamChannels error:", errMsg);
+    return null;
   }
-  return null;
 }
 
 /**
@@ -149,7 +130,6 @@ function adjustBootstrapTimestamp(timestampMs) {
  * @returns {Promise<{data: Buffer|null, error: string|null}>}
  */
 async function downloadStreamChunk(client, inputCall, timeMs, videoChannel, streamDcId) {
-  // 構造 InputGroupCallStream：scale 固定為 0（1 秒分片）
   const location = new Api.InputGroupCallStream({
     call: inputCall,
     timeMs: bigInt(timeMs),
@@ -162,8 +142,8 @@ async function downloadStreamChunk(client, inputCall, timeMs, videoChannel, stre
       new Api.upload.GetFile({
         location,
         offset: bigInt(0),
-        limit: GET_FILE_LIMIT, // 128KB
-        precise: false // 官方客戶端不設置 precise 標誌
+        limit: GET_FILE_LIMIT,
+        precise: false
       }),
       streamDcId || undefined
     );
@@ -173,9 +153,7 @@ async function downloadStreamChunk(client, inputCall, timeMs, videoChannel, stre
     return { data: null, error: "empty" };
   } catch (err) {
     const errMsg = err.message || String(err);
-    // 記錄詳細錯誤信息以便診斷
     if (/TIME_TOO_BIG|timed? ?out/i.test(errMsg)) {
-      // 分片尚未生成，正常情況，不需重試
       return { data: null, error: "TIME_TOO_BIG" };
     }
     if (/TIME_TOO_SMALL|TIME_INVALID/i.test(errMsg)) {
@@ -186,6 +164,9 @@ async function downloadStreamChunk(client, inputCall, timeMs, videoChannel, stre
     }
     if (/GROUPCALL_INVALID/i.test(errMsg)) {
       return { data: null, error: "GROUPCALL_INVALID" };
+    }
+    if (/FLOOD_WAIT/i.test(errMsg)) {
+      return { data: null, error: "FLOOD_WAIT" };
     }
     console.error(`[liveStreamRelay] downloadStreamChunk error (timeMs=${timeMs}):`, errMsg);
     return { data: null, error: errMsg };
@@ -228,12 +209,10 @@ function spawnFfmpeg(outputDir) {
 
   const ffmpeg = spawn("ffmpeg", args, { stdio: ["pipe", "pipe", "pipe"] });
 
-  // 始終記錄 ffmpeg 錯誤輸出
   let stderrBuffer = "";
   ffmpeg.stderr.on("data", (data) => {
     const text = data.toString();
     stderrBuffer += text;
-    // 只記錄錯誤和警告行
     const lines = text.trim().split("\n");
     for (const line of lines) {
       if (/error|warning|invalid|failed|no such|cannot/i.test(line)) {
@@ -245,7 +224,6 @@ function spawnFfmpeg(outputDir) {
   ffmpeg.on("exit", (code, signal) => {
     console.log(`[liveStreamRelay] ffmpeg exited: code=${code} signal=${signal}`);
     if (code !== 0 && code !== null) {
-      // 輸出最後幾行 stderr 幫助診斷
       const tail = stderrBuffer.slice(-500);
       console.error("[liveStreamRelay] ffmpeg last stderr:", tail);
     }
@@ -266,10 +244,8 @@ function makeInputCall(callInfo) {
 
 /**
  * 生成隨機的 SSRC（32-bit 無符號整數，避開 0）
- * SSRC 用於 WebRTC 的同步源標識，必須在通話中唯一
  */
 function generateSSRC() {
-  // 生成 1 到 0xFFFFFFFF 之間的隨機數
   return Math.floor(Math.random() * 0xFFFFFFFE) + 1;
 }
 
@@ -284,8 +260,6 @@ function buildJoinParams() {
     Math.floor(Math.random() * 16).toString(16).toUpperCase()
   ).join(":");
 
-  // 構造 JSON 格式的 params，模擬 WebRTC 客戶端的 SDP offer
-  // 這是 Telegram 官方客戶端使用的格式
   const params = {
     fingerprints: [
       {
@@ -307,17 +281,12 @@ function buildJoinParams() {
 
 /**
  * 以聽眾身份加入群組通話
- * Telegram 要求先 JoinGroupCall 才能下載直播流分片，否則返回 GROUPCALL_JOIN_MISSING
- * 注意：JoinGroupCall 必須在用戶主 DC 上調用（不傳 DC 參數），
- *       而 streamDcId 只用於下載流分片。
- * @param {TelegramClient} client
- * @param {InputGroupCall} inputCall
+ * Telegram 要求先 JoinGroupCall 才能調用 GetGroupCallStreamChannels 和下載分片
+ * 注意：JoinGroupCall 在用戶主 DC 上調用（不傳 DC 參數）
  * @returns {Promise<{joined: boolean, selfSource: bigInt|null, error: string|null}>}
  */
 async function joinGroupCall(client, inputCall) {
   try {
-    // 以聽眾身份加入：muted=true, videoStopped=true
-    // 不指定 DC，在用戶主 DC 上調用
     const result = await client.invoke(
       new Api.phone.JoinGroupCall({
         call: inputCall,
@@ -328,7 +297,6 @@ async function joinGroupCall(client, inputCall) {
           data: buildJoinParams()
         })
       })
-      // 不傳 DC 參數：JoinGroupCall 在主 DC 上執行
     );
 
     // 從 Updates 中提取自己的 source ID（用於後續 LeaveGroupCall）
@@ -337,9 +305,8 @@ async function joinGroupCall(client, inputCall) {
       for (const update of result.updates) {
         if (update?.className === "UpdateGroupCallParticipants" && update?.participants) {
           for (const p of update.participants) {
-            // source 字段是參與者在通話中的唯一標識
             if (p?.source != null) {
-              selfSource = p.source; // bigInt 类型
+              selfSource = p.source;
               break;
             }
           }
@@ -351,7 +318,6 @@ async function joinGroupCall(client, inputCall) {
     return { joined: true, selfSource, error: null };
   } catch (err) {
     const errMsg = err.message || String(err);
-    // 如果已經在通話中，不算錯誤，嘗試直接獲取通話信息
     if (/already.*join|JOIN_ALREADY/i.test(errMsg)) {
       console.log("[liveStreamRelay] Already joined group call, continuing...");
       return { joined: true, selfSource: null, error: null };
@@ -363,9 +329,6 @@ async function joinGroupCall(client, inputCall) {
 
 /**
  * 離開群組通話
- * @param {TelegramClient} client
- * @param {InputGroupCall} inputCall
- * @param {bigInt|null} selfSource - 自己的 source ID（來自 JoinGroupCall 返回）
  */
 async function leaveGroupCall(client, inputCall, selfSource) {
   if (selfSource == null) return;
@@ -375,17 +338,20 @@ async function leaveGroupCall(client, inputCall, selfSource) {
         call: inputCall,
         source: selfSource
       })
-      // 不傳 DC 參數：LeaveGroupCall 在主 DC 上執行
     );
     console.log("[liveStreamRelay] Left group call");
   } catch (err) {
-    // 離開失敗不影響流程，只需記錄
     console.log("[liveStreamRelay] leaveGroupCall (non-critical):", err.message || String(err));
   }
 }
 
 /**
  * 啟動直播流轉發會話
+ *
+ * 正確流程：
+ * 1. JoinGroupCall — 加入通話（前置條件）
+ * 2. GetGroupCallStreamChannels — 獲取頻道（單次，不重試）
+ * 3. 下載分片循環
  */
 async function startRelay(sessionId, client, callInfo, onStatus) {
   // 如果已存在，返回現有會話
@@ -416,54 +382,8 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
     throw new Error("該群組通話尚未進入流模式。Telegram 僅在參與者超過一定數量或使用 RTMP 直播模式時才會啟用流模式。小型群組通話目前無法在應用內播放，請使用複製連結方式在 Telegram 客戶端中觀看。");
   }
 
-  // ★ 流程順序（基於 v2.0.32 工作正常的邏輯）：
-  // 1. 先獲取流頻道信息（此時未加入通話，和 v2.0.32 一樣）
-  // 2. 以聽眾身份加入通話（解決 GROUPCALL_JOIN_MISSING）
-  // 3. 下載分片
-
-  // 步驟 1：獲取流頻道信息（在 stream_dc_id 指定的 DC 上調用，帶重試）
-  console.log("[liveStreamRelay] Step 1: Fetching stream channels...");
-  let channels = await getStreamChannels(client, inputCall, streamDcId);
-  let videoChannel = 1; // 預設視頻頻道
-  let lastTimestampMs = 0;
-
-  if (!channels) {
-    // 首次失敗後，嘗試重新獲取通話信息以刷新 streamDcId
-    console.log("[liveStreamRelay] First attempt failed, re-fetching call info for fresh streamDcId...");
-    try {
-      const freshCall = await client.invoke(new Api.phone.GetGroupCall({ call: inputCall, limit: 1 }));
-      const freshStreamDcId = Number(freshCall?.call?.streamDcId || 0);
-      if (freshStreamDcId && freshStreamDcId !== streamDcId) {
-        console.log(`[liveStreamRelay] streamDcId changed: ${streamDcId} -> ${freshStreamDcId}`);
-        streamDcId = freshStreamDcId;
-        channels = await getStreamChannels(client, inputCall, streamDcId);
-      }
-    } catch (refreshErr) {
-      console.log("[liveStreamRelay] Refresh call info failed:", refreshErr.message || String(refreshErr));
-    }
-  }
-
-  if (channels) {
-    videoChannel = channels.channel;
-    lastTimestampMs = adjustBootstrapTimestamp(channels.lastTimestampMs);
-    console.log(`[liveStreamRelay] Got channels: videoChannel=${videoChannel}, lastTimestampMs=${channels.lastTimestampMs}, bootstrapTs=${lastTimestampMs}`);
-  } else {
-    // 降級方案：使用預設頻道參數繼續嘗試
-    // 根據 v2.0.32 日誌，視頻頻道通常是 channel=1
-    console.log("[liveStreamRelay] GetGroupCallStreamChannels failed, using fallback defaults (videoChannel=1)");
-    videoChannel = 1;
-    lastTimestampMs = 0;
-    // 嘗試通過 GetGroupCall 獲取通話時長來估算初始時間戳
-    try {
-      const callInfo2 = await client.invoke(new Api.phone.GetGroupCall({ call: inputCall, limit: 1 }));
-      if (callInfo2?.call) {
-        console.log(`[liveStreamRelay] Call info: participantsCount=${callInfo2.call.participantsCount}, streamDcId=${callInfo2.call.streamDcId}`);
-      }
-    } catch {}
-  }
-
-  // 步驟 2：以聽眾身份加入群組通話（在主 DC 上調用）
-  console.log("[liveStreamRelay] Step 2: Joining group call as listener...");
+  // ★ 步驟 1：以聽眾身份加入群組通話（必須在獲取頻道之前）
+  console.log("[liveStreamRelay] Step 1: Joining group call as listener...");
   const joinResult = await joinGroupCall(client, inputCall);
   if (!joinResult.joined) {
     throw new Error(`無法加入群組通話：${joinResult.error}。請確保您有權限加入此直播。`);
@@ -471,13 +391,26 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
   const callSelfSource = joinResult.selfSource;
   let hasLeftCall = false;
 
-  // 加入通話後等待短暫時間讓服務器同步
-  await new Promise((r) => setTimeout(r, 1000));
+  // ★ 步驟 2：獲取流頻道信息（單次調用，不重試）
+  console.log("[liveStreamRelay] Step 2: Fetching stream channels...");
+  const channels = await getStreamChannels(client, inputCall, streamDcId);
 
-  // 創建 relay 對象（在啟動 ffmpeg 之前，以便錯誤追蹤）
+  let videoChannel = 1; // 預設視頻頻道
+  let lastTimestampMs = 0;
+
+  if (channels) {
+    videoChannel = channels.channel;
+    lastTimestampMs = adjustBootstrapTimestamp(channels.lastTimestampMs);
+    console.log(`[liveStreamRelay] Got channels: videoChannel=${videoChannel}, lastTimestampMs=${channels.lastTimestampMs}, bootstrapTs=${lastTimestampMs}`);
+  } else {
+    // 頻道信息獲取失敗，使用預設參數繼續嘗試
+    console.log("[liveStreamRelay] GetGroupCallStreamChannels failed, using fallback defaults (videoChannel=1, ts=0)");
+  }
+
+  // 創建 relay 對象
   let stopped = false;
   let consecutiveFailures = 0;
-  let lastErrorMessage = null;
+  let consecutiveFloodWaits = 0;
 
   const relay = {
     sessionId,
@@ -497,7 +430,7 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
       setTimeout(() => {
         try { relay.ffmpeg?.kill("SIGKILL"); } catch {}
       }, 2000);
-      // ★ 離開群組通話（清理資源）
+      // 離開群組通話（清理資源）
       if (!hasLeftCall) {
         hasLeftCall = true;
         leaveGroupCall(client, inputCall, callSelfSource).catch(() => {});
@@ -515,20 +448,6 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
   // 啟動 ffmpeg
   console.log("[liveStreamRelay] Spawning ffmpeg...");
   relay.ffmpeg = spawnFfmpeg(outputDir);
-
-  // 如果沒有獲取到頻道信息（lastTimestampMs=0），加入通話後重新獲取一次
-  if (lastTimestampMs === 0) {
-    console.log("[liveStreamRelay] No timestamp from channels, trying to get fresh channels after join...");
-    const freshChannels = await getStreamChannels(client, inputCall, streamDcId);
-    if (freshChannels) {
-      videoChannel = freshChannels.channel;
-      lastTimestampMs = adjustBootstrapTimestamp(freshChannels.lastTimestampMs);
-      console.log(`[liveStreamRelay] Got fresh channels after join: videoChannel=${videoChannel}, ts=${lastTimestampMs}`);
-    } else {
-      // 如果仍然無法獲取，使用當前時間作為基準（可能會觸發 TIME_TOO_BIG，但循環會自動處理）
-      console.log("[liveStreamRelay] Still no channels, will attempt download with default params");
-    }
-  }
 
   console.log(`[liveStreamRelay] Stream params: scale=0(fixed), videoChannel=${videoChannel}, bootstrapTs=${lastTimestampMs}, segmentDurationMs=${SEGMENT_DURATION_MS}`);
 
@@ -552,7 +471,7 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
     }
   }, STARTUP_TIMEOUT);
 
-  // 主循環：持續下載分片並寫入 ffmpeg
+  // ★ 步驟 3：主循環 — 持續下載分片並寫入 ffmpeg
   (async () => {
     while (!stopped) {
       // 檢查無觀眾超時
@@ -570,13 +489,14 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
         break;
       }
 
-      // 下載分片（scale 固定為 0，不再傳遞 scale 參數）
+      // 下載分片
       const { data: chunk, error: chunkError } = await downloadStreamChunk(
         client, inputCall, lastTimestampMs, videoChannel, streamDcId
       );
 
       if (chunk && chunk.length > 0) {
         consecutiveFailures = 0;
+        consecutiveFloodWaits = 0;
         relay.chunkCount++;
 
         // 第一個分片成功，清除啟動超時
@@ -599,14 +519,14 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
       } else {
         // 根據錯誤類型處理
         if (chunkError === "TIME_TOO_BIG") {
-          // 分片尚未生成，等待後重試（正常情況）
+          // 分片尚未生成，正常情況，等待後重試
           consecutiveFailures = 0;
           await new Promise((r) => setTimeout(r, 500));
           continue;
         }
 
         if (chunkError === "TIME_TOO_SMALL" || chunkError === "TIME_INVALID") {
-          // 時間戳過舊，重新同步
+          // 時間戳過舊，重新同步（單次獲取，不重試）
           console.log("[liveStreamRelay] Time too small/invalid, re-syncing timestamp...");
           const freshChannels = await getStreamChannels(client, inputCall, streamDcId);
           if (freshChannels) {
@@ -623,6 +543,21 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
           break;
         }
 
+        if (chunkError === "FLOOD_WAIT") {
+          // Flood wait：指數退避，最多等待 10 秒
+          consecutiveFloodWaits++;
+          const waitMs = Math.min(1000 * Math.pow(2, consecutiveFloodWaits), 10000);
+          console.log(`[liveStreamRelay] Flood wait, backing off ${waitMs}ms (count=${consecutiveFloodWaits})`);
+          if (consecutiveFloodWaits > 5) {
+            relay.status = "error";
+            relay.errorMessage = "Telegram API 限流過於頻繁，請稍後再試";
+            relay.stop();
+            break;
+          }
+          await new Promise((r) => setTimeout(r, waitMs));
+          continue;
+        }
+
         // 其他錯誤
         consecutiveFailures++;
         if (consecutiveFailures === 1) {
@@ -634,15 +569,6 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
           relay.errorMessage = `連續 30 次下載分片失敗（${chunkError}），直播流可能已結束`;
           relay.stop();
           break;
-        }
-        // 每 10 次失敗嘗試重新獲取時間戳
-        if (consecutiveFailures % 10 === 0) {
-          console.log("[liveStreamRelay] Re-fetching stream channels for fresh timestamp...");
-          const freshChannels = await getStreamChannels(client, inputCall, streamDcId);
-          if (freshChannels) {
-            lastTimestampMs = adjustBootstrapTimestamp(freshChannels.lastTimestampMs);
-            console.log(`[liveStreamRelay] Updated timestamp to ${lastTimestampMs}`);
-          }
         }
       }
 

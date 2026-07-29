@@ -15,6 +15,19 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.39",
+    title: "Fngram 2.0.39 更新",
+    version: "2.0.39",
+    level: "success",
+    createdAt: "2026-07-29T08:30:00.000Z",
+    body: [
+      "修正直播流流程順序：先 JoinGroupCall 加入通話，再 GetGroupCallStreamChannels 獲取頻道（根據 TGTV 參考實現和 gram.js 文檔，加入通話是獲取頻道的前置條件）。",
+      "移除所有重試邏輯：GetGroupCallStreamChannels 改為單次調用，避免觸發 Telegram Flood Wait 限流。",
+      "新增 FLOOD_WAIT 指數退避處理：遇到限流時自動退避，最多 5 次後停止。",
+      "簡化整體代碼邏輯，移除冗餘的 streamDcId 刷新和重複頻道獲取。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.38",
     title: "Fngram 2.0.38 更新",
     version: "2.0.38",
