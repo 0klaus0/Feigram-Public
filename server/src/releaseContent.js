@@ -15,6 +15,20 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.37",
+    title: "Fngram 2.0.37 更新",
+    version: "2.0.37",
+    level: "success",
+    createdAt: "2026-07-29T04:30:00.000Z",
+    body: [
+      "修復 GetGroupCallStreamChannels 在流媒體 DC 上失敗的問題：",
+      "加入通話後等待 1.5 秒讓服務器同步參與者狀態，再獲取流頻道信息。",
+      "GetGroupCallStreamChannels 增加 3 次重試機制，每次間隔 2 秒。",
+      "首次獲取失敗後，重新調用 GetGroupCall 刷新 streamDcId 並重試。",
+      "改進錯誤日誌，記錄每次重試的詳細信息。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.36",
     title: "Fngram 2.0.36 更新",
     version: "2.0.36",

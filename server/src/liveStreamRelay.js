@@ -76,38 +76,60 @@ async function ensureHlsDir(sessionId) {
  * @param {number} streamDcId - 流媒體所在的 DC ID（來自 GetGroupCall 的 stream_dc_id）
  */
 async function getStreamChannels(client, inputCall, streamDcId) {
-  try {
-    // GetGroupCallStreamChannels 必須在 stream_dc_id 指定的 DC 上調用
-    const result = await client.invoke(
-      new Api.phone.GetGroupCallStreamChannels({ call: inputCall }),
-      streamDcId || undefined
-    );
-    if (!result?.channels?.length) {
-      console.log("[liveStreamRelay] GetGroupCallStreamChannels returned no channels");
-      return null;
+  const maxRetries = 3;
+  const retryDelay = 2000;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      // GetGroupCallStreamChannels 必須在 stream_dc_id 指定的 DC 上調用
+      const result = await client.invoke(
+        new Api.phone.GetGroupCallStreamChannels({ call: inputCall }),
+        streamDcId || undefined
+      );
+      if (!result?.channels?.length) {
+        console.log(`[liveStreamRelay] GetGroupCallStreamChannels returned no channels (attempt ${attempt})`);
+        if (attempt < maxRetries) {
+          await new Promise((r) => setTimeout(r, retryDelay));
+          continue;
+        }
+        return null;
+      }
+
+      console.log(`[liveStreamRelay] Found ${result.channels.length} stream channel(s) (attempt ${attempt}):`);
+      result.channels.forEach((ch, i) => {
+        console.log(`  Channel ${i}: channel=${ch.channel}, scale=${ch.scale}, lastTimestampMs=${ch.lastTimestampMs}`);
+      });
+
+      // 取第一個頻道（通常是主視頻流）
+      // 注意：scale 固定使用 0（1秒分片），不使用 API 返回的 scale
+      const channel = result.channels[0];
+      return {
+        channel: channel.channel,
+        lastTimestampMs: Number(channel.lastTimestampMs || 0),
+        allChannels: result.channels.map((c) => ({
+          channel: c.channel,
+          scale: c.scale || 0,
+          lastTimestampMs: Number(c.lastTimestampMs || 0)
+        }))
+      };
+    } catch (err) {
+      const errMsg = err.message || String(err);
+      console.error(`[liveStreamRelay] getStreamChannels error (attempt ${attempt}/${maxRetries}):`, errMsg);
+
+      // 如果是 DC 授權問題，等待後重試（GramJS 會自動導出授權）
+      if (/auth|AUTH_KEY_UNREG|DC_ID_INVALID|timeout|connection/i.test(errMsg) && attempt < maxRetries) {
+        console.log(`[liveStreamRelay] Retrying in ${retryDelay}ms...`);
+        await new Promise((r) => setTimeout(r, retryDelay));
+        continue;
+      }
+
+      // 如果是最後一次嘗試，返回 null
+      if (attempt === maxRetries) {
+        return null;
+      }
     }
-
-    console.log(`[liveStreamRelay] Found ${result.channels.length} stream channel(s):`);
-    result.channels.forEach((ch, i) => {
-      console.log(`  Channel ${i}: channel=${ch.channel}, scale=${ch.scale}, lastTimestampMs=${ch.lastTimestampMs}`);
-    });
-
-    // 取第一個頻道（通常是主視頻流）
-    // 注意：scale 固定使用 0（1秒分片），不使用 API 返回的 scale
-    const channel = result.channels[0];
-    return {
-      channel: channel.channel,
-      lastTimestampMs: Number(channel.lastTimestampMs || 0),
-      allChannels: result.channels.map((c) => ({
-        channel: c.channel,
-        scale: c.scale || 0,
-        lastTimestampMs: Number(c.lastTimestampMs || 0)
-      }))
-    };
-  } catch (err) {
-    console.error("[liveStreamRelay] getStreamChannels error:", err.message);
-    return null;
   }
+  return null;
 }
 
 /**
@@ -405,8 +427,26 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
   const callSelfSource = joinResult.selfSource;
   let hasLeftCall = false;
 
-  // 獲取流頻道信息（在正確的 DC 上調用）
-  const channels = await getStreamChannels(client, inputCall, streamDcId);
+  // 加入通話後等待短暫時間，讓服務器同步參與者狀態
+  await new Promise((r) => setTimeout(r, 1500));
+
+  // 獲取流頻道信息（在正確的 DC 上調用，帶重試）
+  let channels = await getStreamChannels(client, inputCall, streamDcId);
+  if (!channels) {
+    // 第一次失敗後，嘗試重新獲取通話信息以刷新 streamDcId
+    console.log("[liveStreamRelay] First attempt failed, re-fetching call info for fresh streamDcId...");
+    try {
+      const freshCall = await client.invoke(new Api.phone.GetGroupCall({ call: inputCall, limit: 1 }));
+      const freshStreamDcId = Number(freshCall?.call?.streamDcId || 0);
+      if (freshStreamDcId && freshStreamDcId !== streamDcId) {
+        console.log(`[liveStreamRelay] streamDcId changed: ${streamDcId} -> ${freshStreamDcId}`);
+        streamDcId = freshStreamDcId;
+        channels = await getStreamChannels(client, inputCall, streamDcId);
+      }
+    } catch (refreshErr) {
+      console.log("[liveStreamRelay] Refresh call info failed:", refreshErr.message || String(refreshErr));
+    }
+  }
   if (!channels) {
     // 獲取頻道失敗也要離開通話
     await leaveGroupCall(client, inputCall, callSelfSource);
