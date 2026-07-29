@@ -366,6 +366,8 @@ function spawnFfmpeg(outputDir, inputFile) {
 
   const ffmpeg = spawn("ffmpeg", args, { stdio: ["pipe", "pipe", "pipe"] });
 
+  tail.stdout.pipe(ffmpeg.stdin);
+
   // 將 tail 的 stdout 管道到 ffmpeg 的 stdin
   tail.stdout.pipe(ffmpeg.stdin);
 
