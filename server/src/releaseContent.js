@@ -15,6 +15,17 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.51",
+    title: "Fngram 2.0.51 更新",
+    version: "2.0.51",
+    level: "success",
+    createdAt: "2026-07-30T21:00:00.000Z",
+    body: [
+      "修復直播流 HLS 仍無法播放：v2.0.50 的牆鐘時間戳因分片突發到達 + 輪詢間隔造成 DTS 跳變與錯誤幀率（日誌 2.17 tbr），ffmpeg 無法正常輸出分片。",
+      "改用 -framerate 25 輸入選項：讓 h264 raw demuxer 按視頻實際幀率為每幀生成單調遞增的 PTS/DTS，HLS 分片時長與播放時間恢復正常。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.50",
     title: "Fngram 2.0.50 更新",
     version: "2.0.50",
