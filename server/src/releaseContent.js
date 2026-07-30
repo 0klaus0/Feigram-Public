@@ -15,6 +15,19 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.48",
+    title: "Fngram 2.0.48 更新",
+    version: "2.0.48",
+    level: "success",
+    createdAt: "2026-07-30T18:00:00.000Z",
+    body: [
+      "修復 flood wait 後時間戳補償問題：等待期間流逝的時間會自動加到時間戳上，避免落後。",
+      "增大 TIME_TOO_SMALL 快進幅度：從 5 秒增加到 10 秒，更快追趕直播流。",
+      "增加 chunk 下載間隔到 3 秒：減少請求頻率，降低 flood wait 發生概率。",
+      "FLOOD_WAIT 冷卻期間也補償時間戳，避免冷卻後時間戳嚴重落後。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.47",
     title: "Fngram 2.0.47 更新",
     version: "2.0.47",

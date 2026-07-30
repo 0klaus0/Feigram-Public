@@ -30,7 +30,7 @@ const SEGMENT_DURATION = 1; // 秒（HLS 分片時長，與 chunk 時長一致�
 const WINDOW_SIZE = 10; // 保留 10 個分片（10 秒窗口）
 const MAX_CONCURRENT_RELAYS = 3;
 const RELAY_IDLE_TIMEOUT = 120_000; // 無觀眾 120 秒後停止
-const CHUNK_POLL_INTERVAL = 2000; // ms（2 秒間隔，減少請求頻率，給網絡恢復時間）
+const CHUNK_POLL_INTERVAL = 3000; // ms（3 秒間隔，減少請求頻率，降低 flood wait 概率）
 const CHUNK_DOWNLOAD_TIMEOUT = 8000; // ms（8 秒超時，更快失敗恢復）
 const RATE_LIMIT_COOLDOWN = 60_000; // 連續 flood wait 後冷卻 60 秒
 const STARTUP_TIMEOUT = 30_000; // 啟動超時 30 秒
@@ -851,10 +851,10 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
         }
 
         if (chunkError === "TIME_TOO_SMALL" || chunkError === "TIME_INVALID") {
-          // 時間戳落後：快速前進 5 秒，避免反覆調用 getStreamChannels（連接不穩時可能卡住）
+          // 時間戳落後：快速前進 10 秒（原為 5 秒），加速追趕直播流
           const oldTs = lastTimestampMs;
-          lastTimestampMs += SEGMENT_DURATION_MS * 5;
-          console.log(`[liveStreamRelay] Time too small/invalid, fast-forwarding +5s (${oldTs} -> ${lastTimestampMs})`);
+          lastTimestampMs += SEGMENT_DURATION_MS * 10;
+          console.log(`[liveStreamRelay] Time too small/invalid, fast-forwarding +10s (${oldTs} -> ${lastTimestampMs})`);
           continue;
         }
 
@@ -882,9 +882,16 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
           const telegramWaitMs = floodWaitMs || 0;
           const waitMs = telegramWaitMs > 0 ? telegramWaitMs + 500 : Math.min(1000 * Math.pow(2, consecutiveFloodWaits), 10000);
           console.log(`[liveStreamRelay] Flood wait, backing off ${waitMs}ms (count=${consecutiveFloodWaits})`);
+          // 補償等待時間：等待期間直播流繼續播放，時間戳必須同步前進
+          const oldTs = lastTimestampMs;
+          lastTimestampMs += waitMs;
+          console.log(`[liveStreamRelay] Flood wait time compensated (${oldTs} -> ${lastTimestampMs})`);
           if (consecutiveFloodWaits >= 3) {
             console.log(`[liveStreamRelay] Entering rate limit cooldown for ${RATE_LIMIT_COOLDOWN}ms...`);
             await new Promise((r) => setTimeout(r, RATE_LIMIT_COOLDOWN));
+            // 補償冷卻期間流逝的時間
+            lastTimestampMs += RATE_LIMIT_COOLDOWN;
+            console.log(`[liveStreamRelay] Cooldown time compensated (${lastTimestampMs - RATE_LIMIT_COOLDOWN} -> ${lastTimestampMs})`);
             consecutiveFloodWaits = 0;
             continue;
           }
