@@ -15,6 +15,17 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.50",
+    title: "Fngram 2.0.50 更新",
+    version: "2.0.50",
+    level: "success",
+    createdAt: "2026-07-30T20:00:00.000Z",
+    body: [
+      "修復直播流無法播放問題：裸 H.264 管道輸入沒有容器，封包不帶 PTS/DTS，直接 copy 進 HLS muxer 會報「first pts and dts value must be set」並在第一幀失敗。",
+      "為 ffmpeg 輸入側加入 -use_wallclock_as_timestamps 1：用牆鐘時間為每個到達的封包打時間戳，配合已有的 -fflags +genpts 補齊缺失的 PTS，無需重編碼即可正常輸出 HLS。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.49",
     title: "Fngram 2.0.49 更新",
     version: "2.0.49",

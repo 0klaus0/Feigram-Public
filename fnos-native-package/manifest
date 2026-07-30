@@ -1,5 +1,5 @@
 appname=feigrampub
-version=2.0.49
+version=2.0.50
 display_name=Fngram
 desc="""<p><strong>Fngram 2.0 fnOS Client Edition</strong> 是第三方开发的非官方 Telegram 客户端，支持管理员后台、飞牛账户隔离、加密 Telegram session、Telegram 文件夹、媒体预览、后台任务恢复、运行诊断和更新检测。</p><p>基于 Feigram-Public 二次开发，感谢原项目 g-star1024/Feigram-Public。</p><p>适用于 x86_64 / amd64 / arm64 飞牛 OS 设备。</p>"""
 platform=all
@@ -12,4 +12,4 @@ desktop_uidir=ui
 desktop_applaunchname=feigrampub.proxy.Application
 service_port=3088
 checkport=true
-changelog=移除 tail 中間件改為直接寫入 ffmpeg stdin，修復直播流無法播放問題，增加 ffmpeg 診斷日誌。
+changelog=為裸 H.264 管道輸入加入牆鐘時間戳，修復 HLS muxer 報「first pts and dts value must be set」導致直播流首幀即失敗無法播放的問題。
