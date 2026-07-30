@@ -449,9 +449,10 @@ async function downloadStreamChunk(client, inputCall, timeMs, videoChannel, stre
 /**
  * 啟動 ffmpeg 進程，將 H.264 Annex B 位流轉為 HLS 輸出
  *
- * 策略變更：Telegram 直播流分片是 ftyp+free+mdat（無 moov），無法用 -f mp4 解析。
- * 現改為從 mdat 提取 H.264 Annex B 位流，用 -f h264 輸入（不需要 moov atom）。
- * 視頻使用 -c:v copy 直通（不重編碼），大幅降低 CPU 需求。
+ * 策略：Telegram 直播流分片是 ftyp+free+mdat（無 moov），無法用 -f mp4 解析。
+ * 從 mdat 提取 H.264 Annex B 位流，用 -f h264 輸入（不需要 moov atom）。
+ * 視頻使用 libx264 重編碼（非 copy）：裸 H.264 無容器時間戳，copy 模式下 muxer
+ * 報 "Timestamps are unset"；重編碼讓編碼器生成正確 PTS/DTS。
  * 直播流分片只有視頻軌道，無音頻，因此禁用音頻處理。
  */
 function spawnFfmpeg(outputDir) {
@@ -462,22 +463,27 @@ function spawnFfmpeg(outputDir) {
     "-y",
     "-fflags", "+genpts+nobuffer",
     "-flags", "low_delay",
-    // ★ 輸入選項：裸 H.264 Annex B 位流沒有容器，封包不帶 PTS/DTS。
-    //    用 -framerate 25 讓 h264 raw demuxer 按視頻實際幀率為每幀生成單調遞增的 PTS/DTS，
-    //    既解決 "first pts and dts value must be set"，又避免 -use_wallclock_as_timestamps
-    //    因分片突發到達 + 輪詢間隔造成的 DTS 跳變與錯誤幀率（日誌 2.17 tbr 即牆鐘所致）。
-    //
-    //    ★ v2.0.52 關鍵修復：默認 analyzeduration=5s + probesize=5MB，但 pipe 輸入數據每 3 秒
-    //    才到達 1 秒視頻(~50KB)，湊夠 5 秒 analyzable 數據需 ~30 秒。probing 期間數據被消耗，
-    //    探測完成時前端已超時 stop → stdin EOF → 0 幀輸出（"Output file is empty"）。
-    //    縮小 analyzeduration 至 1s、probesize 至 50KB，讓 ffmpeg 在第一個 chunk(~3s)後即完成
-    //    探測開始輸出分片。raw h264 只需讀 SPS/PPS 即可確定格式，無需大量分析。
+    // ★ 輸入：裸 H.264 Annex B 位流（無容器、封包不帶 PTS/DTS）。
+    //    縮小 probing 開銷，讓 ffmpeg 在第一個 chunk(~3s)後即完成探測開始輸出。
     "-analyzeduration", "1000000",  // 1 秒（μs），默認 5s → 慢速 pipe 下需 30s 才完成探測
     "-probesize", "50000",          // 50KB，默認 5MB；第一個 chunk ~50KB 即可滿足探測
-    "-framerate", "25",
     "-f", "h264",             // 輸入格式：原始 H.264 Annex B 位流
     "-i", "pipe:0",
-    "-c:v", "copy",           // 視頻直接拷貝，不重編碼（降低 CPU 需求）
+    // ★ 輸出：重編碼（不再 copy）。
+    //    copy 模式在裸 H.264 管道下不可行：此 FFmpeg 版本(Lavf61)的 h264 raw demuxer
+    //    不為封包生成 PTS/DTS（-framerate 僅設置元數據不打戳，-use_wallclock 會造成
+    //    DTS 跳變與錯誤幀率）。mpegts/hls muxer 因此報 "Timestamps are unset" /
+    //    "Invalid data found when processing input"。
+    //    重編碼讓 libx264 編碼器自行生成正確單調的 PTS/DTS，徹底解決時間戳問題。
+    //    720p25 + veryfast 在現代 NAS CPU 上約 10-20% 佔用，可接受。
+    "-c:v", "libx264",
+    "-preset", "veryfast",
+    "-tune", "zerolatency",
+    "-g", "50",               // 關鍵幀間隔 2 秒（25fps × 2），對齊 HLS 分片邊界
+    "-keyint_min", "50",
+    "-sc_threshold", "0",     // 禁用場景切換關鍵幀，保證分片邊界穩定
+    "-r", "25",               // 輸出 25fps，強制編碼器按此速率打時間戳
+    "-pix_fmt", "yuv420p",    // 確保播放器兼容
     "-an",                    // 無音頻（直播流分片只有視頻）
     "-f", "hls",
     "-hls_time", String(SEGMENT_DURATION),

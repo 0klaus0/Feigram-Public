@@ -15,6 +15,18 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.53",
+    title: "Fngram 2.0.53 更新",
+    version: "2.0.53",
+    level: "success",
+    createdAt: "2026-07-30T23:30:00.000Z",
+    body: [
+      "徹底修復直播流 HLS 無法播放：經 v2.0.50~v2.0.52 三輪驗證，確認 copy 模式在裸 H.264 管道輸入下不可行——此 FFmpeg 版本的 h264 raw demuxer 不為封包生成 PTS/DTS，mpegts/hls muxer 報「Timestamps are unset」並中止。",
+      "改為 libx264 重編碼（preset veryfast + tune zerolatency）：由編碼器自行生成正確單調的 PTS/DTS，繞開 demuxer 時間戳缺失問題。720p25 在現代 NAS CPU 上約 10-20% 佔用，可接受。",
+      "設置關鍵幀間隔 2 秒（-g 50 -keyint_min 50 -sc_threshold 0）對齊 HLS 分片邊界，保證分片穩定。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.52",
     title: "Fngram 2.0.52 更新",
     version: "2.0.52",

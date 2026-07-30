@@ -1,5 +1,5 @@
 appname=feigrampub
-version=2.0.52
+version=2.0.53
 display_name=Fngram
 desc="""<p><strong>Fngram 2.0 fnOS Client Edition</strong> 是第三方开发的非官方 Telegram 客户端，支持管理员后台、飞牛账户隔离、加密 Telegram session、Telegram 文件夹、媒体预览、后台任务恢复、运行诊断和更新检测。</p><p>基于 Feigram-Public 二次开发，感谢原项目 g-star1024/Feigram-Public。</p><p>适用于 x86_64 / amd64 / arm64 飞牛 OS 设备。</p>"""
 platform=all
@@ -12,4 +12,4 @@ desktop_uidir=ui
 desktop_applaunchname=feigrampub.proxy.Application
 service_port=3088
 checkport=true
-changelog=縮小 ffmpeg probing 開銷（analyzeduration 1s + probesize 50KB），修復慢速 pipe 輸入下探測需 30 秒導致前端超時停止、ffmpeg 輸出 0 幀「Output file is empty」的問題。
+changelog=將 ffmpeg 從 copy 改為 libx264 重編碼，徹底解決裸 H.264 管道輸入無時間戳導致 muxer 報「Timestamps are unset」的問題，HLS 分片可正常生成與播放。
