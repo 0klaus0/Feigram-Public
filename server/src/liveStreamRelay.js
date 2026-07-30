@@ -299,17 +299,37 @@ function extractH264AnnexB(mp4Data) {
 }
 
 /**
- * 獲取直播流頻道信息（GramJS retries=1 限制最多 2 次嘗試）
+ * 通用超時包裝器：防止 GramJS 調用在連接斷開時無限卡住
+ * @param {Promise} promise - 要包裝的 Promise
+ * @param {number} timeoutMs - 超時時間（毫秒）
+ * @param {string} errorMsg - 超時錯誤信息
+ * @returns {Promise}
+ */
+function withTimeout(promise, timeoutMs, errorMsg) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error(errorMsg)), timeoutMs);
+    })
+  ]);
+}
+
+/**
+ * 獲取直播流頻道信息（GramJS retries=1，外加 10 秒超時防止卡住）
  * 必須在 JoinGroupCall 之後調用，否則返回 GROUPCALL_JOIN_MISSING
  * @param {number} streamDcId - 流媒體所在的 DC ID（來自 GetGroupCall 的 stream_dc_id）
  * @returns {Promise<{channel, lastTimestampMs, allChannels}|null>}
  */
 async function getStreamChannels(client, inputCall, streamDcId) {
   try {
-    const result = await client.invoke(
-      new Api.phone.GetGroupCallStreamChannels({ call: inputCall }),
-      streamDcId || undefined,
-      1 // retries=1：GramJS 默認 5 次，改為 1 次重試（最多 2 次嘗試）
+    const result = await withTimeout(
+      client.invoke(
+        new Api.phone.GetGroupCallStreamChannels({ call: inputCall }),
+        streamDcId || undefined,
+        1 // retries=1：GramJS 默認 5 次，改為 1 次重試（最多 2 次嘗試）
+      ),
+      10000, // 10 秒超時
+      "GET_CHANNELS_TIMEOUT"
     );
     if (!result?.channels?.length) {
       console.log("[liveStreamRelay] GetGroupCallStreamChannels returned no channels");
@@ -334,6 +354,10 @@ async function getStreamChannels(client, inputCall, streamDcId) {
     };
   } catch (err) {
     const errMsg = err.message || String(err);
+    if (/GET_CHANNELS_TIMEOUT/i.test(errMsg)) {
+      console.log("[liveStreamRelay] getStreamChannels timed out (connection likely dropped)");
+      return null;
+    }
     console.error("[liveStreamRelay] getStreamChannels error:", errMsg);
     // 解析 flood wait 時間
     const floodMatch = errMsg.match(/FLOOD_WAIT_(\d+)/);
@@ -539,54 +563,62 @@ function buildJoinParams() {
   return JSON.stringify(params);
 }
 
-/**
- * 以聽眾身份加入群組通話
- * Telegram 要求先 JoinGroupCall 才能調用 GetGroupCallStreamChannels 和下載分片
- * 注意：JoinGroupCall 在用戶主 DC 上調用（不傳 DC 參數）
- * @returns {Promise<{joined: boolean, selfSource: bigInt|null, error: string|null}>}
- */
-async function joinGroupCall(client, inputCall) {
-  try {
-    const result = await client.invoke(
-      new Api.phone.JoinGroupCall({
-        call: inputCall,
-        joinAs: new Api.InputPeerSelf(),
-        muted: true,
-        videoStopped: true,
-        params: new Api.DataJSON({
-          data: buildJoinParams()
-        })
-      }),
-      undefined,
-      1 // retries=1：限制最多 2 次嘗試
-    );
-
-    // 從 Updates 中提取自己的 source ID（用於後續 LeaveGroupCall）
-    let selfSource = null;
-    if (result?.updates) {
-      for (const update of result.updates) {
-        if (update?.className === "UpdateGroupCallParticipants" && update?.participants) {
-          for (const p of update.participants) {
-            if (p?.source != null) {
-              selfSource = p.source;
-              break;
-            }
-          }
-        }
-      }
-    }
-
-    console.log(`[liveStreamRelay] Joined group call as listener (source=${selfSource?.toString() || "unknown"})`);
-    return { joined: true, selfSource, error: null };
-  } catch (err) {
-    const errMsg = err.message || String(err);
-    if (/already.*join|JOIN_ALREADY/i.test(errMsg)) {
-      console.log("[liveStreamRelay] Already joined group call, continuing...");
-      return { joined: true, selfSource: null, error: null };
-    }
-    console.error("[liveStreamRelay] joinGroupCall error:", errMsg);
-    return { joined: false, selfSource: null, error: errMsg };
-  }
+/**
+ * 以聽眾身份加入群組通話（帶 15 秒超時保護）
+ * Telegram 要求先 JoinGroupCall 才能調用 GetGroupCallStreamChannels 和下載分片
+ * 注意：JoinGroupCall 在用戶主 DC 上調用（不傳 DC 參數）
+ * @returns {Promise<{joined: boolean, selfSource: bigInt|null, error: string|null}>}
+ */
+async function joinGroupCall(client, inputCall) {
+  try {
+    const result = await withTimeout(
+      client.invoke(
+        new Api.phone.JoinGroupCall({
+          call: inputCall,
+          joinAs: new Api.InputPeerSelf(),
+          muted: true,
+          videoStopped: true,
+          params: new Api.DataJSON({
+            data: buildJoinParams()
+          })
+        }),
+        undefined,
+        1 // retries=1：限制最多 2 次嘗試
+      ),
+      15000, // 15 秒超時
+      "JOIN_CALL_TIMEOUT"
+    );
+
+    // 從 Updates 中提取自己的 source ID（用於後續 LeaveGroupCall）
+    let selfSource = null;
+    if (result?.updates) {
+      for (const update of result.updates) {
+        if (update?.className === "UpdateGroupCallParticipants" && update?.participants) {
+          for (const p of update.participants) {
+            if (p?.source != null) {
+              selfSource = p.source;
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    console.log(`[liveStreamRelay] Joined group call as listener (source=${selfSource?.toString() || "unknown"})`);
+    return { joined: true, selfSource, error: null };
+  } catch (err) {
+    const errMsg = err.message || String(err);
+    if (/JOIN_CALL_TIMEOUT/i.test(errMsg)) {
+      console.error("[liveStreamRelay] joinGroupCall timed out");
+      return { joined: false, selfSource: null, error: "加入通話超時，網絡連接不穩定" };
+    }
+    if (/already.*join|JOIN_ALREADY/i.test(errMsg)) {
+      console.log("[liveStreamRelay] Already joined group call, continuing...");
+      return { joined: true, selfSource: null, error: null };
+    }
+    console.error("[liveStreamRelay] joinGroupCall error:", errMsg);
+    return { joined: false, selfSource: null, error: errMsg };
+  }
 }
 
 /**
@@ -680,18 +712,19 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
   let consecutiveFailures = 0;
   let consecutiveFloodWaits = 0;
 
-  const relay = {
-    sessionId,
-    outputDir,
-    playlistPath: path.join(outputDir, "stream.m3u8"),
-    inputFile: path.join(outputDir, "input.mp4"),
-    ffmpeg: null,
-    tail: null,
-    startedAt: Date.now(),
-    lastViewerAt: Date.now(),
-    chunkCount: 0,
-    status: "starting",
-    errorMessage: null,
+  const relay = {
+    sessionId,
+    outputDir,
+    playlistPath: path.join(outputDir, "stream.m3u8"),
+    inputFile: path.join(outputDir, "input.mp4"),
+    ffmpeg: null,
+    tail: null,
+    startedAt: Date.now(),
+    lastViewerAt: Date.now(),
+    lastChunkAt: 0, // 最後成功下載 chunk 的時間（用於僵死檢測）
+    chunkCount: 0,
+    status: "starting",
+    errorMessage: null,
     stop: async () => {
       if (stopped) return;
       stopped = true;
@@ -797,8 +830,9 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
           } catch (writeErr) {
             console.error("[liveStreamRelay] file write error:", writeErr.message);
           }
-        }
-
+        }
+
+        relay.lastChunkAt = Date.now();
         lastTimestampMs += SEGMENT_DURATION_MS;
       } else {
         if (chunkError === "TIME_TOO_BIG") {
@@ -807,14 +841,11 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
           continue;
         }
 
-        if (chunkError === "TIME_TOO_SMALL" || chunkError === "TIME_INVALID") {
-          console.log("[liveStreamRelay] Time too small/invalid, re-syncing timestamp...");
-          const freshChannels = await getStreamChannels(client, inputCall, streamDcId);
-          if (freshChannels) {
-            lastTimestampMs = adjustBootstrapTimestamp(freshChannels.lastTimestampMs);
-            console.log(`[liveStreamRelay] Re-synced timestamp to ${lastTimestampMs}`);
-          }
-          continue;
+        if (chunkError === "TIME_TOO_SMALL" || chunkError === "TIME_INVALID") {
+          // 時間戳落後：快速前進 5 秒，避免反覆調用 getStreamChannels（連接不穩時可能卡住）
+          console.log(`[liveStreamRelay] Time too small/invalid, fast-forwarding +5s (${lastTimestampMs} -> ${lastTimestampMs + SEGMENT_DURATION_MS * 5})`);
+          lastTimestampMs += SEGMENT_DURATION_MS * 5;
+          continue;
         }
 
         if (chunkError === "GROUPCALL_INVALID") {
@@ -826,14 +857,10 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
 
         if (chunkError === "DISCONNECTED") {
           consecutiveFailures = 0;
-          console.log("[liveStreamRelay] Connection dropped, waiting 5s for reconnect...");
-          await new Promise((r) => setTimeout(r, 5000));
-          // 重新同步時間戳，避免落後太多
-          const freshChannels = await getStreamChannels(client, inputCall, streamDcId);
-          if (freshChannels && !freshChannels._floodWait) {
-            lastTimestampMs = adjustBootstrapTimestamp(freshChannels.lastTimestampMs);
-            console.log(`[liveStreamRelay] Re-synced timestamp to ${lastTimestampMs} after reconnect`);
-          }
+          // 連接斷開：等待 8 秒讓 GramJS 自動重連，不調用 getStreamChannels（避免卡住）
+          console.log("[liveStreamRelay] Connection dropped, waiting 8s for reconnect...");
+          await new Promise((r) => setTimeout(r, 8000));
+          // 時間戳可能落後，但下一次下載會自動處理（TIME_TOO_SMALL -> 快速前進）
           continue;
         }
 
@@ -960,15 +987,23 @@ async function cleanupAllRelays() {
   activeRelays.clear();
 }
 
-// 定期清理無觀眾的會話
-setInterval(() => {
-  const now = Date.now();
-  for (const [id, relay] of activeRelays) {
-    if (now - relay.lastViewerAt > RELAY_IDLE_TIMEOUT && relay.status === "running") {
-      console.log(`[liveStreamRelay] auto-stopping idle relay: ${id}`);
-      relay.stop();
-    }
-  }
+// 定期清理無觀眾的會話 + 僵死檢測
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, relay] of activeRelays) {
+    // 1. 無觀眾超時
+    if (now - relay.lastViewerAt > RELAY_IDLE_TIMEOUT && relay.status === "running") {
+      console.log(`[liveStreamRelay] auto-stopping idle relay: ${id}`);
+      relay.stop();
+      continue;
+    }
+    // 2. 僵死檢測：running 狀態下超過 45 秒沒有成功下載 chunk，認為主循環卡住
+    if (relay.status === "running" && relay.lastChunkAt > 0 && now - relay.lastChunkAt > 45_000) {
+      console.error(`[liveStreamRelay] relay appears dead (no chunk for ${Math.round((now - relay.lastChunkAt) / 1000)}s), stopping: ${id}`);
+      relay.errorMessage = relay.errorMessage || "直播流中斷：連接不穩定導致下載卡住";
+      relay.stop();
+    }
+  }
 }, 15_000);
 
 module.exports = {

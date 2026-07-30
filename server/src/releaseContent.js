@@ -15,6 +15,20 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.46",
+    title: "Fngram 2.0.46 更新",
+    version: "2.0.46",
+    level: "success",
+    createdAt: "2026-07-30T15:00:00.000Z",
+    body: [
+      "給所有 GramJS API 調用添加超時保護：getStreamChannels 10 秒、joinGroupCall 15 秒，防止連接斷開時無限卡住。",
+      "簡化連接斷開處理：不再調用 getStreamChannels 重新同步（可能卡住），改為等待 8 秒後直接繼續嘗試下載。",
+      "簡化 TIME_TOO_SMALL 處理：不再調用 getStreamChannels，改為時間戳快速前進 5 秒自動追趕。",
+      "新增僵死檢測：running 狀態下 45 秒沒有成功下載 chunk，自動停止 relay 並釋放資源。",
+      "修復 v2.0.45 連接斷開後 relay 僵死的問題。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.45",
     title: "Fngram 2.0.45 更新",
     version: "2.0.45",
