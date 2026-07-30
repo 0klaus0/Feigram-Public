@@ -15,6 +15,18 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.49",
+    title: "Fngram 2.0.49 更新",
+    version: "2.0.49",
+    level: "success",
+    createdAt: "2026-07-30T19:00:00.000Z",
+    body: [
+      "修復直播流無法播放問題：移除 tail 中間件，改為直接寫入 ffmpeg stdin，避免 ARM 設備上的緩衝延遲。",
+      "增加 ffmpeg 診斷日誌：前 30 行 stderr 全部記錄，方便排查播放問題。",
+      "增加 HLS playlist 生成檢測日誌：記錄 stream.m3u8 何時創建。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.48",
     title: "Fngram 2.0.48 更新",
     version: "2.0.48",

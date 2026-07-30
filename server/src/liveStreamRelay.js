@@ -454,14 +454,9 @@ async function downloadStreamChunk(client, inputCall, timeMs, videoChannel, stre
  * 視頻使用 -c:v copy 直通（不重編碼），大幅降低 CPU 需求。
  * 直播流分片只有視頻軌道，無音頻，因此禁用音頻處理。
  */
-function spawnFfmpeg(outputDir, inputFile) {
+function spawnFfmpeg(outputDir) {
   const playlistPath = path.join(outputDir, "stream.m3u8");
   const segmentPattern = path.join(outputDir, "seg_%04d.ts");
-
-  // 使用 tail -F 跟蹤增長中的文件，並管道給 ffmpeg
-  const tail = spawn("tail", ["-c", "+1", "-F", inputFile], {
-    stdio: ["ignore", "pipe", "pipe"]
-  });
 
   const args = [
     "-y",
@@ -478,42 +473,36 @@ function spawnFfmpeg(outputDir, inputFile) {
     "-hls_segment_filename", segmentPattern,
     "-hls_segment_type", "mpegts",
     playlistPath
-  ];
-
+  ];
+
   const ffmpeg = spawn("ffmpeg", args, { stdio: ["pipe", "pipe", "pipe"] });
 
-  // 將 tail 的 stdout 管道到 ffmpeg 的 stdin
-  tail.stdout.pipe(ffmpeg.stdin);
-
-  let stderrBuffer = "";
-  ffmpeg.stderr.on("data", (data) => {
-    const text = data.toString();
-    stderrBuffer += text;
-    const lines = text.trim().split("\n");
-    for (const line of lines) {
-      if (/error|warning|invalid|failed|no such|cannot/i.test(line)) {
-        console.error("[ffmpeg]", line.trim());
-      }
-    }
-  });
-
-  ffmpeg.on("exit", (code, signal) => {
-    console.log(`[liveStreamRelay] ffmpeg exited: code=${code} signal=${signal}`);
-    if (code !== 0 && code !== null) {
-      const tail = stderrBuffer.slice(-500);
-      console.error("[liveStreamRelay] ffmpeg last stderr:", tail);
-    }
-  });
-
-  tail.on("exit", (code, signal) => {
-    console.log(`[liveStreamRelay] tail exited: code=${code} signal=${signal}`);
-  });
-
-  tail.stderr.on("data", (data) => {
-    console.log("[liveStreamRelay] tail stderr:", data.toString().trim());
-  });
-
-  return { ffmpeg, tail };
+  let stderrBuffer = "";
+  let stderrLineCount = 0;
+  ffmpeg.stderr.on("data", (data) => {
+    const text = data.toString();
+    stderrBuffer += text;
+    const lines = text.trim().split("\n");
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      // 前 30 行全部記錄（方便診斷），之後只記錄錯誤/警告
+      if (stderrLineCount < 30 || /error|warning|invalid|failed|no such|cannot/i.test(trimmed)) {
+        console.log(`[ffmpeg] ${trimmed}`);
+      }
+      stderrLineCount++;
+    }
+  });
+
+  ffmpeg.on("exit", (code, signal) => {
+    console.log(`[liveStreamRelay] ffmpeg exited: code=${code} signal=${signal}`);
+    if (code !== 0 && code !== null) {
+      const tail = stderrBuffer.slice(-500);
+      console.error("[liveStreamRelay] ffmpeg last stderr:", tail);
+    }
+  });
+
+  return { ffmpeg };
 }
 
 /**
@@ -716,24 +705,21 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
     sessionId,
     outputDir,
     playlistPath: path.join(outputDir, "stream.m3u8"),
-    inputFile: path.join(outputDir, "input.mp4"),
     ffmpeg: null,
-    tail: null,
     startedAt: Date.now(),
     lastViewerAt: Date.now(),
     lastChunkAt: 0, // 最後成功下載 chunk 的時間（用於僵死檢測）
     chunkCount: 0,
+    bytesWritten: 0, // 寫入 ffmpeg 的總字節數
     status: "starting",
     errorMessage: null,
-    stop: async () => {
-      if (stopped) return;
-      stopped = true;
-      relay.status = "stopped";
-      try { relay.tail?.kill("SIGTERM"); } catch {}
-      try { relay.ffmpeg?.stdin?.end(); } catch {}
-      setTimeout(() => {
-        try { relay.ffmpeg?.kill("SIGKILL"); } catch {}
-        try { relay.tail?.kill("SIGKILL"); } catch {}
+    stop: async () => {
+      if (stopped) return;
+      stopped = true;
+      relay.status = "stopped";
+      try { relay.ffmpeg?.stdin?.end(); } catch {}
+      setTimeout(() => {
+        try { relay.ffmpeg?.kill("SIGKILL"); } catch {}
       }, 2000);
       if (!hasLeftCall) {
         hasLeftCall = true;
@@ -747,16 +733,12 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
     }
   };
 
-  activeRelays.set(sessionId, relay);
-
-  // 先初始化空的 input 文件（tail -F 需要文件存在才能開始跟蹤）
-  await fs.writeFile(relay.inputFile, "");
-
-  // 啟動 tail + ffmpeg（tail -F 跟蹤文件增長，ffmpeg 從管道讀取）
-  console.log("[liveStreamRelay] Spawning tail + ffmpeg...");
-  const { ffmpeg, tail } = spawnFfmpeg(outputDir, relay.inputFile);
+  activeRelays.set(sessionId, relay);
+
+  // 啟動 ffmpeg（直接從 stdin 讀取 H.264 數據，不再使用 tail 中間件）
+  console.log("[liveStreamRelay] Spawning ffmpeg (direct stdin mode)...");
+  const { ffmpeg } = spawnFfmpeg(outputDir);
   relay.ffmpeg = ffmpeg;
-  relay.tail = tail;
 
   // ★ 關鍵：處理 ffmpeg stdin 的 EPIPE 錯誤，防止服務器崩潰
   relay.ffmpeg.stdin.on("error", (err) => {
@@ -831,10 +813,21 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
 
         if (h264Data.length > 0) {
           try {
-            // 寫入 input 文件（tail -F 會自動跟蹤並管道給 ffmpeg）
-            await fs.appendFile(relay.inputFile, h264Data);
+            // 直接寫入 ffmpeg stdin（不再通過 tail -F 中間件，避免緩衝延遲）
+            const ok = relay.ffmpeg.stdin.write(h264Data);
+            relay.bytesWritten += h264Data.length;
+            if (relay.chunkCount <= 3 || relay.chunkCount % 10 === 0) {
+              console.log(`[liveStreamRelay] Wrote ${h264Data.length} bytes H.264 to ffmpeg stdin (total=${relay.bytesWritten}, chunk #${relay.chunkCount})`);
+            }
+            // 檢查 playlist 是否已生成
+            if (relay.chunkCount <= 5 && !relay._playlistLogged) {
+              if (fs.existsSync(relay.playlistPath)) {
+                relay._playlistLogged = true;
+                console.log(`[liveStreamRelay] HLS playlist created! (stream.m3u8 ready after chunk #${relay.chunkCount})`);
+              }
+            }
           } catch (writeErr) {
-            console.error("[liveStreamRelay] file write error:", writeErr.message);
+            console.error("[liveStreamRelay] ffmpeg stdin write error:", writeErr.message);
           }
         }
 
