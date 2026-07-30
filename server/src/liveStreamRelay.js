@@ -462,6 +462,10 @@ function spawnFfmpeg(outputDir) {
     "-y",
     "-fflags", "+genpts+nobuffer",
     "-flags", "low_delay",
+    // ★ 輸入選項：原始 H.264 Annex B 位流沒有容器，封包不帶 PTS/DTS，
+    //    直接 copy 進 mpegts/hls muxer 會報 "first pts and dts value must be set"。
+    //    用牆鐘時間為每個到達的封包打時間戳，+genpts 補齊缺失的 PTS。
+    "-use_wallclock_as_timestamps", "1",
     "-f", "h264",             // 輸入格式：原始 H.264 Annex B 位流
     "-i", "pipe:0",
     "-c:v", "copy",           // 視頻直接拷貝，不重編碼（降低 CPU 需求）
