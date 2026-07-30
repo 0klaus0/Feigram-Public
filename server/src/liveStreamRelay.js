@@ -30,9 +30,11 @@ const SEGMENT_DURATION = 1; // 秒（HLS 分片時長，與 chunk 時長一致�
 const WINDOW_SIZE = 10; // 保留 10 個分片（10 秒窗口）
 const MAX_CONCURRENT_RELAYS = 3;
 const RELAY_IDLE_TIMEOUT = 120_000; // 無觀眾 120 秒後停止
-const CHUNK_POLL_INTERVAL = 1000; // ms（與 chunk 時長一致，保證實時下載）
+const CHUNK_POLL_INTERVAL = 2000; // ms（2 秒間隔，減少請求頻率，給網絡恢復時間）
+const CHUNK_DOWNLOAD_TIMEOUT = 8000; // ms（8 秒超時，更快失敗恢復）
 const RATE_LIMIT_COOLDOWN = 60_000; // 連續 flood wait 後冷卻 60 秒
-const STARTUP_TIMEOUT = 30_000; // 啟動超時 30 秒
+const STARTUP_TIMEOUT = 30_000; // 啟動超時 30 秒
+const DISCONNECT_WAIT_MS = 8000; // 連接斷開後等待 GramJS 重連的時間
 
 // 直播流分片下載常量（來自 TGTV 參考實現 / 官方客戶端）
 const SEGMENT_DURATION_MS = 1000; // 1 秒分片
@@ -385,8 +387,6 @@ function adjustBootstrapTimestamp(timestampMs) {
  * @param {number} videoChannel - 視頻頻道 ID（來自 GetGroupCallStreamChannels）
  * @returns {Promise<{data: Buffer|null, error: string|null}>}
  */
-const CHUNK_DOWNLOAD_TIMEOUT = 15_000; // 15 秒超時
-
 async function downloadStreamChunk(client, inputCall, timeMs, videoChannel, streamDcId) {
   const location = new Api.InputGroupCallStream({
     call: inputCall,
@@ -683,9 +683,9 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
   let hasLeftCall = false;
 
   // ★ 步驟 2：獲取流頻道信息（GramJS retries=1）
-  // 等待 10 秒冷卻，避免 JoinGroupCall 後立即調用導致 flood wait
-  console.log("[liveStreamRelay] Step 2: Waiting 10s cooldown before fetching stream channels...");
-  await new Promise((r) => setTimeout(r, 10000));
+  // 等待 5 秒冷卻，避免 JoinGroupCall 後立即調用導致 flood wait
+  console.log("[liveStreamRelay] Step 2: Waiting 5s cooldown before fetching stream channels...");
+  await new Promise((r) => setTimeout(r, 5000));
 
   let channels = await getStreamChannels(client, inputCall, streamDcId);
 
@@ -804,21 +804,27 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
         break;
       }
 
+      const loopStart = Date.now();
+      console.log(`[liveStreamRelay] loop: requesting chunk ts=${lastTimestampMs}`);
+
       const { data: rawChunk, error: chunkError, floodWaitMs } = await downloadStreamChunk(
         client, inputCall, lastTimestampMs, videoChannel, streamDcId
-      );
-
-      if (rawChunk && rawChunk.length > 0) {
-        consecutiveFailures = 0;
-        consecutiveFloodWaits = 0;
-        relay.chunkCount++;
-
-        if (relay.chunkCount === 1) {
-          clearTimeout(startupTimer);
-          relay.status = "running";
-          console.log(`[liveStreamRelay] First chunk received: ${rawChunk.length} bytes (raw), status=running`);
-        }
-
+      );
+
+      const loopElapsed = Date.now() - loopStart;
+      console.log(`[liveStreamRelay] loop: chunk result ts=${lastTimestampMs}, size=${rawChunk?.length || 0}, error=${chunkError || 'none'}, elapsed=${loopElapsed}ms`);
+
+      if (rawChunk && rawChunk.length > 0) {
+        consecutiveFailures = 0;
+        consecutiveFloodWaits = 0;
+        relay.chunkCount++;
+
+        if (relay.chunkCount === 1) {
+          clearTimeout(startupTimer);
+          relay.status = "running";
+          console.log(`[liveStreamRelay] First chunk received: ${rawChunk.length} bytes (raw), status=running`);
+        }
+
         // ★ 關鍵：剝離 Telegram 自定義頭，提取 MP4，再從 mdat 提取 H.264 Annex B 位流
         const mp4Data = stripTelegramHeader(rawChunk);
         const h264Data = extractH264AnnexB(mp4Data);
@@ -833,21 +839,25 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
         }
 
         relay.lastChunkAt = Date.now();
-        lastTimestampMs += SEGMENT_DURATION_MS;
-      } else {
-        if (chunkError === "TIME_TOO_BIG") {
-          consecutiveFailures = 0;
-          await new Promise((r) => setTimeout(r, 500));
-          continue;
-        }
-
+        lastTimestampMs += SEGMENT_DURATION_MS;
+      } else {
+        if (chunkError === "TIME_TOO_BIG") {
+          consecutiveFailures = 0;
+          // 時間戳太超前（實際是服務器緩衝窗口已過期），快速前進 2 秒追趕
+          const oldTs = lastTimestampMs;
+          lastTimestampMs += SEGMENT_DURATION_MS * 2;
+          console.log(`[liveStreamRelay] TIME_TOO_BIG, fast-forward +2s (${oldTs} -> ${lastTimestampMs})`);
+          continue;
+        }
+
         if (chunkError === "TIME_TOO_SMALL" || chunkError === "TIME_INVALID") {
           // 時間戳落後：快速前進 5 秒，避免反覆調用 getStreamChannels（連接不穩時可能卡住）
-          console.log(`[liveStreamRelay] Time too small/invalid, fast-forwarding +5s (${lastTimestampMs} -> ${lastTimestampMs + SEGMENT_DURATION_MS * 5})`);
+          const oldTs = lastTimestampMs;
           lastTimestampMs += SEGMENT_DURATION_MS * 5;
+          console.log(`[liveStreamRelay] Time too small/invalid, fast-forwarding +5s (${oldTs} -> ${lastTimestampMs})`);
           continue;
-        }
-
+        }
+
         if (chunkError === "GROUPCALL_INVALID") {
           relay.status = "error";
           relay.errorMessage = "直播已結束或通話無效";
@@ -857,10 +867,13 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
 
         if (chunkError === "DISCONNECTED") {
           consecutiveFailures = 0;
-          // 連接斷開：等待 8 秒讓 GramJS 自動重連，不調用 getStreamChannels（避免卡住）
-          console.log("[liveStreamRelay] Connection dropped, waiting 8s for reconnect...");
-          await new Promise((r) => setTimeout(r, 8000));
-          // 時間戳可能落後，但下一次下載會自動處理（TIME_TOO_SMALL -> 快速前進）
+          // 連接斷開：等待 GramJS 自動重連，同時補償時間戳
+          console.log(`[liveStreamRelay] Connection dropped, waiting ${DISCONNECT_WAIT_MS}ms for reconnect...`);
+          await new Promise((r) => setTimeout(r, DISCONNECT_WAIT_MS));
+          // 補償等待期間流逝的時間（避免時間戳嚴重落後）
+          const oldTs = lastTimestampMs;
+          lastTimestampMs += DISCONNECT_WAIT_MS;
+          console.log(`[liveStreamRelay] Reconnect wait done, timestamp compensated (${oldTs} -> ${lastTimestampMs})`);
           continue;
         }
 
@@ -880,19 +893,19 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
         }
 
         consecutiveFailures++;
-        // 每 5 次失敗記錄一次日誌，避免日誌過多
-        if (consecutiveFailures % 5 === 1) {
+        // 每次失敗都記錄（方便診斷），但限制頻率
+        if (consecutiveFailures <= 5 || consecutiveFailures % 5 === 0) {
           console.log(`[liveStreamRelay] Chunk download failed (timeMs=${lastTimestampMs}, error=${chunkError}, count=${consecutiveFailures})`);
         }
-        if (consecutiveFailures > 30) {
+        if (consecutiveFailures > 20) {
           console.error("[liveStreamRelay] too many consecutive failures, stopping");
           relay.status = "error";
-          relay.errorMessage = `連續 30 次下載分片失敗（${chunkError}），直播流可能已結束`;
+          relay.errorMessage = `連續 20 次下載分片失敗（${chunkError}），直播流可能已結束`;
           relay.stop();
           break;
-        }
-      }
-
+        }
+      }
+
       await new Promise((r) => setTimeout(r, CHUNK_POLL_INTERVAL));
     }
   })().catch((err) => {
@@ -997,8 +1010,8 @@ setInterval(() => {
       relay.stop();
       continue;
     }
-    // 2. 僵死檢測：running 狀態下超過 45 秒沒有成功下載 chunk，認為主循環卡住
-    if (relay.status === "running" && relay.lastChunkAt > 0 && now - relay.lastChunkAt > 45_000) {
+    // 2. 僵死檢測：running 狀態下超過 30 秒沒有成功下載 chunk，認為主循環卡住
+    if (relay.status === "running" && relay.lastChunkAt > 0 && now - relay.lastChunkAt > 30_000) {
       console.error(`[liveStreamRelay] relay appears dead (no chunk for ${Math.round((now - relay.lastChunkAt) / 1000)}s), stopping: ${id}`);
       relay.errorMessage = relay.errorMessage || "直播流中斷：連接不穩定導致下載卡住";
       relay.stop();
