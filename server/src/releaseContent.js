@@ -15,6 +15,18 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.52",
+    title: "Fngram 2.0.52 更新",
+    version: "2.0.52",
+    level: "success",
+    createdAt: "2026-07-30T22:30:00.000Z",
+    body: [
+      "修復直播流 HLS 仍無法播放：v2.0.51 雖用 -framerate 25 修正了時間戳，但 ffmpeg 默認 analyzeduration=5s + probesize=5MB，而 pipe 輸入數據每 3 秒才到達 1 秒視頻，湊夠 5 秒 analyzable 數據需 ~30 秒。",
+      "探測期間數據被消耗，30 秒探測完成時前端已超時停止（stdin EOF），ffmpeg 輸出 0 幀「Output file is empty」後退出。",
+      "縮小 probing 開銷：analyzeduration 1s + probesize 50KB，讓 ffmpeg 在第一個 chunk(~3s)後即完成探測開始輸出分片。raw h264 只需讀 SPS/PPS 即可確定格式，無需大量分析。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.51",
     title: "Fngram 2.0.51 更新",
     version: "2.0.51",

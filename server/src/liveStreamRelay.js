@@ -466,6 +466,14 @@ function spawnFfmpeg(outputDir) {
     //    用 -framerate 25 讓 h264 raw demuxer 按視頻實際幀率為每幀生成單調遞增的 PTS/DTS，
     //    既解決 "first pts and dts value must be set"，又避免 -use_wallclock_as_timestamps
     //    因分片突發到達 + 輪詢間隔造成的 DTS 跳變與錯誤幀率（日誌 2.17 tbr 即牆鐘所致）。
+    //
+    //    ★ v2.0.52 關鍵修復：默認 analyzeduration=5s + probesize=5MB，但 pipe 輸入數據每 3 秒
+    //    才到達 1 秒視頻(~50KB)，湊夠 5 秒 analyzable 數據需 ~30 秒。probing 期間數據被消耗，
+    //    探測完成時前端已超時 stop → stdin EOF → 0 幀輸出（"Output file is empty"）。
+    //    縮小 analyzeduration 至 1s、probesize 至 50KB，讓 ffmpeg 在第一個 chunk(~3s)後即完成
+    //    探測開始輸出分片。raw h264 只需讀 SPS/PPS 即可確定格式，無需大量分析。
+    "-analyzeduration", "1000000",  // 1 秒（μs），默認 5s → 慢速 pipe 下需 30s 才完成探測
+    "-probesize", "50000",          // 50KB，默認 5MB；第一個 chunk ~50KB 即可滿足探測
     "-framerate", "25",
     "-f", "h264",             // 輸入格式：原始 H.264 Annex B 位流
     "-i", "pipe:0",
