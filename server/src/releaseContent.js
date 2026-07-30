@@ -15,13 +15,26 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.45",
+    title: "Fngram 2.0.45 更新",
+    version: "2.0.45",
+    level: "success",
+    createdAt: "2026-07-30T06:00:00.000Z",
+    body: [
+      "添加 15 秒下載超時保護：防止連接斷開時下載請求卡住。",
+      "新增連接斷開處理：檢測到連接斷開後等待 5 秒重連，重新同步時間戳後繼續下載。",
+      "修復靜默失敗問題：之前只有第一次失敗才記錄日誌，現改為每 5 次記錄一次。",
+      "優化錯誤分類：連接斷開、超時與普通錯誤分開處理，避免誤判為直播結束。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.44",
     title: "Fngram 2.0.44 更新",
     version: "2.0.44",
     level: "success",
     createdAt: "2026-07-29T23:00:00.000Z",
     body: [
-      "HLS 分片時長從 2 秒改為 1 秲：與 Telegram chunk 時長一致，1 個 chunk 即可生成 1 個 HLS 分片。",
+      "HLS 分片時長從 2 秒改為 1 秒：與 Telegram chunk 時長一致，1 個 chunk 即可生成 1 個 HLS 分片。",
       "chunk 下載間隔從 3 秒改為 1 秒：保證實時下載，避免時間戳落後導致 Time too small。",
       "idle timeout 從 60 秒增加到 120 秒：給觀眾更多等待時間。",
       "HLS 窗口大小從 6 改為 10：保留 10 秒的播放緩衝。"

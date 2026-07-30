@@ -354,22 +354,26 @@ function adjustBootstrapTimestamp(timestampMs) {
   return adjusted > 0 ? adjusted : 0;
 }
 
-/**
- * 下載單個直播流分片
- * @param {number} streamDcId - 流媒體所在的 DC ID
- * @param {number} videoChannel - 視頻頻道 ID（來自 GetGroupCallStreamChannels）
- * @returns {Promise<{data: Buffer|null, error: string|null}>}
- */
-async function downloadStreamChunk(client, inputCall, timeMs, videoChannel, streamDcId) {
-  const location = new Api.InputGroupCallStream({
-    call: inputCall,
-    timeMs: bigInt(timeMs),
-    scale: STREAM_SCALE,
-    ...(videoChannel != null ? { videoChannel, videoQuality: VIDEO_QUALITY_FULL } : {})
-  });
-
+/**
+ * 下載單個直播流分片
+ * 包裝在超時機制中，防止連接斷開時卡住
+ * @param {number} streamDcId - 流媒體所在的 DC ID
+ * @param {number} videoChannel - 視頻頻道 ID（來自 GetGroupCallStreamChannels）
+ * @returns {Promise<{data: Buffer|null, error: string|null}>}
+ */
+const CHUNK_DOWNLOAD_TIMEOUT = 15_000; // 15 秒超時
+
+async function downloadStreamChunk(client, inputCall, timeMs, videoChannel, streamDcId) {
+  const location = new Api.InputGroupCallStream({
+    call: inputCall,
+    timeMs: bigInt(timeMs),
+    scale: STREAM_SCALE,
+    ...(videoChannel != null ? { videoChannel, videoQuality: VIDEO_QUALITY_FULL } : {})
+  });
+
   try {
-    const result = await client.invoke(
+    // 添加超時保護，防止連接斷開時卡住
+    const downloadPromise = client.invoke(
       new Api.upload.GetFile({
         location,
         offset: bigInt(0),
@@ -377,8 +381,15 @@ async function downloadStreamChunk(client, inputCall, timeMs, videoChannel, stre
         precise: false
       }),
       streamDcId || undefined,
-      1 // retries=1：限制最多 2 次嘗試，減少 flood wait 觸發
+      1 // retries=1：限制最多 2 次嘗試
     );
+
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error("DOWNLOAD_TIMEOUT")), CHUNK_DOWNLOAD_TIMEOUT);
+    });
+
+    const result = await Promise.race([downloadPromise, timeoutPromise]);
+
     if (result?.bytes?.length > 0) {
       return { data: Buffer.from(result.bytes), error: null };
     }
@@ -401,9 +412,14 @@ async function downloadStreamChunk(client, inputCall, timeMs, videoChannel, stre
     if (floodMatch) {
       return { data: null, error: "FLOOD_WAIT", floodWaitMs: parseInt(floodMatch[1], 10) * 1000 };
     }
+    // 連接斷開或超時
+    if (/not connected|connection closed|disconnected|DOWNLOAD_TIMEOUT/i.test(errMsg)) {
+      console.log(`[liveStreamRelay] Connection issue (timeMs=${timeMs}): ${errMsg}`);
+      return { data: null, error: "DISCONNECTED" };
+    }
     console.error(`[liveStreamRelay] downloadStreamChunk error (timeMs=${timeMs}):`, errMsg);
     return { data: null, error: errMsg };
-  }
+  }
 }
 
 /**
@@ -801,21 +817,32 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
           continue;
         }
 
-        if (chunkError === "GROUPCALL_INVALID") {
-          relay.status = "error";
-          relay.errorMessage = "直播已結束或通話無效";
-          relay.stop();
-          break;
-        }
-
+        if (chunkError === "GROUPCALL_INVALID") {
+          relay.status = "error";
+          relay.errorMessage = "直播已結束或通話無效";
+          relay.stop();
+          break;
+        }
+
+        if (chunkError === "DISCONNECTED") {
+          consecutiveFailures = 0;
+          console.log("[liveStreamRelay] Connection dropped, waiting 5s for reconnect...");
+          await new Promise((r) => setTimeout(r, 5000));
+          // 重新同步時間戳，避免落後太多
+          const freshChannels = await getStreamChannels(client, inputCall, streamDcId);
+          if (freshChannels && !freshChannels._floodWait) {
+            lastTimestampMs = adjustBootstrapTimestamp(freshChannels.lastTimestampMs);
+            console.log(`[liveStreamRelay] Re-synced timestamp to ${lastTimestampMs} after reconnect`);
+          }
+          continue;
+        }
+
         if (chunkError === "FLOOD_WAIT") {
           consecutiveFloodWaits++;
-          // 優先使用 Telegram 返回的等待時間，否則使用指數退避
           const telegramWaitMs = floodWaitMs || 0;
           const waitMs = telegramWaitMs > 0 ? telegramWaitMs + 500 : Math.min(1000 * Math.pow(2, consecutiveFloodWaits), 10000);
           console.log(`[liveStreamRelay] Flood wait, backing off ${waitMs}ms (count=${consecutiveFloodWaits})`);
           if (consecutiveFloodWaits >= 3) {
-            // 連續 3 次 flood wait，進入 60 秒冷卻，避免賬號被進一步限流
             console.log(`[liveStreamRelay] Entering rate limit cooldown for ${RATE_LIMIT_COOLDOWN}ms...`);
             await new Promise((r) => setTimeout(r, RATE_LIMIT_COOLDOWN));
             consecutiveFloodWaits = 0;
@@ -823,18 +850,19 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
           }
           await new Promise((r) => setTimeout(r, waitMs));
           continue;
-        }
-
-        consecutiveFailures++;
-        if (consecutiveFailures === 1) {
-          console.log(`[liveStreamRelay] Chunk download failed (timeMs=${lastTimestampMs}, error=${chunkError})`);
-        }
-        if (consecutiveFailures > 30) {
-          console.error("[liveStreamRelay] too many consecutive failures, stopping");
-          relay.status = "error";
-          relay.errorMessage = `連續 30 次下載分片失敗（${chunkError}），直播流可能已結束`;
-          relay.stop();
-          break;
+        }
+
+        consecutiveFailures++;
+        // 每 5 次失敗記錄一次日誌，避免日誌過多
+        if (consecutiveFailures % 5 === 1) {
+          console.log(`[liveStreamRelay] Chunk download failed (timeMs=${lastTimestampMs}, error=${chunkError}, count=${consecutiveFailures})`);
+        }
+        if (consecutiveFailures > 30) {
+          console.error("[liveStreamRelay] too many consecutive failures, stopping");
+          relay.status = "error";
+          relay.errorMessage = `連續 30 次下載分片失敗（${chunkError}），直播流可能已結束`;
+          relay.stop();
+          break;
         }
       }
 
