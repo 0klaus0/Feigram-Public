@@ -1,5 +1,5 @@
 appname=feigrampub
-version=2.0.54
+version=2.0.55
 display_name=Fngram
 desc="""<p><strong>Fngram 2.0 fnOS Client Edition</strong> 是第三方开发的非官方 Telegram 客户端，支持管理员后台、飞牛账户隔离、加密 Telegram session、Telegram 文件夹、媒体预览、后台任务恢复、运行诊断和更新检测。</p><p>基于 Feigram-Public 二次开发，感谢原项目 g-star1024/Feigram-Public。</p><p>适用于 x86_64 / amd64 / arm64 飞牛 OS 设备。</p>"""
 platform=all
@@ -12,4 +12,4 @@ desktop_uidir=ui
 desktop_applaunchname=feigrampub.proxy.Application
 service_port=3088
 checkport=true
-changelog=修復 libx264 keyint 被 preset 覆蓋導致 HLS 無法切分、增加輸入容錯與強制每秒 IDR、加大 chunk limit，解決重編碼後 frame 停滯與分片不生成問題。
+changelog=徹底解決直播流無法播放：放棄 HLS（需要關鍵幀切分）改用 MPEG-TS（連續流、無切分需求），配合 wallclock 時間戳，徹底繞開裸 H.264 管道的時間戳與關鍵幀問題。

@@ -352,7 +352,7 @@ app.post("/api/live-stream/:account/:peer/start", asyncRoute(async (req, res) =>
   res.json({
     sessionId,
     status: relay.status,
-    playlistUrl: `/api/live-stream/${sessionId}/stream.m3u8`,
+    streamUrl: `/api/live-stream/${sessionId}/stream.ts`,  // v2.0.55: HLS → MPEG-TS
     callInfo
   });
 }));
@@ -398,20 +398,18 @@ app.get("/api/live-stream/:sessionId/:filename", asyncRoute(async (req, res) => 
 
   const filePath = liveRelay.getHlsFilePath(sessionId, filename);
   if (!await fs.pathExists(filePath)) {
-    // 如果 playlist 還沒準備好，返回 503 讓前端重試
+    // 如果 stream.ts 還沒準備好，返回 503 讓前端重試
     res.status(503).setHeader("Retry-After", "1").json({ error: "直播流正在準備中，請稍候" });
     return;
   }
 
-  if (filename.endsWith(".m3u8")) {
-    res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
-    res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-    // 禁用緩衝，確保客戶端即時拿到最新 playlist
-    res.setHeader("Access-Control-Allow-Origin", "*");
-  } else if (filename.endsWith(".ts")) {
+  if (filename.endsWith(".ts")) {
     res.setHeader("Content-Type", "video/mp2t");
-    res.setHeader("Cache-Control", "public, max-age=3600");
+    res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
     res.setHeader("Access-Control-Allow-Origin", "*");
+  } else {
+    res.status(400).json({ error: "不支持的文件類型" });
+    return;
   }
 
   fs.createReadStream(filePath).pipe(res);

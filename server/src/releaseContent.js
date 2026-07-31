@@ -15,6 +15,18 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.55",
+    title: "Fngram 2.0.55 更新",
+    version: "2.0.55",
+    level: "success",
+    createdAt: "2026-07-31T16:30:00.000Z",
+    body: [
+      "徹底解決直播流無法播放：經 v2.0.50~v2.0.54 五輪驗證，確認 HLS 在裸 H.264 管道輸入下不可行——HLS 需要關鍵幀對齊才能切分，而 Telegram chunk 拼接的裸 H.264 在關鍵幀上天然不穩定。",
+      "改用 MPEG-TS 輸出：MPEG-TS 是連續流，無切分需求，對時間戳更寬容。配合 wallclock 時間戳（-use_wallclock_as_timestamps 1），徹底繞開裸流無 PTS 和關鍵幀不穩定的問題。",
+      "前端播放器改用 mpegts.js：成熟的开源库，API 与 hls.js 類似，支持實時低延遲播放。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.54",
     title: "Fngram 2.0.54 更新",
     version: "2.0.54",

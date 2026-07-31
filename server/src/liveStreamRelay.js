@@ -447,56 +447,46 @@ async function downloadStreamChunk(client, inputCall, timeMs, videoChannel, stre
 }
 
 /**
- * 啟動 ffmpeg 進程，將 H.264 Annex B 位流轉為 HLS 輸出
+ * 啟動 ffmpeg 進程，將 H.264 Annex B 位流轉為 MPEG-TS 輸出
  *
- * 策略：Telegram 直播流分片是 ftyp+free+mdat（無 moov），無法用 -f mp4 解析。
- * 從 mdat 提取 H.264 Annex B 位流，用 -f h264 輸入（不需要 moov atom）。
- * 視頻使用 libx264 重編碼（非 copy）：裸 H.264 無容器時間戳，copy 模式下 muxer
- * 報 "Timestamps are unset"；重編碼讓編碼器生成正確 PTS/DTS。
- * 直播流分片只有視頻軌道，無音頻，因此禁用音頻處理。
+ * 策略變更(v2.0.55)：放棄 HLS，改用 MPEG-TS。
+ * - HLS 需要關鍵幀對齊才能切分，而 Telegram chunk 拼接的裸 H.264 在關鍵幀上天然不穩定，
+ *   導致 v2.0.53-54 反復失敗。
+ * - MPEG-TS 是連續流，無切分需求，對時間戳更寬容，容錯性更強。
+ * - 前端用 mpegts.js 播放，這是成熟的开源库，API 与 hls.js 類似。
  */
 function spawnFfmpeg(outputDir) {
-  const playlistPath = path.join(outputDir, "stream.m3u8");
-  const segmentPattern = path.join(outputDir, "seg_%04d.ts");
+  const streamPath = path.join(outputDir, "stream.ts");
 
   const args = [
     "-y",
     // ★ 輸入容錯：裸 H.264 管道輸入可能因 POC 不連續、NAL 邊界錯位等原因出現"損壞"封包，
-    //    默認行為是解碼器停止輸出（frame 停滯）。+discardcorrupt + ignore_err 讓解碼器跳過
-    //    異常封包繼續工作，這在 Telegram chunk 拼接場景下至關重要。
+    //    默認行為是解碼器停止輸出。+discardcorrupt + ignore_err 讓解碼器跳過異常封包繼續工作。
     "-fflags", "+genpts+nobuffer+discardcorrupt",
     "-flags", "low_delay",
     "-err_detect", "ignore_err",
     // ★ 輸入：裸 H.264 Annex B 位流（無容器、封包不帶 PTS/DTS）。
-    //    縮小 probing 開銷，讓 ffmpeg 在第一個 chunk(~3s)後即完成探測開始輸出。
-    "-analyzeduration", "1000000",  // 1 秒（μs），默認 5s → 慢速 pipe 下需 30s 才完成探測
-    "-probesize", "50000",          // 50KB，默認 5MB；第一個 chunk ~50KB 即可滿足探測
-    "-f", "h264",             // 輸入格式：原始 H.264 Annex B 位流
+    //    縮小 probing 開銷，讓 ffmpeg 在第一個 chunk 後即完成探測開始輸出。
+    "-analyzeduration", "1000000",
+    "-probesize", "50000",
+    "-f", "h264",
     "-i", "pipe:0",
-    // ★ 輸出：重編碼（不再 copy）。
-    //    copy 模式在裸 H.264 管道輸入下不可行：此 FFmpeg 版本(Lavf61)的 h264 raw demuxer
-    //    不為封包生成 PTS/DTS。mpegts/hls muxer 因此報 "Timestamps are unset"。
-    //    重編碼讓 libx264 編碼器自行生成正確單調的 PTS/DTS，徹底解決時間戳問題。
-    //    720p25 + ultrafast 在 ARM64 NEON 上約 10-20% 佔用，可接受。
+    // ★ 輸出：重編碼（libx264）+ MPEG-TS 容器。
+    //    MPEG-TS 對時間戳更寬容，不需要關鍵幀切分，比 HLS 更適合裸流拼接場景。
+    //    ultrafast + zerolatency 在 ARM64 NEON 上約 10-20% 佔用，可接受。
     "-c:v", "libx264",
-    "-preset", "ultrafast",   // 比 veryfast 延遲更低，第一個分片更快就緒
+    "-preset", "ultrafast",
     "-tune", "zerolatency",
-    // ★ 關鍵幀控制：用 -x264opts 傳遞，避免被 -preset 覆蓋（v2.0.53 日誌顯示 keyint_min=26
-    //    而非設定的 50，就是 veryfast preset 覆蓋所致）。強制每秒一個 IDR，確保 HLS muxer
-    //    在 1 秒內即可切分出第一個分片，前端無需長時間等待。
-    "-x264opts", "keyint=25:keyint_min=25:rc-lookahead=0:bframes=0:scenecut=0",
-    "-force_key_frames", "expr:gte(t,n_forced*1)",  // 額外保險：每秒強制 IDR
-    "-r", "25",               // 輸出 25fps，強制編碼器按此速率打時間戳
-    "-pix_fmt", "yuv420p",    // 確保播放器兼容
-    "-an",                    // 無音頻（直播流分片只有視頻）
-    "-f", "hls",
-    "-hls_time", String(SEGMENT_DURATION),
-    "-hls_init_time", "0.5",  // 初始分片 0.5 秒，第一個分片更快就緒
-    "-hls_list_size", String(WINDOW_SIZE),
-    "-hls_flags", "delete_segments+append_list+omit_endlist",
-    "-hls_segment_filename", segmentPattern,
-    "-hls_segment_type", "mpegts",
-    playlistPath
+    "-r", "25",
+    "-pix_fmt", "yuv420p",
+    "-an",
+    // ★ MPEG-TS 輸出
+    "-f", "mpegts",
+    "-mpegts_service_type", "digital_tv",
+    "-mpegts_pmt_start_pid", "0x1000",
+    "-mpegts_start_pid", "0x0100",
+    "-use_wallclock_as_timestamps", "1",  // 用牆鐘時間戳，解決裸流無 PTS 問題
+    streamPath
   ];
 
   const ffmpeg = spawn("ffmpeg", args, { stdio: ["pipe", "pipe", "pipe"] });
@@ -729,7 +719,7 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
   const relay = {
     sessionId,
     outputDir,
-    playlistPath: path.join(outputDir, "stream.m3u8"),
+    streamPath: path.join(outputDir, "stream.ts"),  // v2.0.55: HLS → MPEG-TS
     ffmpeg: null,
     startedAt: Date.now(),
     lastViewerAt: Date.now(),
@@ -844,15 +834,14 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
             if (relay.chunkCount <= 3 || relay.chunkCount % 10 === 0) {
               console.log(`[liveStreamRelay] Wrote ${h264Data.length} bytes H.264 to ffmpeg stdin (total=${relay.bytesWritten}, chunk #${relay.chunkCount})`);
             }
-            // 檢查 playlist / 分片是否已生成（延長到 chunk #30，因重編碼第一個分片可能需 3-5 秒）
-            if (relay.chunkCount <= 30 && !relay._playlistLogged) {
-              if (fs.existsSync(relay.playlistPath)) {
-                relay._playlistLogged = true;
-                console.log(`[liveStreamRelay] HLS playlist created! (stream.m3u8 ready after chunk #${relay.chunkCount})`);
+            // 檢查 stream.ts 是否已生成（延長到 chunk #30）
+            if (relay.chunkCount <= 30 && !relay._streamLogged) {
+              if (fs.existsSync(relay.streamPath)) {
+                relay._streamLogged = true;
+                console.log(`[liveStreamRelay] MPEG-TS stream created! (stream.ts ready after chunk #${relay.chunkCount})`);
               } else if (relay.chunkCount >= 10 && relay.chunkCount % 5 === 0) {
-                // chunk #10,15,20,25,30 仍未見 playlist，打印診斷
-                const segs = fs.readdirSync(relay.outputDir).filter((f) => f.endsWith(".ts"));
-                console.log(`[liveStreamRelay] playlist NOT ready after chunk #${relay.chunkCount}, segments so far: ${segs.length} (${segs.join(", ") || "none"})`);
+                const files = fs.readdirSync(relay.outputDir).filter((f) => f.endsWith(".ts"));
+                console.log(`[liveStreamRelay] stream NOT ready after chunk #${relay.chunkCount}, files: ${files.join(", ") || "none"}`);
               }
             }
           } catch (writeErr) {
@@ -981,7 +970,7 @@ function listActiveRelays() {
     errorMessage: r.errorMessage,
     startedAt: r.startedAt,
     chunkCount: r.chunkCount,
-    playlistReady: fs.existsSync(r.playlistPath)
+    streamReady: fs.existsSync(r.streamPath)
   }));
 }
 
@@ -997,7 +986,7 @@ function getRelayStatus(sessionId) {
     errorMessage: relay.errorMessage,
     startedAt: relay.startedAt,
     chunkCount: relay.chunkCount,
-    ready: fs.existsSync(relay.playlistPath)
+    ready: fs.existsSync(relay.streamPath)
   };
 }
 
@@ -1007,7 +996,7 @@ function getRelayStatus(sessionId) {
 async function isPlaylistReady(sessionId) {
   const relay = activeRelays.get(sessionId);
   if (!relay) return false;
-  return fs.existsSync(relay.playlistPath);
+  return fs.existsSync(relay.streamPath);
 }
 
 /**

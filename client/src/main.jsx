@@ -31,7 +31,7 @@ import {
   Video,
   X
 } from "lucide-react";
-import Hls from "hls.js";
+import mpegts from "mpegts.js";
 import { api, appLogin, getToken, setToken as saveToken } from "./api";
 import "./styles/app.css";
 
@@ -1137,7 +1137,7 @@ function LiveStreamViewer({ open, accountId, chat, onClose, onSetToast }) {
   const pollRef = useRef(null);
   const heartbeatRef = useRef(null);
   const videoRef = useRef(null);
-  const hlsRef = useRef(null);
+  const mpegtsRef = useRef(null);
 
   // 獲取直播通話信息
   useEffect(() => {
@@ -1192,7 +1192,7 @@ function LiveStreamViewer({ open, accountId, chat, onClose, onSetToast }) {
             }
             if (status?.ready) {
               setRelayStatus("ready");
-              startHlsPlayback(result.sessionId);
+              startMpegtsPlayback(result.sessionId);
               return true;
             }
           } catch {}
@@ -1217,62 +1217,45 @@ function LiveStreamViewer({ open, accountId, chat, onClose, onSetToast }) {
     }
   };
 
-  // 使用 HLS.js 播放
-  const startHlsPlayback = (sid) => {
+  // 使用 mpegts.js 播放（v2.0.55: 从 HLS 切换到 MPEG-TS）
+  const startMpegtsPlayback = (sid) => {
     const video = videoRef.current;
     if (!video) return;
 
-    const playlistUrl = `/api/live-stream/${sid}/stream.m3u8`;
+    const streamUrl = `/api/live-stream/${sid}/stream.ts`;
 
-    // 清理舊的 HLS 實例
-    if (hlsRef.current) {
-      hlsRef.current.destroy();
-      hlsRef.current = null;
+    // 清理舊的 mpegts 實例
+    if (mpegtsRef.current) {
+      mpegtsRef.current.destroy();
+      mpegtsRef.current = null;
     }
 
-    if (video.canPlayType("application/vnd.apple.mpegurl")) {
-      // Safari 原生支持 HLS
-      video.src = playlistUrl;
-      video.addEventListener("loadedmetadata", () => {
-        video.play().catch(() => {});
-        setRelayStatus("playing");
-      });
-    } else if (Hls.isSupported()) {
-      const hls = new Hls({
-        liveDurationInfinity: true,
-        liveBackBufferLength: 0,
-        maxBufferLength: 10,
-        maxMaxBufferLength: 20,
+    if (mpegts.getFeatureList().mseLivePlayback) {
+      const player = mpegts.createPlayer({
+        type: "mpegts",
+        isLive: true,
+        url: streamUrl
+      }, {
         enableWorker: true,
-        lowLatencyMode: true
+        lazyLoad: false,
+        lazyLoadMaxDuration: 3 * 60,
+        lazyLoadRecoverDuration: 30,
+        deferLoadAfterSourceOpen: false
       });
-      hlsRef.current = hls;
-      hls.loadSource(playlistUrl);
-      hls.attachMedia(video);
-      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+      mpegtsRef.current = player;
+      player.attachMediaElement(video);
+      player.load();
+      player.on(mpegts.Events.LOADING_COMPLETE, () => {
         video.play().catch(() => {});
         setRelayStatus("playing");
       });
-      hls.on(Hls.Events.ERROR, (_event, data) => {
-        if (data.fatal) {
-          switch (data.type) {
-            case Hls.ErrorTypes.NETWORK_ERROR:
-              hls.startLoad();
-              break;
-            case Hls.ErrorTypes.MEDIA_ERROR:
-              hls.recoverMediaError();
-              break;
-            default:
-              setRelayStatus("error");
-              setError("視頻播放錯誤，請刷新重試");
-              hls.destroy();
-              break;
-          }
-        }
+      player.on(mpegts.Events.ERROR, (_errorType, _errorDetail, _errorInfo) => {
+        setRelayStatus("error");
+        setError("視頻播放錯誤，請刷新重試");
       });
     } else {
       setRelayStatus("error");
-      setError("當前瀏覽器不支持 HLS 播放");
+      setError("當前瀏覽器不支持 MPEG-TS 播放");
     }
   };
 
@@ -1292,9 +1275,9 @@ function LiveStreamViewer({ open, accountId, chat, onClose, onSetToast }) {
   // 關閉時清理
   useEffect(() => {
     if (!open) {
-      if (hlsRef.current) {
-        hlsRef.current.destroy();
-        hlsRef.current = null;
+      if (mpegtsRef.current) {
+        mpegtsRef.current.destroy();
+        mpegtsRef.current = null;
       }
       if (sessionId) {
         api(`/api/live-stream/${sessionId}/stop`, { method: "POST" }).catch(() => {});
