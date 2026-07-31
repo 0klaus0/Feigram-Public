@@ -15,6 +15,21 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.54",
+    title: "Fngram 2.0.54 更新",
+    version: "2.0.54",
+    level: "success",
+    createdAt: "2026-07-31T15:45:00.000Z",
+    body: [
+      "修復直播流 HLS 仍無法播放：v2.0.53 開始重編碼後 ffmpeg 輸出 frame=3 即停滯，HLS 分片始終不生成。",
+      "根因：-keyint_min 50 被 -preset veryfast 覆蓋為 26，關鍵幀間隔不穩定導致 HLS muxer 無法切分；同時 Telegram chunk 拼接時 POC 不連續可能讓解碼器停止輸出。",
+      "改用 -x264opts 傳遞參數避免 preset 覆蓋（keyint=25:keyint_min=25），並每秒強制 IDR（-force_key_frames），確保 1 秒內即可切分出第一個分片。",
+      "增加輸入容錯（-fflags +discardcorrupt -err_detect ignore_err），讓解碼器跳過異常封包繼續工作。",
+      "加大 GetFile limit 至 512KB（原 128KB），讓每個 chunk 包含更多幀，減少請求次數。",
+      "延長 playlist 檢測至 chunk #30，並在 stderr 中保留 HLS 分片創建與進度輸出，方便診斷。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.53",
     title: "Fngram 2.0.53 更新",
     version: "2.0.53",

@@ -39,7 +39,7 @@ const DISCONNECT_WAIT_MS = 8000; // 連接斷開後等待 GramJS 重連的時間
 // 直播流分片下載常量（來自 TGTV 參考實現 / 官方客戶端）
 const SEGMENT_DURATION_MS = 1000; // 1 秒分片
 const SEGMENT_BUFFER_MS = 2000; // 時間戳緩衝 2 秒
-const GET_FILE_LIMIT = 128 * 1024; // 128KB（官方客戶端使用的值）
+const GET_FILE_LIMIT = 512 * 1024; // 512KB（原 128KB 在 720p 下不足 1 秒，加大以減少請求次數並讓每個 chunk 包含更多幀）
 const STREAM_SCALE = 0; // scale=0 對應 1 秒分片
 const VIDEO_QUALITY_FULL = 2; // 最高質量
 
@@ -461,8 +461,12 @@ function spawnFfmpeg(outputDir) {
 
   const args = [
     "-y",
-    "-fflags", "+genpts+nobuffer",
+    // ★ 輸入容錯：裸 H.264 管道輸入可能因 POC 不連續、NAL 邊界錯位等原因出現"損壞"封包，
+    //    默認行為是解碼器停止輸出（frame 停滯）。+discardcorrupt + ignore_err 讓解碼器跳過
+    //    異常封包繼續工作，這在 Telegram chunk 拼接場景下至關重要。
+    "-fflags", "+genpts+nobuffer+discardcorrupt",
     "-flags", "low_delay",
+    "-err_detect", "ignore_err",
     // ★ 輸入：裸 H.264 Annex B 位流（無容器、封包不帶 PTS/DTS）。
     //    縮小 probing 開銷，讓 ffmpeg 在第一個 chunk(~3s)後即完成探測開始輸出。
     "-analyzeduration", "1000000",  // 1 秒（μs），默認 5s → 慢速 pipe 下需 30s 才完成探測
@@ -470,23 +474,24 @@ function spawnFfmpeg(outputDir) {
     "-f", "h264",             // 輸入格式：原始 H.264 Annex B 位流
     "-i", "pipe:0",
     // ★ 輸出：重編碼（不再 copy）。
-    //    copy 模式在裸 H.264 管道下不可行：此 FFmpeg 版本(Lavf61)的 h264 raw demuxer
-    //    不為封包生成 PTS/DTS（-framerate 僅設置元數據不打戳，-use_wallclock 會造成
-    //    DTS 跳變與錯誤幀率）。mpegts/hls muxer 因此報 "Timestamps are unset" /
-    //    "Invalid data found when processing input"。
+    //    copy 模式在裸 H.264 管道輸入下不可行：此 FFmpeg 版本(Lavf61)的 h264 raw demuxer
+    //    不為封包生成 PTS/DTS。mpegts/hls muxer 因此報 "Timestamps are unset"。
     //    重編碼讓 libx264 編碼器自行生成正確單調的 PTS/DTS，徹底解決時間戳問題。
-    //    720p25 + veryfast 在現代 NAS CPU 上約 10-20% 佔用，可接受。
+    //    720p25 + ultrafast 在 ARM64 NEON 上約 10-20% 佔用，可接受。
     "-c:v", "libx264",
-    "-preset", "veryfast",
+    "-preset", "ultrafast",   // 比 veryfast 延遲更低，第一個分片更快就緒
     "-tune", "zerolatency",
-    "-g", "50",               // 關鍵幀間隔 2 秒（25fps × 2），對齊 HLS 分片邊界
-    "-keyint_min", "50",
-    "-sc_threshold", "0",     // 禁用場景切換關鍵幀，保證分片邊界穩定
+    // ★ 關鍵幀控制：用 -x264opts 傳遞，避免被 -preset 覆蓋（v2.0.53 日誌顯示 keyint_min=26
+    //    而非設定的 50，就是 veryfast preset 覆蓋所致）。強制每秒一個 IDR，確保 HLS muxer
+    //    在 1 秒內即可切分出第一個分片，前端無需長時間等待。
+    "-x264opts", "keyint=25:keyint_min=25:rc-lookahead=0:bframes=0:scenecut=0",
+    "-force_key_frames", "expr:gte(t,n_forced*1)",  // 額外保險：每秒強制 IDR
     "-r", "25",               // 輸出 25fps，強制編碼器按此速率打時間戳
     "-pix_fmt", "yuv420p",    // 確保播放器兼容
     "-an",                    // 無音頻（直播流分片只有視頻）
     "-f", "hls",
     "-hls_time", String(SEGMENT_DURATION),
+    "-hls_init_time", "0.5",  // 初始分片 0.5 秒，第一個分片更快就緒
     "-hls_list_size", String(WINDOW_SIZE),
     "-hls_flags", "delete_segments+append_list+omit_endlist",
     "-hls_segment_filename", segmentPattern,
@@ -505,8 +510,9 @@ function spawnFfmpeg(outputDir) {
     for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed) continue;
-      // 前 30 行全部記錄（方便診斷），之後只記錄錯誤/警告
-      if (stderrLineCount < 30 || /error|warning|invalid|failed|no such|cannot/i.test(trimmed)) {
+      // 前 30 行全部記錄（方便診斷），之後只記錄錯誤/警告 / HLS 分片創建 / 關鍵進度
+      const isImportant = /error|warning|invalid|failed|no such|cannot|conversion|opening.*\.ts|opening.*\.m3u8|frame=.*fps|size=.*time|speed=/i.test(trimmed);
+      if (stderrLineCount < 30 || isImportant) {
         console.log(`[ffmpeg] ${trimmed}`);
       }
       stderrLineCount++;
@@ -838,11 +844,15 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
             if (relay.chunkCount <= 3 || relay.chunkCount % 10 === 0) {
               console.log(`[liveStreamRelay] Wrote ${h264Data.length} bytes H.264 to ffmpeg stdin (total=${relay.bytesWritten}, chunk #${relay.chunkCount})`);
             }
-            // 檢查 playlist 是否已生成
-            if (relay.chunkCount <= 5 && !relay._playlistLogged) {
+            // 檢查 playlist / 分片是否已生成（延長到 chunk #30，因重編碼第一個分片可能需 3-5 秒）
+            if (relay.chunkCount <= 30 && !relay._playlistLogged) {
               if (fs.existsSync(relay.playlistPath)) {
                 relay._playlistLogged = true;
                 console.log(`[liveStreamRelay] HLS playlist created! (stream.m3u8 ready after chunk #${relay.chunkCount})`);
+              } else if (relay.chunkCount >= 10 && relay.chunkCount % 5 === 0) {
+                // chunk #10,15,20,25,30 仍未見 playlist，打印診斷
+                const segs = fs.readdirSync(relay.outputDir).filter((f) => f.endsWith(".ts"));
+                console.log(`[liveStreamRelay] playlist NOT ready after chunk #${relay.chunkCount}, segments so far: ${segs.length} (${segs.join(", ") || "none"})`);
               }
             }
           } catch (writeErr) {
