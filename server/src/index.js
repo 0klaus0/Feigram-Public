@@ -352,7 +352,7 @@ app.post("/api/live-stream/:account/:peer/start", asyncRoute(async (req, res) =>
   res.json({
     sessionId,
     status: relay.status,
-    streamUrl: `/api/live-stream/${sessionId}/stream.ts`,  // v2.0.55: HLS → MPEG-TS
+    streamUrl: `/api/live-stream/${sessionId}/stream.m3u8`,
     callInfo
   });
 }));
@@ -383,7 +383,7 @@ app.post("/api/live-stream/:sessionId/stop", asyncRoute(async (req, res) => {
   res.json({ ok: true });
 }));
 
-// HLS 文件服務（m3u8 和 ts 分片）
+// HLS 文件服務（m3u8 播放列表和 ts 分片）
 app.get("/api/live-stream/:sessionId/:filename", asyncRoute(async (req, res) => {
   const { sessionId, filename } = req.params;
 
@@ -398,13 +398,17 @@ app.get("/api/live-stream/:sessionId/:filename", asyncRoute(async (req, res) => 
 
   const filePath = liveRelay.getHlsFilePath(sessionId, filename);
   if (!await fs.pathExists(filePath)) {
-    // 如果 stream.ts 還沒準備好，返回 503 讓前端重試
+    // 如果播放列表還沒準備好，返回 503 讓前端重試
     res.status(503).setHeader("Retry-After", "1").json({ error: "直播流正在準備中，請稍候" });
     return;
   }
 
   if (filename.endsWith(".ts")) {
     res.setHeader("Content-Type", "video/mp2t");
+    res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    res.setHeader("Access-Control-Allow-Origin", "*");
+  } else if (filename.endsWith(".m3u8")) {
+    res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
     res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
     res.setHeader("Access-Control-Allow-Origin", "*");
   } else {

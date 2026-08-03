@@ -1131,13 +1131,14 @@ function LiveStreamViewer({ open, accountId, chat, onClose, onSetToast }) {
   const [callInfo, setCallInfo] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [relayStatus, setRelayStatus] = useState("idle"); // idle, starting, ready, playing, error
+const [relayStatus, setRelayStatus] = useState("idle"); // idle, starting, ready, playing, error
   const [sessionId, setSessionId] = useState(null);
   const [copied, setCopied] = useState(false);
   const pollRef = useRef(null);
   const heartbeatRef = useRef(null);
   const videoRef = useRef(null);
   const mpegtsRef = useRef(null);
+  const playerRef = useRef(null);
 
   // 獲取直播通話信息
   useEffect(() => {
@@ -1217,12 +1218,12 @@ function LiveStreamViewer({ open, accountId, chat, onClose, onSetToast }) {
     }
   };
 
-  // 使用 mpegts.js 播放（v2.0.55: 从 HLS 切换到 MPEG-TS）
+// 使用 HLS 播放（v2.0.56: HLS 播放列表）
   const startMpegtsPlayback = (sid) => {
     const video = videoRef.current;
     if (!video) return;
 
-    const streamUrl = `/api/live-stream/${sid}/stream.ts`;
+    const streamUrl = `/api/live-stream/${sid}/stream.m3u8`;
 
     // 清理舊的 mpegts 實例
     if (mpegtsRef.current) {
@@ -1230,9 +1231,10 @@ function LiveStreamViewer({ open, accountId, chat, onClose, onSetToast }) {
       mpegtsRef.current = null;
     }
 
+    // 嘗試使用 mpegts.js 的 HLS 支持（兼容性更好）
     if (mpegts.getFeatureList().mseLivePlayback) {
       const player = mpegts.createPlayer({
-        type: "mpegts",
+        type: "m3u8",
         isLive: true,
         url: streamUrl
       }, {
@@ -1254,8 +1256,16 @@ function LiveStreamViewer({ open, accountId, chat, onClose, onSetToast }) {
         setError("視頻播放錯誤，請刷新重試");
       });
     } else {
-      setRelayStatus("error");
-      setError("當前瀏覽器不支持 MPEG-TS 播放");
+      // 降級：嘗試原生 HLS
+      if (video.canPlayType("application/vnd.apple.mpegurl")) {
+        video.src = streamUrl;
+        video.play().catch(() => {});
+        playerRef.current = video;
+        setRelayStatus("playing");
+      } else {
+        setRelayStatus("error");
+        setError("當前瀏覽器不支持 HLS 播放");
+      }
     }
   };
 
@@ -1272,12 +1282,17 @@ function LiveStreamViewer({ open, accountId, chat, onClose, onSetToast }) {
     };
   }, [sessionId]);
 
-  // 關閉時清理
+// 關閉時清理
   useEffect(() => {
     if (!open) {
       if (mpegtsRef.current) {
         mpegtsRef.current.destroy();
         mpegtsRef.current = null;
+      }
+      if (playerRef.current) {
+        playerRef.current.pause();
+        playerRef.current.src = "";
+        playerRef.current = null;
       }
       if (sessionId) {
         api(`/api/live-stream/${sessionId}/stop`, { method: "POST" }).catch(() => {});

@@ -28,4 +28,35 @@ if [ ! -x "${TARGET}" ]; then
   chmod +x "${TARGET}"
 fi
 
+# Install ffmpeg for live stream transcoding
+echo "Installing ffmpeg for live stream support..."
+if command -v apt-get >/dev/null 2>&1; then
+  # Debian/Ubuntu based systems (including fnOS)
+  apt-get update >/dev/null 2>&1
+  apt-get install -y ffmpeg >/dev/null 2>&1
+  echo "ffmpeg installed successfully"
+elif command -v apk >/dev/null 2>&1; then
+  # Alpine Linux
+  apk add --no-cache ffmpeg >/dev/null 2>&1
+  echo "ffmpeg installed successfully"
+elif command -v yum >/dev/null 2>&1; then
+  # RHEL/CentOS/Fedora
+  yum install -y ffmpeg >/dev/null 2>&1
+  echo "ffmpeg installed successfully"
+else
+  echo "Warning: Could not auto-install ffmpeg. Please install ffmpeg manually."
+  echo "On Debian/Ubuntu: apt-get install ffmpeg"
+  echo "On Alpine: apk add ffmpeg"
+  echo "On RHEL/CentOS: yum install ffmpeg"
+fi
+
+# Check ffmpeg availability and show encoder info
+if command -v ffmpeg >/dev/null 2>&1; then
+  echo "ffmpeg version: $(ffmpeg -version | head -n1)"
+  echo "Available video encoders:"
+  ffmpeg -hide_banner -encoders | grep -E "h264_(v4l2m2m|omx|vaapi)" || echo "No hardware encoders found, will use libx264 (software)"
+else
+  echo "Error: ffmpeg not found after installation attempt"
+fi
+
 rm -rf "${TMP_DIR}"

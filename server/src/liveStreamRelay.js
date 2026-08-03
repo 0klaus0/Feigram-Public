@@ -447,47 +447,103 @@ async function downloadStreamChunk(client, inputCall, timeMs, videoChannel, stre
 }
 
 /**
- * 啟動 ffmpeg 進程，將 H.264 Annex B 位流轉為 MPEG-TS 輸出
+ * 啟動 ffmpeg 進程，將 H.264 Annex B 位流轉為 HLS 輸出
  *
- * 策略變更(v2.0.55)：放棄 HLS，改用 MPEG-TS。
- * - HLS 需要關鍵幀對齊才能切分，而 Telegram chunk 拼接的裸 H.264 在關鍵幀上天然不穩定，
- *   導致 v2.0.53-54 反復失敗。
- * - MPEG-TS 是連續流，無切分需求，對時間戳更寬容，容錯性更強。
- * - 前端用 mpegts.js 播放，這是成熟的开源库，API 与 hls.js 類似。
+ * 策略 (v2.0.56+)：
+ * - 輸出 HLS (.m3u8 + .ts segments) 而非 MPEG-TS
+ * - HLS 配合 -g 關鍵幀間隔精確對齊分片邊界，解決 copy 模式 PTS/DTS 缺失問題
+ * - libx264 重編碼生成正確單調 PTS/DTS，配合 -g 50 (2秒@25fps) 強制關鍵幀
+ * - 硬件編碼器自動檢測：h264_v4l2m2m (ARM64) > h264_omx (Pi) > h264_vaapi (Intel) > libx264
+ * - 縮小 probing：analyzeduration 500ms + probesize 32KB，首個 chunk 後即可探測完成
+ * - 移除 -use_wallclock_as_timestamps (導致 DTS 跳變)，改用 ffmpeg 內部 PTS 生成
+ * - HLS flags: delete_segments+append_list+program_date_time+omit_endlist
  */
 function spawnFfmpeg(outputDir) {
-  const streamPath = path.join(outputDir, "stream.ts");
+  const hlsPath = path.join(outputDir, "stream.m3u8");
+  const segmentPattern = path.join(outputDir, "segment_%03d.ts");
+
+  // === 硬件編碼器檢測 ===
+  let cachedEncoder = null;
+  function detectEncoder() {
+    if (cachedEncoder) return cachedEncoder;
+    const candidates = [
+      { name: "h264_v4l2m2m", device: "/dev/video10" },    // ARM64 (Rockchip/Allwinner/Sunxi)
+      { name: "h264_omx", device: null },                   // Raspberry Pi / Broadcom
+      { name: "h264_vaapi", device: "/dev/dri/renderD128" }, // Intel/AMD VAAPI
+      { name: "libx264", device: null }                     // 軟編碼兜底
+    ];
+    for (const enc of candidates) {
+      if (enc.device && !fs.existsSync(enc.device)) continue;
+      try {
+        const out = execFileSync("ffmpeg", ["-hide_banner", "-encoders"], { encoding: "utf8", timeout: 3000 });
+        if (out.includes(enc.name)) {
+          cachedEncoder = enc.name;
+          console.log(`[liveStreamRelay] Hardware encoder detected: ${cachedEncoder}`);
+          return cachedEncoder;
+        }
+      } catch {}
+    }
+    cachedEncoder = "libx264";
+    console.log(`[liveStreamRelay] Using software encoder: ${cachedEncoder}`);
+    return cachedEncoder;
+  }
+
+  const encoder = detectEncoder();
+  const isHardware = encoder !== "libx264";
 
   const args = [
     "-y",
-    // ★ 輸入容錯：裸 H.264 管道輸入可能因 POC 不連續、NAL 邊界錯位等原因出現"損壞"封包，
-    //    默認行為是解碼器停止輸出。+discardcorrupt + ignore_err 讓解碼器跳過異常封包繼續工作。
+    // 輸入容錯：裸 H.264 管道可能有 POC 不連續、NAL 邊界錯位
     "-fflags", "+genpts+nobuffer+discardcorrupt",
     "-flags", "low_delay",
     "-err_detect", "ignore_err",
-    // ★ 輸入：裸 H.264 Annex B 位流（無容器、封包不帶 PTS/DTS）。
-    //    縮小 probing 開銷，讓 ffmpeg 在第一個 chunk 後即完成探測開始輸出。
-    "-analyzeduration", "1000000",
-    "-probesize", "50000",
+    // 縮小 probing：raw H.264 只需 SPS/PPS 即可確定格式
+    "-analyzeduration", "500000",
+    "-probesize", "32768",
     "-f", "h264",
     "-i", "pipe:0",
-    // ★ 輸出：重編碼（libx264）+ MPEG-TS 容器。
-    //    MPEG-TS 對時間戳更寬容，不需要關鍵幀切分，比 HLS 更適合裸流拼接場景。
-    //    ultrafast + zerolatency 在 ARM64 NEON 上約 10-20% 佔用，可接受。
-    "-c:v", "libx264",
-    "-preset", "ultrafast",
-    "-tune", "zerolatency",
-    "-r", "25",
-    "-pix_fmt", "yuv420p",
-    "-an",
-    // ★ MPEG-TS 輸出
-    "-f", "mpegts",
-    "-mpegts_service_type", "digital_tv",
-    "-mpegts_pmt_start_pid", "0x1000",
-    "-mpegts_start_pid", "0x0100",
-    "-use_wallclock_as_timestamps", "1",  // 用牆鐘時間戳，解決裸流無 PTS 問題
-    streamPath
   ];
+
+  if (isHardware) {
+    // 硬件編碼路徑
+    args.push(
+      "-c:v", encoder,
+      "-b:v", "2000k",
+      "-maxrate", "2500k",
+      "-bufsize", "4000k",
+      "-g", "50",           // 關鍵幀間隔 50 幀 = 2 秒 @ 25fps，對齊 HLS 分片
+      "-keyint_min", "50",
+      "-sc_threshold", "0", // 禁用場景切換檢測，強制固定 GOP
+      "-pix_fmt", "yuv420p"
+    );
+  } else {
+    // 軟編碼兜底
+    args.push(
+      "-c:v", "libx264",
+      "-preset", "veryfast",
+      "-tune", "zerolatency",
+      "-profile:v", "baseline",
+      "-level", "3.1",
+      "-r", "25",
+      "-g", "50",
+      "-keyint_min", "50",
+      "-sc_threshold", "0",
+      "-pix_fmt", "yuv420p"
+    );
+  }
+
+  // HLS 輸出
+  args.push(
+    "-an",  // 無音頻（Telegram 直播流通常無音頻，或單獨處理）
+    "-f", "hls",
+    "-hls_time", "2",                    // 2 秒分片，匹配 GOP
+    "-hls_list_size", "6",               // 保留 6 個分片 = 12 秒窗口
+    "-hls_flags", "delete_segments+append_list+program_date_time+omit_endlist",
+    "-hls_segment_type", "mpegts",
+    "-hls_segment_filename", segmentPattern,
+    "-use_wallclock_as_timestamps", "0", // 關鍵：關閉牆鐘時間戳，避免 DTS 跳變
+    hlsPath
+  );
 
   const ffmpeg = spawn("ffmpeg", args, { stdio: ["pipe", "pipe", "pipe"] });
 
@@ -500,7 +556,7 @@ function spawnFfmpeg(outputDir) {
     for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed) continue;
-      // 前 30 行全部記錄（方便診斷），之後只記錄錯誤/警告 / HLS 分片創建 / 關鍵進度
+      // 前 30 行全部記錄，之後只記錄錯誤/警告 / HLS 分片創建 / 關鍵進度
       const isImportant = /error|warning|invalid|failed|no such|cannot|conversion|opening.*\.ts|opening.*\.m3u8|frame=.*fps|size=.*time|speed=/i.test(trimmed);
       if (stderrLineCount < 30 || isImportant) {
         console.log(`[ffmpeg] ${trimmed}`);
@@ -517,8 +573,8 @@ function spawnFfmpeg(outputDir) {
     }
   });
 
-  return { ffmpeg };
-}
+  return { ffmpeg, hlsPath };
+}
 
 /**
  * 獲取直播流的 InputGroupCall 對象
@@ -716,16 +772,16 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
   let consecutiveFailures = 0;
   let consecutiveFloodWaits = 0;
 
-  const relay = {
+const relay = {
     sessionId,
     outputDir,
-    streamPath: path.join(outputDir, "stream.ts"),  // v2.0.55: HLS → MPEG-TS
+    hlsPath: null,  // v2.0.56: HLS 播放列表路徑
     ffmpeg: null,
     startedAt: Date.now(),
     lastViewerAt: Date.now(),
-    lastChunkAt: 0, // 最後成功下載 chunk 的時間（用於僵死檢測）
+    lastChunkAt: 0,
     chunkCount: 0,
-    bytesWritten: 0, // 寫入 ffmpeg 的總字節數
+    bytesWritten: 0,
     status: "starting",
     errorMessage: null,
     stop: async () => {
@@ -750,10 +806,11 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
 
   activeRelays.set(sessionId, relay);
 
-  // 啟動 ffmpeg（直接從 stdin 讀取 H.264 數據，不再使用 tail 中間件）
-  console.log("[liveStreamRelay] Spawning ffmpeg (direct stdin mode)...");
-  const { ffmpeg } = spawnFfmpeg(outputDir);
-  relay.ffmpeg = ffmpeg;
+// 啟動 ffmpeg（直接從 stdin 讀取 H.264 數據，輸出 HLS）
+  console.log("[liveStreamRelay] Spawning ffmpeg (HLS mode)...");
+  const { ffmpeg, hlsPath } = spawnFfmpeg(outputDir);
+  relay.ffmpeg = ffmpeg;
+  relay.hlsPath = hlsPath;
 
   // ★ 關鍵：處理 ffmpeg stdin 的 EPIPE 錯誤，防止服務器崩潰
   relay.ffmpeg.stdin.on("error", (err) => {
@@ -834,14 +891,14 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
             if (relay.chunkCount <= 3 || relay.chunkCount % 10 === 0) {
               console.log(`[liveStreamRelay] Wrote ${h264Data.length} bytes H.264 to ffmpeg stdin (total=${relay.bytesWritten}, chunk #${relay.chunkCount})`);
             }
-            // 檢查 stream.ts 是否已生成（延長到 chunk #30）
+// 檢查 HLS 播放列表是否已生成（延長到 chunk #30）
             if (relay.chunkCount <= 30 && !relay._streamLogged) {
-              if (fs.existsSync(relay.streamPath)) {
+              if (fs.existsSync(relay.hlsPath)) {
                 relay._streamLogged = true;
-                console.log(`[liveStreamRelay] MPEG-TS stream created! (stream.ts ready after chunk #${relay.chunkCount})`);
+                console.log(`[liveStreamRelay] HLS playlist created! (stream.m3u8 ready after chunk #${relay.chunkCount})`);
               } else if (relay.chunkCount >= 10 && relay.chunkCount % 5 === 0) {
-                const files = fs.readdirSync(relay.outputDir).filter((f) => f.endsWith(".ts"));
-                console.log(`[liveStreamRelay] stream NOT ready after chunk #${relay.chunkCount}, files: ${files.join(", ") || "none"}`);
+                const files = fs.readdirSync(relay.outputDir).filter((f) => f.endsWith(".ts") || f.endsWith(".m3u8"));
+                console.log(`[liveStreamRelay] HLS NOT ready after chunk #${relay.chunkCount}, files: ${files.join(", ") || "none"}`);
               }
             }
           } catch (writeErr) {
@@ -970,7 +1027,7 @@ function listActiveRelays() {
     errorMessage: r.errorMessage,
     startedAt: r.startedAt,
     chunkCount: r.chunkCount,
-    streamReady: fs.existsSync(r.streamPath)
+    streamReady: fs.existsSync(r.hlsPath)
   }));
 }
 
@@ -986,7 +1043,7 @@ function getRelayStatus(sessionId) {
     errorMessage: relay.errorMessage,
     startedAt: relay.startedAt,
     chunkCount: relay.chunkCount,
-    ready: fs.existsSync(relay.streamPath)
+    ready: fs.existsSync(relay.hlsPath)
   };
 }
 
@@ -996,7 +1053,7 @@ function getRelayStatus(sessionId) {
 async function isPlaylistReady(sessionId) {
   const relay = activeRelays.get(sessionId);
   if (!relay) return false;
-  return fs.existsSync(relay.streamPath);
+  return fs.existsSync(relay.hlsPath);
 }
 
 /**
