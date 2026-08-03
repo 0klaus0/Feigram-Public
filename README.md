@@ -4,7 +4,7 @@ Fngram 2.0 fnOS Client Edition 是基于 Feigram-Public 二次开发的非官方
 
 > 感谢原项目 [Feigram-Public (g-star1024)](https://github.com/g-star1024/Feigram-Public) 提供的优秀基础。
 
-- Fngram 仓库：<https://github.com/0klaus0/Feigram-Public>
+- Fngram 仓库：<https://github.com/0klaus0/fngram>
 - 原项目仓库：<https://github.com/g-star1024/Feigram-Public>
 
 ## 功能特性

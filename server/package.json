@@ -1,19 +1,20 @@
 {
-  "name": "feigrame-server",
-  "private": true,
+  "name": "fngram-server",
   "version": "0.1.0",
-  "type": "commonjs",
+  "description": "Fngram server for fnOS",
+  "main": "src/index.js",
   "scripts": {
-    "dev": "node --watch src/index.js",
+    "dev": "node src/index.js",
     "start": "node src/index.js"
   },
   "dependencies": {
+    "express": "^4.21.0",
     "cors": "^2.8.5",
-    "dotenv": "^16.4.7",
-    "express": "^4.21.2",
+    "dotenv": "^16.4.5",
     "fs-extra": "^11.2.0",
     "mime-types": "^2.1.35",
-    "socket.io": "^4.8.1",
-    "telegram": "^2.26.22"
+    "socket.io": "^4.7.5",
+    "gramweb": "npm:@gramjs/telegram@^3.0.0"
   }
+}
 }

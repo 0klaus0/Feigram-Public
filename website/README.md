@@ -4,7 +4,7 @@
 
 ## Cloudflare Pages
 
-1. 新建 Pages 项目并连接 `0klaus0/Feigram-Public`。
+1. 新建 Pages 项目并连接 `0klaus0/fngram`。
 2. Build command 留空。
 3. Build output directory 填 `website`。
 4. 绑定自定义域名。

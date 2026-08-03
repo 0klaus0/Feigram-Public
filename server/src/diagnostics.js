@@ -71,7 +71,7 @@ async function diagnostics() {
 
 async function checkForUpdates() {
   const current = process.env.APP_VERSION || "dev";
-  const endpoint = "https://api.github.com/repos/0klaus0/Feigram-Public/releases/latest";
+  const endpoint = "https://api.github.com/repos/0klaus0/fngram/releases/latest";
   try {
     const response = await fetch(endpoint, {
       headers: {
@@ -86,7 +86,7 @@ async function checkForUpdates() {
     return {
       current,
       latest: latestVersion,
-      url: latest.html_url || "https://github.com/0klaus0/Feigram-Public/releases",
+      url: latest.html_url || "https://github.com/0klaus0/fngram/releases",
       updateAvailable: Boolean(latestVersion && latestVersion !== current),
       fpkDownloadUrl: fpkAsset?.browser_download_url || null,
       fpkName: fpkAsset?.name || null,
@@ -96,7 +96,7 @@ async function checkForUpdates() {
   } catch (error) {
     // Fallback: try parsing the releases HTML page for the latest version
     try {
-      const htmlResponse = await fetch("https://github.com/0klaus0/Feigram-Public/releases/latest", {
+      const htmlResponse = await fetch("https://github.com/0klaus0/fngram/releases/latest", {
         headers: { "User-Agent": "Fngram" },
         redirect: "follow"
       });
@@ -124,7 +124,7 @@ async function checkForUpdates() {
     return {
       current,
       latest: "",
-      url: "https://github.com/0klaus0/Feigram-Public/releases",
+      url: "https://github.com/0klaus0/fngram/releases",
       updateAvailable: false,
       error: error.message
     };

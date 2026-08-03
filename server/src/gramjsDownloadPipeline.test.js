@@ -25,9 +25,9 @@ test("background downloads reuse the account's single GramJS auth-key owner", ()
 test("native package does not start or build the removed Go sidecar", () => {
   const command = fs.readFileSync(path.join(root, "fnos-native-package/cmd/main"), "utf8");
   const build = fs.readFileSync(path.join(root, "scripts/build-native-fpk.sh"), "utf8");
-  assert.doesNotMatch(command, /nohup .*feigram-downloader|FEIGRAM_DOWNLOADER_URL/);
+  assert.doesNotMatch(command, /nohup .*fngram-downloader|FNGRAM_DOWNLOADER_URL/);
   assert.doesNotMatch(build, /prepare-go-downloader/);
-  assert.match(build, /rm -f .*feigram-downloader/);
+  assert.match(build, /rm -f .*fngram-downloader/);
 });
 
 test("admin UI no longer exposes Go downloader controls", () => {

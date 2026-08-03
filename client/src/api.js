@@ -1,9 +1,9 @@
 export function getToken() {
-  return localStorage.getItem("feigrame.token") || "";
+  return localStorage.getItem("fngram.token") || "";
 }
 
 export function setToken(token) {
-  localStorage.setItem("feigrame.token", token);
+  localStorage.setItem("fngram.token", token);
 }
 
 export async function api(path, options = {}) {

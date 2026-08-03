@@ -999,8 +999,8 @@ async function loadSavedClients(io) {
 }
 
 function registerUpdates(io, accountId, client) {
-  if (client.__feigrameUpdatesRegistered) return;
-  client.__feigrameUpdatesRegistered = true;
+  if (client.__fngramUpdatesRegistered) return;
+  client.__fngramUpdatesRegistered = true;
   client.addEventHandler((event) => {
     const message = event.message;
     if (!message) return;

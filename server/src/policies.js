@@ -5,7 +5,7 @@ const defaults = {
   privacyPolicyUrl: process.env.PRIVACY_POLICY_URL || "",
   termsUrl: process.env.TERMS_URL || "",
   publisherName: process.env.PUBLISHER_NAME || "0klaus0",
-  releaseUrl: process.env.RELEASE_URL || "https://github.com/0klaus0/Feigram-Public"
+  releaseUrl: process.env.RELEASE_URL || "https://github.com/0klaus0/fngram"
 };
 
 async function readPolicies() {

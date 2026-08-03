@@ -2,9 +2,9 @@ const about = {
   title: "关于 Fngram",
   publisherName: "0klaus0",
   supportEmail: "",
-  releaseUrl: "https://github.com/0klaus0/Feigram-Public",
-  privacyPolicyUrl: "https://github.com/0klaus0/Feigram-Public/blob/main/docs/privacy-policy.md",
-  termsUrl: "https://github.com/0klaus0/Feigram-Public/blob/main/docs/terms-of-service.md",
+  releaseUrl: "https://github.com/0klaus0/fngram",
+  privacyPolicyUrl: "https://github.com/0klaus0/fngram/blob/main/docs/privacy-policy.md",
+  termsUrl: "https://github.com/0klaus0/fngram/blob/main/docs/terms-of-service.md",
   body: [
     "Fngram 是基于 Feigram-Public 二次开发的非官方 Telegram 客户端，仅适用于飞牛 OS / fnOS。",
     "Fngram 不隶属于 Telegram、Telegram Messenger Inc. 或飞牛官方。",

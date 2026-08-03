@@ -1540,7 +1540,7 @@ function App() {
   useGlobalButtonFeedback();
   const [token, setTokenState] = useState(getToken());
   const [me, setMe] = useState(null);
-  const [theme, setTheme] = useState(localStorage.getItem("feigrame.theme") || "dark");
+  const [theme, setTheme] = useState(localStorage.getItem("fngram.theme") || "dark");
   const [accounts, setAccounts] = useState([]);
   const [accountId, setAccountId] = useState("");
   const [chats, setChats] = useState([]);
@@ -1580,7 +1580,7 @@ function App() {
   const [chatDetails, setChatDetails] = useState(null);
   const [chatDetailsLoading, setChatDetailsLoading] = useState(false);
   const [chatMediaLoadingMore, setChatMediaLoadingMore] = useState(false);
-  const [autoCacheChats, setAutoCacheChats] = useState(() => JSON.parse(localStorage.getItem("feigrame.autoCacheChats") || "{}"));
+  const [autoCacheChats, setAutoCacheChats] = useState(() => JSON.parse(localStorage.getItem("fngram.autoCacheChats") || "{}"));
   const [autoCacheBusy, setAutoCacheBusy] = useState(false);
   const [mediaViewer, setMediaViewer] = useState(null);
   const [liveViewerOpen, setLiveViewerOpen] = useState(false);
@@ -1597,7 +1597,7 @@ function App() {
   const [highlightMessageId, setHighlightMessageId] = useState(0);
   const activeAccount = accounts.find((account) => account.id === accountId);
   const newestAnnouncementId = announcements[0]?.id || "";
-  const unreadAnnouncement = newestAnnouncementId && localStorage.getItem("feigrame.lastAnnouncement") !== newestAnnouncementId;
+  const unreadAnnouncement = newestAnnouncementId && localStorage.getItem("fngram.lastAnnouncement") !== newestAnnouncementId;
   const messageItems = useMemo(() => buildMessageItems(messages), [messages]);
   const visibleChats = useMemo(() => {
     const folder = folders.find((item) => String(item.id) === String(activeFolder));
@@ -1632,7 +1632,7 @@ function App() {
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
-    localStorage.setItem("feigrame.theme", theme);
+    localStorage.setItem("fngram.theme", theme);
   }, [theme]);
 
   useEffect(() => {
@@ -1959,7 +1959,7 @@ function App() {
     const next = { ...autoCacheChats, [key]: enabled };
     if (!enabled) delete next[key];
     setAutoCacheChats(next);
-    localStorage.setItem("feigrame.autoCacheChats", JSON.stringify(next));
+    localStorage.setItem("fngram.autoCacheChats", JSON.stringify(next));
     if (!enabled) return;
     setAutoCacheBusy(true);
     try {
@@ -2113,7 +2113,7 @@ function App() {
     if ("Notification" in window && Notification.permission !== "granted") {
       setNotifications(await Notification.requestPermission() === "granted");
     }
-    if (newestAnnouncementId) localStorage.setItem("feigrame.lastAnnouncement", newestAnnouncementId);
+    if (newestAnnouncementId) localStorage.setItem("fngram.lastAnnouncement", newestAnnouncementId);
     setAnnouncementOpen(true);
   }
 

@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VERSION="${VERSION:-0.1.1}"
-PKG_NAME="feigram-${VERSION}"
+PKG_NAME="fngram-${VERSION}"
 RELEASE_DIR="${ROOT_DIR}/release"
 WORK_DIR="${RELEASE_DIR}/${PKG_NAME}"
 PACKAGE_SRC="${ROOT_DIR}/fnos-package"

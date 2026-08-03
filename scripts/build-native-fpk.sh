@@ -26,7 +26,7 @@ npm --prefix "${WORK_DIR}/app/server" ci --omit=dev
 
 find "${WORK_DIR}" -name ".DS_Store" -delete
 find "${WORK_DIR}/cmd" -type f -exec chmod +x {} \;
-rm -f "${WORK_DIR}/app/bin/feigram-downloader"
+rm -f "${WORK_DIR}/app/bin/fngram-downloader"
 chmod +x "${WORK_DIR}/app/ui/proxy.cgi" "${WORK_DIR}/app/bin/node"
 
 (
