@@ -112,8 +112,12 @@ jobs:
           echo "Environment CI: $CI"
           echo "Environment NODE_OPTIONS: $NODE_OPTIONS"
           ls -la client/
-          echo "Attempting build..."
-          cd client && CI=false npm run build 2>&1
+          echo "Checking if node_modules exists in client:"
+          ls -la client/node_modules/ 2>/dev/null || echo "node_modules not found in client"
+          echo "Checking if vite is available:"
+          cd client && npx vite --version 2>&1 || echo "vite not found via npx"
+          echo "Attempting build with NODE_OPTIONS..."
+          cd client && NODE_OPTIONS="--max-old-space-size=4096" CI=false npm run build 2>&1
           echo "Client build completed"
 
       - name: Prepare server public
