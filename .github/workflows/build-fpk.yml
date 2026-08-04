@@ -54,17 +54,20 @@ jobs:
           ls -la "${{ github.workspace }}/client/"
           
           echo "Checking if vite is available..."
-          cd "${{ github.workspace }}/client" && npx vite --version
+          cd "${{ github.workspace }}/client" && npx vite --version || echo "Vite not found, trying npm"
           
           echo "Checking node_modules..."
           if [ -d "${{ github.workspace }}/client/node_modules" ]; then
-            echo "node_modules exists, checking vite..."
-            ls -la "${{ github.workspace }}/client/node_modules/" | grep vite
+            echo "node_modules exists, checking vite installation..."
+            ls -la "${{ github.workspace }}/client/node_modules/" | grep -i vite || echo "Vite not explicitly found in node_modules listing"
           else
-            echo "node_modules does not exist!"
+            echo "node_modules does not exist - this is unexpected!"
           fi
           
-          echo "=== Starting actual build ==="
+          echo "=== Installing frontend dependencies if needed ==="
+          cd "${{ github.workspace }}/client" && npm install
+          
+          echo="=== Starting actual build ==="
           cd "${{ github.workspace }}/client" && npm run build 2>&1
           echo "=== Build completed ==="
 
