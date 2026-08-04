@@ -119,33 +119,37 @@ jobs:
           echo "Attempting build with NODE_OPTIONS..."
           cd client && NODE_OPTIONS="--max-old-space-size=4096" CI=false npm run build 2>&1
           echo "Client build completed"
-          ls -la dist/ 2>&1 || echo "dist directory not found"
+          echo "Checking if dist directory exists after build:"
+          ls -la dist/ 2>&1 || { echo "ERROR: dist directory not found after build"; exit 1; }
+          echo "dist directory exists"
 
-- name: Prepare server public
+      - name: Prepare server public
         run: |
+          set -euo pipefail
           echo "Preparing server public directory..."
           echo "Current directory: $(pwd)"
           echo "Listing all directories:"
           ls -la
           echo "Checking if client/dist exists:"
-          ls -la client/dist/ 2>&1 || echo "dist directory not found in client/"
-          echo "Checking if ${{ github.workspace }}/client/dist exists:"
-          ls -la "${{ github.workspace }}/client/dist/" 2>&1 || echo "dist directory not found in workspace/client/"
-          echo "Checking if ${{ github.workspace }}/client exists:"
-          ls -la "${{ github.workspace }}/client/" 2>&1 || echo "client directory not found"
-          rm -rf "${{ github.workspace }}/server/public"
-          echo "Copying dist to server/public..."
-          cp -R "${{ github.workspace }}/client/dist" "${{ github.workspace }}/server/public"
+          if [ ! -d "client/dist" ]; then
+            echo "ERROR: client/dist does not exist"
+            exit 1
+          fi
+          echo "client/dist exists"
+          echo "Removing old server/public..."
+          rm -rf server/public
+          echo "Copying client/dist to server/public..."
+          cp -r client/dist server/public
           echo "Server public directory prepared"
-          ls -la "${{ github.workspace }}/server/public/"
+          ls -la server/public/
 
       - name: Package FPK
         env:
           PLATFORM: ${{ matrix.platform }}
           VERSION: ${{ github.ref_name }}
         run: |
-          echo "Packaging FPK for ${PLATFORM}..."
           set -euo pipefail
+          echo "Packaging FPK for ${PLATFORM}..."
           ROOT_DIR="${{ github.workspace }}"
           PKG_NAME="fngram-${{ github.ref_name }}-${PLATFORM}"
           RELEASE_DIR="${ROOT_DIR}/release"
@@ -166,7 +170,7 @@ jobs:
           find "${WORK_DIR}" -name ".DS_Store" -delete
           find "${WORK_DIR}/cmd" -type f -exec chmod +x {} \;
           rm -f "${WORK_DIR}/app/bin/fngram-downloader"
-          chmod +x "${WORK_DIR}/app/ui/proxy.cgi" "${WORK_DIR}/app/bin/node"
+          chmod +x "${WORK_DIR}/app/bin/node"
 
           (
             cd "${WORK_DIR}"
@@ -204,6 +208,6 @@ jobs:
             1. 下载下方 .fpk 文件
             2. 在 fnOS 应用中心上传安装
             3. 或在 Fngram 管理后台「运行诊断」中一键下载更新
-          files: release/*.fpk
+          files: release*.fpk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
