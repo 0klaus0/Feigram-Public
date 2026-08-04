@@ -31,7 +31,11 @@ jobs:
         run: npm --prefix client ci
 
       - name: Install server dependencies
-        run: npm --prefix server ci
+        run: |
+          echo "=== Debug: listing server directory ==="
+          ls -la server/
+          echo "=== Running npm install in server ==="
+          cd server && npm install --verbose 2>&1 | tail -50
 
       - name: Set up QEMU for ARM64
         uses: docker/setup-qemu-action@v3
