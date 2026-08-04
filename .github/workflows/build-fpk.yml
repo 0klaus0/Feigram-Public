@@ -36,7 +36,10 @@ jobs:
         run: npm --prefix client ci
 
       - name: Install server dependencies
-        run: npm --prefix server ci
+        run: |
+          echo "Node: $(node --version), npm: $(npm --version)"
+          echo "Installing server dependencies..."
+          npm --prefix server install --no-audit --no-fund 2>&1
 
       - name: Build FPK (x86_64)
         env:
