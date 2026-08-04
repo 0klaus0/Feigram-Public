@@ -39,10 +39,10 @@ jobs:
           echo "PWD: $(pwd)"
           echo "Directory listing:"
           ls -la
-          echo "Server directory:"
-          ls -la server/
-          echo "Server package.json:"
-          cat server/package.json
+          echo "Server directory exists: $([ -d server ] && echo YES || echo NO)"
+          echo "Server directory contents:"
+          ls -la server/ 2>&1 || echo "server dir not found"
+          echo "Server package.json exists: $([ -f server/package.json ] && echo YES || echo NO)"
           echo "Starting installation..."
           npm --prefix server install --no-audit --no-fund 2>&1
 
