@@ -21,21 +21,17 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Install ffmpeg
+      -name: Install ffmpeg
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
           ffmpeg -version
 
       - name: Install client dependencies
-        run: npm --prefix client install
+        run: npm --prefix client ci
 
       - name: Install server dependencies
-        run: |
-          echo "=== Debug: listing server directory ==="
-          ls -la server/
-          echo "=== Running npm install in server ==="
-          cd server && npm install --verbose 2>&1 | tail -50
+        run: npm --prefix server ci
 
       - name: Set up QEMU for ARM64
         uses: docker/setup-qemu-action@v3
@@ -46,51 +42,37 @@ jobs:
         env:
           TARGET_ARCH: arm64
         run: |
-          echo "=== Downloading Node.js ARM64 binary ==="
           "${{ github.workspace }}/scripts/prepare-native-runtime.sh"
-          echo "=== Verifying Node.js binary ==="
-          ls -la "${{ github.workspace }}/fnos-native-package/app/bin/node"
-          "${{ github.workspace }}/fnos-native-package/app/bin/node" --version
+          echo "Node.js version: $("${{ github.workspace }}/fnos-native-package/app/bin/node" --version)"
 
       - name: Build client
         run: |
-          echo "=== Building client ==="
-          echo "Working dir: $(pwd)"
-          echo "Client dir: ${{ github.workspace }}/client"
-          ls -la "${{ github.workspace }}/client/"
-          ls -la "${{ github.workspace }}/client/package.json"
-          echo "Node version: $(node --version)"
-          echo "NPM version: $(npm --version)"
-          cd "${{ github.workspace }}/client" && npx vite build 2>&1
-          echo "=== Client build completed ==="
+          echo "Building client..."
+          cd "${{ github.workspace }}/client" && npm run build
+          echo "Client build done"
 
       - name: Prepare server public
         run: |
-          echo "=== Preparing server public ==="
           rm -rf "${{ github.workspace }}/server/public"
           cp -R "${{ github.workspace }}/client/dist" "${{ github.workspace }}/server/public"
-          ls -la "${{ github.workspace }}/server/public/"
 
       - name: Package FPK (ARM64)
         env:
           VERSION: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          echo "=== Packaging FPK ==="
           ROOT_DIR="${{ github.workspace }}"
           PKG_NAME="fngram-${{ github.ref_name }}-arm64"
           RELEASE_DIR="${ROOT_DIR}/release"
           WORK_DIR="${RELEASE_DIR}/${PKG_NAME}"
           PACKAGE_SRC="${ROOT_DIR}/fnos-native-package"
 
-          # Prepare work directory
           rm -rf "${WORK_DIR}" "${RELEASE_DIR}/${PKG_NAME}.fpk"
           mkdir -p "${WORK_DIR}"
           cp -R "${PACKAGE_SRC}/." "${WORK_DIR}/"
           rm -rf "${WORK_DIR}/app/server"
           mkdir -p "${WORK_DIR}/app/server"
 
-          # Copy server source and pre-installed node_modules
           cp "${ROOT_DIR}/server/package.json" "${WORK_DIR}/app/server/"
           cp -R "${ROOT_DIR}/server/src" "${ROOT_DIR}/server/public" "${WORK_DIR}/app/server/"
           cp -R "${ROOT_DIR}/server/node_modules" "${WORK_DIR}/app/server/"
@@ -114,7 +96,6 @@ jobs:
           )
 
           ls -lh "${RELEASE_DIR}/${PKG_NAME}.fpk"
-          echo "=== FPK packaged successfully ==="
 
       - name: Upload FPK artifact
         uses: actions/upload-artifact@v4
