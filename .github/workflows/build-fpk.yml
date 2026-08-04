@@ -50,7 +50,9 @@ jobs:
       - name: Build client
         run: |
           echo "=== Building client ==="
-          npm --prefix "${{ github.workspace }}/client" run build
+          ls -la "${{ github.workspace }}/client/"
+          ls -la "${{ github.workspace }}/client/package.json"
+          cd "${{ github.workspace }}/client" && npm run build 2>&1
           echo "=== Client build completed ==="
 
       - name: Prepare server public
