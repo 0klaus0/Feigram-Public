@@ -31,20 +31,17 @@ jobs:
       - name: Install client dependencies
         run: npm --prefix client ci
 
-      - name: Install server dependencies
+      - name: Debug environment
         run: |
-          echo "=== DEBUG INFO ==="
-          echo "Node: $(node --version)"
-          echo "npm: $(npm --version)"
+          echo "=== ENV DEBUG ==="
+          echo "PATH: $PATH"
+          which node
+          which npm
+          node --version
+          npm --version
           echo "PWD: $(pwd)"
-          echo "Directory listing:"
           ls -la
-          echo "Server directory exists: $([ -d server ] && echo YES || echo NO)"
-          echo "Server directory contents:"
-          ls -la server/ 2>&1 || echo "server dir not found"
-          echo "Server package.json exists: $([ -f server/package.json ] && echo YES || echo NO)"
-          echo "Starting installation..."
-          npm --prefix server install --no-audit --no-fund 2>&1
+          echo "Server dir: $([ -d server ] && echo EXISTS || echo MISSING)"
 
       - name: Build FPK (x86_64)
         env:
