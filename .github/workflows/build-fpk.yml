@@ -46,30 +46,13 @@ jobs:
 
 - name: Build client
         run: |
-          echo "=== Pre-build checks ==="
-          echo "Node version: $(node --version)"
-          echo "NPM version: $(npm --version)"
-          echo "Current directory: $(pwd)"
-          echo "Checking client directory..."
-          ls -la "${{ github.workspace }}/client/"
+          echo "Installing client dependencies with npm ci..."
+          cd "${{ github.workspace }}/client" && npm ci
+          echo "Client dependencies installed"
           
-          echo "Checking if vite is available..."
-          cd "${{ github.workspace }}/client" && npx vite --version || echo "Vite not found, trying npm"
-          
-          echo "Checking node_modules..."
-          if [ -d "${{ github.workspace }}/client/node_modules" ]; then
-            echo "node_modules exists, checking vite installation..."
-            ls -la "${{ github.workspace }}/client/node_modules/" | grep -i vite || echo "Vite not explicitly found in node_modules listing"
-          else
-            echo "node_modules does not exist - this is unexpected!"
-          fi
-          
-          echo "=== Installing frontend dependencies if needed ==="
-          cd "${{ github.workspace }}/client" && npm install
-          
-          echo="=== Starting actual build ==="
-          cd "${{ github.workspace }}/client" && npm run build 2>&1
-          echo "=== Build completed ==="
+          echo "Building client..."
+          cd "${{ github.workspace }}/client" && npm run build
+          echo "Client build completed"
 
       - name: Prepare server public
         run: |
