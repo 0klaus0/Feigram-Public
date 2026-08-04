@@ -50,20 +50,9 @@ jobs:
 
       - name: Build client
         run: |
-          echo "=== Client build debug ==="
-          echo "Node version: $(node --version)"
-          echo "NPM version: $(npm --version)"
-          echo "Current directory: $(pwd)"
-          echo "Client directory: ${{ github.workspace }}/client"
-          echo "Environment variables:"
-          env | grep -E "(NODE|VITE|CI|GITHUB)" || true
-          echo "Listing client directory:"
-          ls -la "${{ github.workspace }}/client/"
-          echo "Checking if node_modules exists in client:"
-          ls -la "${{ github.workspace }}/client/node_modules" 2>/dev/null || echo "node_modules not found in client"
-          echo "Attempting build with increased memory and verbose output..."
-          cd "${{ github.workspace }}/client" && NODE_OPTIONS="--max-old-space-size=4096" npm run build --verbose 2>&1
-          echo "=== Client build completed ==="
+          echo "Building client with npx vite..."
+          cd "${{ github.workspace }}/client" && npx vite build
+          echo "Client build completed"
 
       - name: Prepare server public
         run: |
