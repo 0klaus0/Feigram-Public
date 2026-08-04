@@ -16,11 +16,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
       - name: Install ffmpeg
         run: |
           sudo apt-get update
@@ -29,43 +24,41 @@ jobs:
 
       - name: Install client dependencies
         run: |
-          echo "Installing client dependencies..."
+          echo "Installing client dependencies with npm ci..."
           cd "${{ github.workspace }}/client" && npm ci
-          echo "Client dependencies installed successfully"
+          echo "Client dependencies installed"
 
       - name: Install server dependencies
         run: |
-          echo "Installing server dependencies..."
-          cd "${{ github.workspace }}/server" && npm ci
-          echo "Server dependencies installed successfully"
+          echo "=== Debug: listing server directory ==="
+          ls -la server/
+          echo "=== Running npm ci in server ==="
+          cd server && npm ci
+          echo "Server dependencies installed"
 
-      - name: Download Node.js binary
+      - name: Download Node.js x64 binary
         env:
           TARGET_ARCH: x64
         run: |
-          echo "Downloading Node.js binary..."
           "${{ github.workspace }}/scripts/prepare-native-runtime.sh"
           echo "Node.js version: $("${{ github.workspace }}/fnos-native-package/app/bin/node" --version)"
 
       - name: Build client
         run: |
-          echo "Starting client build..."
-          cd "${{ github.workspace }}/client" && npm run build
-          echo "Client build completed successfully"
+          echo "Building client with npx vite..."
+          cd "${{ github.workspace }}/client" && npx vite build
+          echo "Client build completed"
 
       - name: Prepare server public
         run: |
-          echo "Preparing server public directory..."
           rm -rf "${{ github.workspace }}/server/public"
           cp -R "${{ github.workspace }}/client/dist" "${{ github.workspace }}/server/public"
-          echo "Server public directory prepared"
 
       - name: Package FPK (x86_64)
         env:
           VERSION: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          echo "Packaging FPK..."
           ROOT_DIR="${{ github.workspace }}"
           PKG_NAME="fngram-${{ github.ref_name }}-x64"
           RELEASE_DIR="${ROOT_DIR}/release"
@@ -100,7 +93,6 @@ jobs:
             tar -czf "${RELEASE_DIR}/${PKG_NAME}.fpk" *
           )
 
-          echo "FPK package created successfully"
           ls -lh "${RELEASE_DIR}/${PKG_NAME}.fpk"
 
       - name: Upload FPK artifact
