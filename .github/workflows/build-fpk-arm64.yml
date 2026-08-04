@@ -21,7 +21,7 @@ jobs:
         with:
           node-version: "22"
 
-      -name: Install ffmpeg
+      - name: Install ffmpeg
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
@@ -37,11 +37,9 @@ jobs:
         run: |
           echo "=== Debug: listing server directory ==="
           ls -la server/
-          echo "=== Running npm install in server ==="
+          echo "=== Running npm ci in server ==="
           cd server && npm ci
           echo "Server dependencies installed"
-          echo "=== Running npm install in server ==="
-          cd server && npm install --verbose 2>&1 | tail -50
 
       - name: Set up QEMU for ARM64
         uses: docker/setup-qemu-action@v3
@@ -57,10 +55,6 @@ jobs:
 
       - name: Build client
         run: |
-          echo "Installing client dependencies with npm ci..."
-          cd "${{ github.workspace }}/client" && npm ci
-          echo "Client dependencies installed"
-          
           echo "Building client..."
           cd "${{ github.workspace }}/client" && npm run build
           echo "Client build completed"
