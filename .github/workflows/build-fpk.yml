@@ -52,6 +52,11 @@ jobs:
           # Prepare runtime (downloads Node.js x64 binary)
           "${ROOT_DIR}/scripts/prepare-native-runtime.sh"
 
+          # Verify Node.js binary
+          echo "=== Verifying Node.js binary ==="
+          ls -la "${ROOT_DIR}/fnos-native-package/app/bin/node"
+          "${ROOT_DIR}/fnos-native-package/app/bin/node" --version
+
           # Build client
           npm --prefix "${ROOT_DIR}/client" run build
           rm -rf "${ROOT_DIR}/server/public"
