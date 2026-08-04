@@ -32,7 +32,10 @@ jobs:
 
       - name: Install server dependencies
         run: |
-          cd server && npm install
+          echo "=== Debug: listing server directory ==="
+          ls -la server/
+          echo "=== Running npm install in server ==="
+          cd server && npm install --verbose 2>&1 | tail -50
 
       - name: Build FPK (x86_64)
         env:
