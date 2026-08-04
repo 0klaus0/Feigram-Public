@@ -33,7 +33,7 @@ jobs:
       - name: Install server dependencies
         run: |
           echo "Installing server dependencies..."
-          npm --prefix server install --prefer-offline 2>&1 || npm --prefix server install 2>&1
+          npm --prefix server install
 
       - name: Build FPK (x86_64)
         env:
