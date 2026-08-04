@@ -31,7 +31,8 @@ jobs:
         run: npm --prefix client install
 
       - name: Install server dependencies
-        run: npm --prefix server install
+        run: |
+          cd server && npm install
 
       - name: Set up QEMU for ARM64
         uses: docker/setup-qemu-action@v3

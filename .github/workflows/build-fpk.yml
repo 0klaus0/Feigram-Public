@@ -31,7 +31,8 @@ jobs:
         run: npm --prefix client install
 
       - name: Install server dependencies
-        run: npm --prefix server install
+        run: |
+          cd server && npm install
 
       - name: Build FPK (x86_64)
         env:
