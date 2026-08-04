@@ -28,7 +28,7 @@ jobs:
           ffmpeg -version
 
       - name: Install client dependencies
-        run: npm --prefix client ci
+        run: npm --prefix client install
 
       - name: Install server dependencies
         run: |
