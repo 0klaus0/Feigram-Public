@@ -22,7 +22,11 @@ mkdir -p "${WORK_DIR}/app/server"
 cp "${ROOT_DIR}/server/package.json" "${ROOT_DIR}/server/package-lock.json" "${WORK_DIR}/app/server/"
 cp -R "${ROOT_DIR}/server/src" "${ROOT_DIR}/server/public" "${WORK_DIR}/app/server/"
 rm -rf "${WORK_DIR}/app/server/src/downloader"
-npm --prefix "${WORK_DIR}/app/server" ci --omit=dev
+
+# Skip npm ci if node_modules already exists (pre-installed in CI)
+if [ ! -d "${WORK_DIR}/app/server/node_modules" ]; then
+  npm --prefix "${WORK_DIR}/app/server" ci --omit=dev
+fi
 
 find "${WORK_DIR}" -name ".DS_Store" -delete
 find "${WORK_DIR}/cmd" -type f -exec chmod +x {} \;

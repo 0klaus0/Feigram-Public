@@ -31,7 +31,9 @@ jobs:
         run: npm --prefix client ci
 
       - name: Install server dependencies
-        run: npm --prefix server ci
+        run: |
+          echo "Installing server dependencies..."
+          npm --prefix server install --prefer-offline 2>&1 || npm --prefix server install 2>&1
 
       - name: Build FPK (x86_64)
         env:
