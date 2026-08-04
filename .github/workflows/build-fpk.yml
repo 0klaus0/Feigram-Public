@@ -120,7 +120,8 @@ jobs:
           cd client && NODE_OPTIONS="--max-old-space-size=4096" CI=false npm run build 2>&1
           echo "Client build completed"
           echo "Checking if dist directory exists after build:"
-          ls -la dist/ 2>&1 || { echo "ERROR: dist directory not found after build"; exit 1; }
+          cd "${{ github.workspace }}"
+          ls -la client/dist/ 2>&1 || { echo "ERROR: dist directory not found after build"; exit 1; }
           echo "dist directory exists"
 
       - name: Prepare server public
