@@ -31,7 +31,7 @@ jobs:
       - name: Install client dependencies
         run: npm --prefix client ci
 
-      - name: Install server dependencies
+- name: Install server dependencies
         run: |
           echo "=== DEBUG INFO ==="
           echo "Node: $(node --version)"
@@ -39,12 +39,14 @@ jobs:
           echo "PWD: $(pwd)"
           echo "Directory listing:"
           ls -la
-          echo "Server directory:"
-          ls -la server/
-          echo "Server package.json:"
-          cat server/package.json
-          echo "Starting installation..."
-          npm --prefix server install --no-audit --no-fund 2>&1
+          echo "Server directory exists: $([ -d server ] && echo YES || echo NO)"
+          echo "Server directory contents:"
+          ls -la server/ 2>&1 || echo "server dir not found"
+          echo "Server package.json exists: $([ -f server/package.json ] && echo YES || echo NO)"
+          echo "Testing npm command..."
+          npm --version
+          echo "Running: cd server && npm install --no-audit --no-fund"
+          cd server && npm install --no-audit --no-fund 2>&1
 
       - name: Set up QEMU for ARM64
         uses: docker/setup-qemu-action@v3
