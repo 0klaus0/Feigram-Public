@@ -32,8 +32,10 @@ jobs:
 
       - name: Install server dependencies
         run: |
+          echo "Node version: $(node --version)"
+          echo "npm version: $(npm --version)"
           echo "Installing server dependencies..."
-          npm --prefix server install
+          npm --prefix server install --no-audit --no-fund --verbose 2>&1 | tail -50
 
       - name: Set up QEMU for ARM64
         uses: docker/setup-qemu-action@v3

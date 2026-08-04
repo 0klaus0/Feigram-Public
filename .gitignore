@@ -11,3 +11,4 @@ fnos-native-package/app/bin/node
 fnos-native-package/app/bin/fngram-downloader
 fnos-native-package/app/bin/ffmpeg
 fnos-native-package/app/bin/ffprobe
+server/node_modules
