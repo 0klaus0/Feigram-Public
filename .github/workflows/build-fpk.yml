@@ -33,11 +33,17 @@ jobs:
 
       - name: Install server dependencies
         run: |
-          echo "Node: $(node --version), npm: $(npm --version)"
+          echo "=== DEBUG INFO ==="
+          echo "Node: $(node --version)"
+          echo "npm: $(npm --version)"
           echo "PWD: $(pwd)"
-          echo "Files: $(ls -la)"
-          echo "Server dir: $(ls -la server/)"
-          echo "Installing server dependencies..."
+          echo "Directory listing:"
+          ls -la
+          echo "Server directory:"
+          ls -la server/
+          echo "Server package.json:"
+          cat server/package.json
+          echo "Starting installation..."
           npm --prefix server install --no-audit --no-fund 2>&1
 
       - name: Build FPK (x86_64)
