@@ -38,6 +38,9 @@ jobs:
           echo "=== Debug: listing server directory ==="
           ls -la server/
           echo "=== Running npm install in server ==="
+          cd server && npm ci
+          echo "Server dependencies installed"
+          echo "=== Running npm install in server ==="
           cd server && npm install --verbose 2>&1 | tail -50
 
       - name: Download Node.js x64 binary
