@@ -44,25 +44,29 @@ jobs:
           "${{ github.workspace }}/scripts/prepare-native-runtime.sh"
           echo "Node.js version: $("${{ github.workspace }}/fnos-native-package/app/bin/node" --version)"
 
-      - name: Build client
+- name: Build client
         run: |
-          echo "=== Client build debug info ==="
-          echo "Working directory: $(pwd)"
+          echo "=== Pre-build checks ==="
           echo "Node version: $(node --version)"
           echo "NPM version: $(npm --version)"
-          echo "Current directory contents: $(ls -la)"
-          echo "Client directory: ${{ github.workspace }}/client"
-          echo "Client directory contents:"
+          echo "Current directory: $(pwd)"
+          echo "Checking client directory..."
           ls -la "${{ github.workspace }}/client/"
-          echo "Client package.json:"
-          cat "${{ github.workspace }}/client/package.json"
-          echo "Client node_modules exists: $([ -d "${{ github.workspace }}/client/node_modules" ] && echo 'yes' || echo 'no')"
+          
+          echo "Checking if vite is available..."
+          cd "${{ github.workspace }}/client" && npx vite --version
+          
+          echo "Checking node_modules..."
           if [ -d "${{ github.workspace }}/client/node_modules" ]; then
-            echo "Client node_modules content count: $(ls -la "${{ github.workspace }}/client/node_modules/" | wc -l)"
+            echo "node_modules exists, checking vite..."
+            ls -la "${{ github.workspace }}/client/node_modules/" | grep vite
+          else
+            echo "node_modules does not exist!"
           fi
-          echo "Starting Vite build with max_old_space_size=4096..."
-          NODE_OPTIONS="--max-old-space-size=4096" cd "${{ github.workspace }}/client" && npm run build 2>&1
-          echo "=== Client build completed ==="
+          
+          echo "=== Starting actual build ==="
+          cd "${{ github.workspace }}/client" && npm run build 2>&1
+          echo "=== Build completed ==="
 
       - name: Prepare server public
         run: |
