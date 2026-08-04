@@ -15,91 +15,62 @@ else
   ARCH_LABEL="x86_64"
 fi
 
-URL="https://nodejs.org/dist/v${NODE_VERSION}/${ARCHIVE}"
-# 备用下载源
-MIRROR_URL="https://npmmirror.com/mirrors/node/v${NODE_VERSION}/${ARCHIVE}"
+# 官方源 + 鏡像源
+URLS=(
+  "https://nodejs.org/dist/v${NODE_VERSION}/${ARCHIVE}"
+  "https://npmmirror.com/mirrors/node/v${NODE_VERSION}/${ARCHIVE}"
+  "https://mirrors.tuna.tsinghua.edu.cn/nodejs-release/v${NODE_VERSION}/${ARCHIVE}"
+)
 
 mkdir -p "$(dirname "${TARGET}")" "${TMP_DIR}"
 
 if [ ! -x "${TARGET}" ]; then
   rm -rf "${TMP_DIR:?}/"*
-  echo "Downloading Node.js ${NODE_VERSION} runtime for fnOS ${ARCH_LABEL}..."
-  
-  # 使用带重试的下载函数
+  echo "Downloading Node.js ${NODE_VERSION} for ${ARCH_LABEL}..."
+
   download_with_retry() {
-    local url=$1
-    local output=$2
+    local urls=("$@")
+    local output="${TMP_DIR}/${ARCHIVE}"
     local max_retries=3
-    local retry=0
-    
-    while [ $retry -lt $max_retries ]; do
-      echo "Downloading from: $url (attempt $((retry + 1))/$max_retries)"
-      if curl -fL --connect-timeout 30 --max-time 120 --retry 2 --retry-delay 5 -o "$output" "$url" 2>&1; then
-        echo "Download successful"
-        return 0
-      fi
-      echo "Download failed, retrying in 5 seconds..."
-      sleep 5
-      retry=$((retry + 1))
+
+    for url in "${urls[@]}"; do
+      for attempt in 1 2 3; do
+        echo "Downloading: ${url} (attempt ${attempt}/3)"
+        if curl -fL --connect-timeout 30 --max-time 180 --retry 2 --retry-delay 5 -o "${output}" "${url}" 2>&1; then
+          if [ -s "${output}" ]; then
+            echo "Download successful from: ${url}"
+            return 0
+          else
+            echo "Downloaded file is empty, retrying..."
+          fi
+        fi
+        echo "Attempt ${attempt} failed for ${url}, waiting 5s..."
+        sleep 5
+      done
     done
+    echo "All download sources exhausted"
     return 1
   }
-  
-  # 先尝试官方源
-  if ! download_with_retry "$URL" "${TMP_DIR}/${ARCHIVE}"; then
-    echo "Official source failed, trying mirror..."
-    if ! download_with_retry "$MIRROR_URL" "${TMP_DIR}/${ARCHIVE}"; then
-      echo "Error: Failed to download Node.js from both sources"
-      exit 1
-    fi
+
+  if ! download_with_retry "${URLS[@]}"; then
+    echo "ERROR: All download sources failed"
+    exit 1
   fi
-  
+
   echo "Extracting Node.js..."
   tar -xJf "${TMP_DIR}/${ARCHIVE}" -C "${TMP_DIR}"
   cp "${TMP_DIR}/node-v${NODE_VERSION}-linux-${TARGET_ARCH}/bin/node" "${TARGET}"
   chmod +x "${TARGET}"
+  echo "Node.js binary installed: ${TARGET}"
 fi
 
-# Install ffmpeg for live stream transcoding (only if root or ffmpeg not available)
-echo "Checking ffmpeg for live stream support..."
+# Check ffmpeg
 if command -v ffmpeg >/dev/null 2>&1; then
-  echo "ffmpeg already available: $(ffmpeg -version | head -n1)"
+  echo "ffmpeg: $(ffmpeg -version | head -n1)"
+  ffmpeg -hide_banner -encoders | grep -E "h264_(v4l2m2m|omx|vaapi)" || echo "No HW encoders, using libx264"
 else
-  echo "ffmpeg not found, attempting to install..."
-  if [ "$(id -u)" -eq 0 ]; then
-    if command -v apt-get >/dev/null 2>&1; then
-      # Debian/Ubuntu based systems (including fnOS)
-      apt-get update >/dev/null 2>&1
-      apt-get install -y ffmpeg >/dev/null 2>&1
-      echo "ffmpeg installed successfully"
-    elif command -v apk >/dev/null 2>&1; then
-      # Alpine Linux
-      apk add --no-cache ffmpeg >/dev/null 2>&1
-      echo "ffmpeg installed successfully"
-    elif command -v yum >/dev/null 2>&1; then
-      # RHEL/CentOS/Fedora
-      yum install -y ffmpeg >/dev/null 2>&1
-      echo "ffmpeg installed successfully"
-    else
-      echo "Warning: Could not auto-install ffmpeg (unsupported package manager)."
-    fi
-  else
-    echo "Warning: Not running as root, skipping ffmpeg installation."
-    echo "Please install ffmpeg manually on the target device:"
-    echo "  Debian/Ubuntu: apt-get install ffmpeg"
-    echo "  Alpine: apk add ffmpeg"
-    echo "  RHEL/CentOS: yum install ffmpeg"
-  fi
-fi
-
-# Check ffmpeg availability and show encoder info
-if command -v ffmpeg >/dev/null 2>&1; then
-  echo "ffmpeg version: $(ffmpeg -version | head -n1)"
-  echo "Available video encoders:"
-  ffmpeg -hide_banner -encoders | grep -E "h264_(v4l2m2m|omx|vaapi)" || echo "No hardware encoders found, will use libx264 (software)"
-else
-  echo "Warning: ffmpeg not available. Live streaming will not work without ffmpeg."
-  echo "Please ensure ffmpeg is installed on the target fnOS device."
+  echo "WARNING: ffmpeg not found"
 fi
 
 rm -rf "${TMP_DIR}"
+echo "=== prepare-native-runtime.sh completed ==="

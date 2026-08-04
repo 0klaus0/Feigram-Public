@@ -12,6 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -20,6 +21,10 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
+          cache: 'npm'
+          cache-dependency-path: |
+            client/package-lock.json
+            server/package-lock.json
 
       - name: Install ffmpeg
         run: |
@@ -31,41 +36,34 @@ jobs:
         run: npm --prefix client ci
 
       - name: Install server dependencies
-        run: |
-          echo "Node version: $(node --version)"
-          echo "npm version: $(npm --version)"
-          echo "Installing server dependencies..."
-          npm --prefix server install --no-audit --no-fund --verbose 2>&1 | tail -50
+        run: npm --prefix server ci
 
       - name: Build FPK (x86_64)
         env:
           TARGET_ARCH: x64
           VERSION: ${{ github.ref_name }}
+        timeout-minutes: 45
         run: |
           set -euo pipefail
-          echo "=== Starting FPK Build ==="
-          echo "Node version: $(node --version)"
-          echo "npm version: $(npm --version)"
-          echo "Working directory: ${{ github.workspace }}"
-          echo "Target: x64"
+          echo "=== Starting FPK Build (x86_64) ==="
+          echo "Node: $(node --version), npm: $(npm --version)"
+          echo "Workspace: ${{ github.workspace }}"
           echo "Version: ${{ github.ref_name }}"
-          
-          echo "=== Step 1: Prepare native runtime ==="
-          echo "Checking script file..."
-          ls -la scripts/prepare-native-runtime.sh
-          echo "Running prepare-native-runtime.sh with debug..."
-          set -x
+
+          # === Step 1: Prepare native runtime (download Node.js binary only) ===
+          echo "=== Step 1: Download Node.js binary ==="
           bash scripts/prepare-native-runtime.sh 2>&1 | tee prepare.log
-          set +x
-          echo "=== Runtime prepared successfully ==="
-          
+          echo "=== Runtime prepared ==="
+
+          # === Step 2: Build client ===
           echo "=== Step 2: Build client ==="
           npm --prefix "${{ github.workspace }}/client" run build
           rm -rf "${{ github.workspace }}/server/public"
           cp -R "${{ github.workspace }}/client/dist" "${{ github.workspace }}/server/public"
-          echo "=== Client built successfully ==="
-          
-          echo "=== Step 3: Prepare FPK package ==="
+          echo "=== Client built ==="
+
+          # === Step 3: Prepare FPK package ===
+          echo "=== Step 3: Package FPK ==="
           ROOT_DIR="${{ github.workspace }}"
           PKG_NAME="fngram-${{ github.ref_name }}-x64"
           RELEASE_DIR="${ROOT_DIR}/release"
@@ -74,14 +72,15 @@ jobs:
 
           rm -rf "${WORK_DIR}" "${RELEASE_DIR}/${PKG_NAME}.fpk"
           mkdir -p "${WORK_DIR}"
-          cp -R "${PACKAGE_SRC}/." "${WORK_DIR}/"
+          cp -R "${ROOT_DIR}/fnos-native-package/." "${WORK_DIR}/"
           rm -rf "${WORK_DIR}/app/server"
           mkdir -p "${WORK_DIR}/app/server"
 
-          # Copy server source and pre-installed node_modules
-          cp "${ROOT_DIR}/server/package.json" "${WORK_DIR}/app/server/"
-          cp -R "${ROOT_DIR}/server/src" "${ROOT_DIR}/server/public" "${WORK_DIR}/app/server/"
-          cp -R "${ROOT_DIR}/server/node_modules" "${WORK_DIR}/app/server/"
+          # Copy pre-installed server deps (from host, not QEMU)
+          cp "${{ github.workspace }}/server/package.json" "${WORK_DIR}/app/server/"
+          cp -R "${{ github.workspace }}/server/src" "${WORK_DIR}/app/server/"
+          cp -R "${{ github.workspace }}/server/public" "${WORK_DIR}/app/server/"
+          cp -R "${{ github.workspace }}/server/node_modules" "${WORK_DIR}/app/server/"
           rm -rf "${WORK_DIR}/app/server/src/downloader"
 
           find "${WORK_DIR}" -name ".DS_Store" -delete
@@ -102,15 +101,17 @@ jobs:
           )
 
           ls -lh "${RELEASE_DIR}/${PKG_NAME}.fpk"
-          echo "=== FPK Build completed successfully ==="
+          echo "=== FPK Build completed ==="
 
       - name: Upload FPK artifact
         uses: actions/upload-artifact@v4
         with:
           name: fngram-fpk-x64
           path: release/*.fpk
+          retention-days: 7
 
       - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
