@@ -119,6 +119,7 @@ jobs:
           echo "Attempting build with NODE_OPTIONS..."
           cd client && NODE_OPTIONS="--max-old-space-size=4096" CI=false npm run build 2>&1
           echo "Client build completed"
+          ls -la dist/ 2>&1 || echo "dist directory not found"
 
       - name: Prepare server public
         run: |
