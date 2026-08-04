@@ -38,6 +38,9 @@ jobs:
       - name: Install server dependencies
         run: |
           echo "Node: $(node --version), npm: $(npm --version)"
+          echo "PWD: $(pwd)"
+          echo "Files: $(ls -la)"
+          echo "Server dir: $(ls -la server/)"
           echo "Installing server dependencies..."
           npm --prefix server install --no-audit --no-fund 2>&1
 
