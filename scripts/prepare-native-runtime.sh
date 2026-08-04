@@ -9,13 +9,11 @@ TMP_DIR="${ROOT_DIR}/release/node-runtime"
 
 if [ "${TARGET_ARCH}" = "arm64" ]; then
   ARCHIVE="node-v${NODE_VERSION}-linux-arm64.tar.xz"
-  ARCH_LABEL="arm64"
 else
   ARCHIVE="node-v${NODE_VERSION}-linux-x64.tar.xz"
-  ARCH_LABEL="x86_64"
 fi
 
-# 官方源 + 鏡像源
+# 多鏡像源：官方 + npmmirror + 清華
 URLS=(
   "https://nodejs.org/dist/v${NODE_VERSION}/${ARCHIVE}"
   "https://npmmirror.com/mirrors/node/v${NODE_VERSION}/${ARCHIVE}"
@@ -26,33 +24,28 @@ mkdir -p "$(dirname "${TARGET}")" "${TMP_DIR}"
 
 if [ ! -x "${TARGET}" ]; then
   rm -rf "${TMP_DIR:?}/"*
-  echo "Downloading Node.js ${NODE_VERSION} for ${ARCH_LABEL}..."
+  echo "Downloading Node.js ${NODE_VERSION} for ${TARGET_ARCH}..."
 
-  download_with_retry() {
-    local urls=("$@")
-    local output="${TMP_DIR}/${ARCHIVE}"
-    local max_retries=3
-
-    for url in "${urls[@]}"; do
-      for attempt in 1 2 3; do
-        echo "Downloading: ${url} (attempt ${attempt}/3)"
-        if curl -fL --connect-timeout 30 --max-time 180 --retry 2 --retry-delay 5 -o "${output}" "${url}" 2>&1; then
-          if [ -s "${output}" ]; then
-            echo "Download successful from: ${url}"
-            return 0
-          else
-            echo "Downloaded file is empty, retrying..."
-          fi
+  # 帶重試的下載函數
+  download_ok=0
+  for url in "${URLS[@]}"; do
+    for attempt in 1 2 3; do
+      echo "Trying: ${url} (attempt ${attempt}/3)"
+      if curl -fL --connect-timeout 30 --max-time 180 --retry 2 --retry-delay 5 -o "${TMP_DIR}/${ARCHIVE}" "${url}" 2>&1; then
+        if [ -s "${TMP_DIR}/${ARCHIVE}" ]; then
+          echo "Download successful from: ${url}"
+          download_ok=1
+          break 2
+        else
+          echo "Downloaded file is empty"
         fi
-        echo "Attempt ${attempt} failed for ${url}, waiting 5s..."
-        sleep 5
-      done
+      fi
+      echo "Attempt ${attempt} failed, waiting 5s..."
+      sleep 5
     done
-    echo "All download sources exhausted"
-    return 1
-  }
+  done
 
-  if ! download_with_retry "${URLS[@]}"; then
+  if [ ${download_ok} -ne 1 ]; then
     echo "ERROR: All download sources failed"
     exit 1
   fi
