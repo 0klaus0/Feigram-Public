@@ -1,0 +1,27 @@
+name: Debug npm ci
+
+on:
+  workflow_dispatch:
+
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          
+      - name: Debug npm ci server
+        run: |
+          echo "Current directory: $(pwd)"
+          echo "Node version: $(node --version)"
+          echo "NPM version: $(npm --version)"
+          echo "Listing server directory:"
+          ls -la server/
+          echo "Checking server/package.json:"
+          cat server/package.json
+          echo "Running npm ci in server with verbose output:"
+          cd server && npm ci --verbose 2>&1
