@@ -133,13 +133,15 @@ jobs:
           echo "Checking if client/dist exists:"
           if [ ! -d "client/dist" ]; then
             echo "ERROR: client/dist does not exist"
+            echo "Debug: client directory contents:"
+            ls -la client/
             exit 1
           fi
           echo "client/dist exists"
           echo "Removing old server/public..."
           rm -rf server/public
           echo "Copying client/dist to server/public..."
-          cp -r client/dist server/public
+          cp -r client/dist server/public || { echo "ERROR: cp failed"; ls -la client/dist; exit 1; }
           echo "Server public directory prepared"
           ls -la server/public/
 
