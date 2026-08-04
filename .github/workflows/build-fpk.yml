@@ -124,6 +124,8 @@ jobs:
       - name: Prepare server public
         run: |
           echo "Preparing server public directory..."
+          echo "Checking if client/dist exists:"
+          ls -la client/dist/ 2>&1 || echo "dist directory not found"
           rm -rf "${{ github.workspace }}/server/public"
           cp -R "${{ github.workspace }}/client/dist" "${{ github.workspace }}/server/public"
           echo "Server public directory prepared"
