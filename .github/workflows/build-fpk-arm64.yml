@@ -29,46 +29,43 @@ jobs:
 
       - name: Install client dependencies
         run: |
-          echo "Installing client dependencies with npm ci..."
+          echo "Installing client dependencies..."
           cd "${{ github.workspace }}/client" && npm ci
-          echo "Client dependencies installed"
+          echo "Client dependencies installed successfully"
 
       - name: Install server dependencies
         run: |
-          echo "=== Debug: listing server directory ==="
-          ls -la server/
-          echo "=== Running npm ci in server ==="
-          cd server && npm ci
-          echo "Server dependencies installed"
-
-      - name: Set up QEMU for ARM64
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
+          echo "Installing server dependencies..."
+          cd "${{ github.workspace }}/server" && npm ci
+          echo "Server dependencies installed successfully"
 
       - name: Download Node.js ARM64 binary
         env:
           TARGET_ARCH: arm64
         run: |
+          echo "Downloading Node.js ARM64 binary..."
           "${{ github.workspace }}/scripts/prepare-native-runtime.sh"
           echo "Node.js version: $("${{ github.workspace }}/fnos-native-package/app/bin/node" --version)"
 
       - name: Build client
         run: |
-          echo "Building client with npx vite..."
-          cd "${{ github.workspace }}/client" && npx vite build
-          echo "Client build completed"
+          echo "Starting client build..."
+          cd "${{ github.workspace }}/client" && npm run build
+          echo "Client build completed successfully"
 
       - name: Prepare server public
         run: |
+          echo "Preparing server public directory..."
           rm -rf "${{ github.workspace }}/server/public"
           cp -R "${{ github.workspace }}/client/dist" "${{ github.workspace }}/server/public"
+          echo "Server public directory prepared"
 
       - name: Package FPK (ARM64)
         env:
           VERSION: ${{ github.ref_name }}
         run: |
           set -euo pipefail
+          echo "Packaging FPK..."
           ROOT_DIR="${{ github.workspace }}"
           PKG_NAME="fngram-${{ github.ref_name }}-arm64"
           RELEASE_DIR="${ROOT_DIR}/release"
@@ -103,6 +100,7 @@ jobs:
             tar -czf "${RELEASE_DIR}/${PKG_NAME}.fpk" *
           )
 
+          echo "FPK package created successfully"
           ls -lh "${RELEASE_DIR}/${PKG_NAME}.fpk"
 
       - name: Upload FPK artifact
