@@ -46,9 +46,18 @@ jobs:
 
       - name: Build client
         run: |
-          echo "Building client..."
-          cd "${{ github.workspace }}/client" && npm run build
-          echo "Client build done"
+          echo "=== Building client ==="
+          echo "Node version: $(node --version)"
+          echo "NPM version: $(npm --version)"
+          echo "Current directory: $(pwd)"
+          echo "Client directory contents:"
+          ls -la "${{ github.workspace }}/client/"
+          echo "Client package.json:"
+          cat "${{ github.workspace }}/client/package.json"
+          echo "Client node_modules exists: $([ -d "${{ github.workspace }}/client/node_modules" ] && echo 'yes' || echo 'no')"
+          echo "Starting Vite build..."
+          cd "${{ github.workspace }}/client" && npm run build 2>&1
+          echo "=== Client build completed ==="
 
       - name: Prepare server public
         run: |
