@@ -8,24 +8,36 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-latest
     permissions:
       contents: write
-    env:
-      TARGET_ARCH: arm64
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "22"
 
+      - name: Install ffmpeg (cross-compile dependencies)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg qemu-user-static binfmt-support
+          ffmpeg -version
+
       - name: Install client dependencies
         run: npm --prefix client ci
 
       - name: Build FPK
+        env:
+          TARGET_ARCH: arm64
+          VERSION: ${{ github.ref_name }}
         run: bash scripts/build-native-fpk.sh
 
       - name: Upload FPK artifact
@@ -37,10 +49,10 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ env.VERSION }}
-          name: Fngram v${{ env.VERSION }}
+          tag_name: ${{ github.ref_name }}
+          name: Fngram ${{ github.ref_name }}
           body: |
-            ## Fngram v${{ env.VERSION }}
+            ## Fngram ${{ github.ref_name }}
 
             ARM64 FPK 安装包，适用于飞牛 OS / fnOS ARM 设备。
 
@@ -50,4 +62,4 @@ jobs:
             3. 或在 Fngram 管理后台「运行诊断」中一键下载更新
           files: release/*.fpk
         env:
-          VERSION: "2.0.55"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
