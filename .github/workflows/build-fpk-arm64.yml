@@ -20,10 +20,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: 'npm'
-          cache-dependency-path: |
-            client/package-lock.json
-            server/package-lock.json
 
       - name: Install ffmpeg
         run: |
@@ -32,10 +28,10 @@ jobs:
           ffmpeg -version
 
       - name: Install client dependencies
-        run: npm --prefix client ci
+        run: npm --prefix client install
 
       - name: Install server dependencies
-        run: npm --prefix server ci
+        run: npm --prefix server install
 
       - name: Set up QEMU for ARM64
         uses: docker/setup-qemu-action@v3
