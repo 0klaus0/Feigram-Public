@@ -105,8 +105,15 @@ jobs:
 
       - name: Build client
         run: |
-          echo "Building client with Vite..."
-          cd client && npx vite build
+          echo "=== Building client ==="
+          echo "Current directory: $(pwd)"
+          echo "Node version: $(node --version)"
+          echo "NPM version: $(npm --version)"
+          echo "Environment CI: $CI"
+          echo "Environment NODE_OPTIONS: $NODE_OPTIONS"
+          ls -la client/
+          echo "Attempting build..."
+          cd client && CI=false npm run build 2>&1
           echo "Client build completed"
 
       - name: Prepare server public
