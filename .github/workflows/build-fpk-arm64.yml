@@ -55,8 +55,12 @@ jobs:
       - name: Build client
         run: |
           echo "=== Building client ==="
+          echo "Working dir: $(pwd)"
+          echo "Client dir: ${{ github.workspace }}/client"
           ls -la "${{ github.workspace }}/client/"
           ls -la "${{ github.workspace }}/client/package.json"
+          echo "Node version: $(node --version)"
+          echo "NPM version: $(npm --version)"
           cd "${{ github.workspace }}/client" && npx vite build 2>&1
           echo "=== Client build completed ==="
 

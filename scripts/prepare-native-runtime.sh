@@ -13,11 +13,11 @@ else
   ARCHIVE="node-v${NODE_VERSION}-linux-x64.tar.xz"
 fi
 
-# 多鏡像源：官方 + npmmirror + 清華
+# 多鏡像源：優先使用國內鏡像
 URLS=(
-  "https://nodejs.org/dist/v${NODE_VERSION}/${ARCHIVE}"
   "https://npmmirror.com/mirrors/node/v${NODE_VERSION}/${ARCHIVE}"
   "https://mirrors.tuna.tsinghua.edu.cn/nodejs-release/v${NODE_VERSION}/${ARCHIVE}"
+  "https://nodejs.org/dist/v${NODE_VERSION}/${ARCHIVE}"
 )
 
 mkdir -p "$(dirname "${TARGET}")" "${TMP_DIR}"
@@ -26,7 +26,6 @@ if [ ! -x "${TARGET}" ]; then
   rm -rf "${TMP_DIR:?}/"*
   echo "Downloading Node.js ${NODE_VERSION} for ${TARGET_ARCH}..."
 
-  # 帶重試的下載函數
   download_ok=0
   for url in "${URLS[@]}"; do
     for attempt in 1 2 3; do
