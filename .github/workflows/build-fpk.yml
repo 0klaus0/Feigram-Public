@@ -43,21 +43,30 @@ jobs:
           VERSION: ${{ github.ref_name }}
         run: |
           set -euo pipefail
+          echo "=== Starting FPK Build ==="
+          echo "Node version: $(node --version)"
+          echo "npm version: $(npm --version)"
+          echo "Working directory: ${{ github.workspace }}"
+          echo "Target: x64"
+          echo "Version: ${{ github.ref_name }}"
+          
+          echo "=== Step 1: Prepare native runtime ==="
+          bash scripts/prepare-native-runtime.sh
+          echo "=== Runtime prepared successfully ==="
+          
+          echo "=== Step 2: Build client ==="
+          npm --prefix "${{ github.workspace }}/client" run build
+          rm -rf "${{ github.workspace }}/server/public"
+          cp -R "${{ github.workspace }}/client/dist" "${{ github.workspace }}/server/public"
+          echo "=== Client built successfully ==="
+          
+          echo "=== Step 3: Prepare FPK package ==="
           ROOT_DIR="${{ github.workspace }}"
           PKG_NAME="fngram-${{ github.ref_name }}-x64"
           RELEASE_DIR="${ROOT_DIR}/release"
           WORK_DIR="${RELEASE_DIR}/${PKG_NAME}"
           PACKAGE_SRC="${ROOT_DIR}/fnos-native-package"
 
-          # Prepare runtime (downloads Node.js x64 binary)
-          "${ROOT_DIR}/scripts/prepare-native-runtime.sh"
-
-          # Build client
-          npm --prefix "${ROOT_DIR}/client" run build
-          rm -rf "${ROOT_DIR}/server/public"
-          cp -R "${ROOT_DIR}/client/dist" "${ROOT_DIR}/server/public"
-
-          # Prepare work directory
           rm -rf "${WORK_DIR}" "${RELEASE_DIR}/${PKG_NAME}.fpk"
           mkdir -p "${WORK_DIR}"
           cp -R "${PACKAGE_SRC}/." "${WORK_DIR}/"
@@ -88,6 +97,7 @@ jobs:
           )
 
           ls -lh "${RELEASE_DIR}/${PKG_NAME}.fpk"
+          echo "=== FPK Build completed successfully ==="
 
       - name: Upload FPK artifact
         uses: actions/upload-artifact@v4
