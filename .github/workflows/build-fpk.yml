@@ -55,7 +55,9 @@ jobs:
           echo "Server directory contents:"
           ls -la server/ 2>&1 || echo "server dir not found"
           echo "Server package.json exists: $([ -f server/package.json ] && echo YES || echo NO)"
-          echo "Starting installation..."
+          echo "Testing npm command..."
+          npm --version
+          echo "Running: npm --prefix server install --no-audit --no-fund"
           npm --prefix server install --no-audit --no-fund 2>&1
 
       - name: Build FPK (x86_64)
