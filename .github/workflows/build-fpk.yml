@@ -1,9 +1,8 @@
-name: Build Fngram FPK
+name: Build Fngram FPK (x86_64)
 
 on:
   workflow_dispatch:
   push:
-    branches: [main]
     tags:
       - "v*"
 
@@ -12,9 +11,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    strategy:
-      matrix:
-        platform: [x64, arm64]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -22,7 +18,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
           cache: 'npm'
           cache-dependency-path: |
             client/package-lock.json
@@ -34,137 +30,40 @@ jobs:
           sudo apt-get install -y ffmpeg
           ffmpeg -version
 
-      - name: Install server dependencies
-        run: |
-          echo "Installing server dependencies..."
-          cd server && npm ci
-          echo "Server dependencies installed"
-
       - name: Install client dependencies
-        run: |
-          echo "Installing client dependencies..."
-          cd client && npm ci
-          echo "Client dependencies installed"
+        run: npm --prefix client ci
 
-      - name: Download Node.js binary for runtime
-        id: node-download
+      - name: Install server dependencies
+        run: npm --prefix server ci
+
+      - name: Build FPK (x86_64)
         env:
-          TARGET_ARCH: ${{ matrix.platform }}
-        run: |
-          echo "Downloading Node.js binary for ${TARGET_ARCH}..."
-          ROOT_DIR="${{ github.workspace }}"
-          NODE_VERSION="20.18.0"
-          if [ "${TARGET_ARCH}" = "arm64" ]; then
-            ARCHIVE="node-v${NODE_VERSION}-linux-arm64.tar.xz"
-          else
-            ARCHIVE="node-v${NODE_VERSION}-linux-x64.tar.xz"
-          fi
-          
-          # Try multiple mirrors
-          URLS=(
-            "https://nodejs.org/dist/v${NODE_VERSION}/${ARCHIVE}"
-            "https://npmmirror.com/mirrors/node/v${NODE_VERSION}/${ARCHIVE}"
-            "https://mirrors.tuna.tsinghua.edu.cn/nodejs-release/v${NODE_VERSION}/${ARCHIVE}"
-          )
-          
-          TMP_DIR="${ROOT_DIR}/tmp/node-runtime"
-          mkdir -p "${TMP_DIR}"
-          DOWNLOAD_SUCCESS=0
-          
-          for url in "${URLS[@]}"; do
-            echo "Trying to download from: $url"
-            if curl -fL --connect-timeout 30 --max-time 180 --retry 3 --retry-delay 5 -o "${TMP_DIR}/${ARCHIVE}" "$url"; then
-              if [ -s "${TMP_DIR}/${ARCHIVE}" ]; then
-                echo "Download successful from: $url"
-                DOWNLOAD_SUCCESS=1
-                break
-              else
-                echo "Downloaded file is empty or invalid"
-              fi
-            else
-              echo "Failed to download from: $url"
-            fi
-          done
-          
-          if [ $DOWNLOAD_SUCCESS -ne 1 ]; then
-            echo "ERROR: All download attempts failed"
-            exit 1
-          fi
-          
-          echo "Extracting Node.js..."
-          tar -xJf "${TMP_DIR}/${ARCHIVE}" -C "${TMP_DIR}"
-          mkdir -p "${ROOT_DIR}/fnos-native-package/app/bin"
-          cp "${TMP_DIR}/node-v${NODE_VERSION}-linux-${TARGET_ARCH}/bin/node" "${ROOT_DIR}/fnos-native-package/app/bin/node"
-          chmod +x "${ROOT_DIR}/fnos-native-package/app/bin/node"
-          echo "Node.js binary installed at ${ROOT_DIR}/fnos-native-package/app/bin/node"
-          
-          # Cleanup
-          rm -rf "${TMP_DIR}"
-          
-          echo "Node.js version: $("${ROOT_DIR}/fnos-native-package/app/bin/node" --version)"
-
-      - name: Build client
-        run: |
-          echo "=== Building client ==="
-          echo "Current directory: $(pwd)"
-          echo "Node version: $(node --version)"
-          echo "NPM version: $(npm --version)"
-          echo "Environment CI: $CI"
-          echo "Environment NODE_OPTIONS: $NODE_OPTIONS"
-          ls -la client/
-          echo "Checking if node_modules exists in client:"
-          ls -la client/node_modules/ 2>/dev/null || echo "node_modules not found in client"
-          echo "Checking if vite is available:"
-          cd client && npx vite --version 2>&1 || echo "vite not found via npx"
-          echo "Attempting build with NODE_OPTIONS..."
-          cd client && NODE_OPTIONS="--max-old-space-size=4096" CI=false npm run build 2>&1
-          echo "Client build completed"
-          echo "Checking if dist directory exists after build:"
-          cd "${{ github.workspace }}"
-          ls -la client/dist/ 2>&1 || { echo "ERROR: dist directory not found after build"; exit 1; }
-          echo "dist directory exists"
-
-      - name: Prepare server public
-        run: |
-          set -euo pipefail
-          echo "Preparing server public directory..."
-          echo "Current directory: $(pwd)"
-          echo "Listing all directories:"
-          ls -la
-          echo "Checking if client/dist exists:"
-          if [ ! -d "client/dist" ]; then
-            echo "ERROR: client/dist does not exist"
-            echo "Debug: client directory contents:"
-            ls -la client/
-            exit 1
-          fi
-          echo "client/dist exists"
-          echo "Removing old server/public..."
-          rm -rf server/public
-          echo "Copying client/dist to server/public..."
-          cp -r client/dist server/public || { echo "ERROR: cp failed"; ls -la client/dist; exit 1; }
-          echo "Server public directory prepared"
-          ls -la server/public/
-
-      - name: Package FPK
-        env:
-          PLATFORM: ${{ matrix.platform }}
+          TARGET_ARCH: x64
           VERSION: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          echo "Packaging FPK for ${PLATFORM}..."
           ROOT_DIR="${{ github.workspace }}"
-          PKG_NAME="fngram-${{ github.ref_name }}-${PLATFORM}"
+          PKG_NAME="fngram-${{ github.ref_name }}-x64"
           RELEASE_DIR="${ROOT_DIR}/release"
           WORK_DIR="${RELEASE_DIR}/${PKG_NAME}"
           PACKAGE_SRC="${ROOT_DIR}/fnos-native-package"
 
+          # Prepare runtime (downloads Node.js x64 binary)
+          "${ROOT_DIR}/scripts/prepare-native-runtime.sh"
+
+          # Build client
+          npm --prefix "${ROOT_DIR}/client" run build
+          rm -rf "${ROOT_DIR}/server/public"
+          cp -R "${ROOT_DIR}/client/dist" "${ROOT_DIR}/server/public"
+
+          # Prepare work directory
           rm -rf "${WORK_DIR}" "${RELEASE_DIR}/${PKG_NAME}.fpk"
           mkdir -p "${WORK_DIR}"
           cp -R "${PACKAGE_SRC}/." "${WORK_DIR}/"
           rm -rf "${WORK_DIR}/app/server"
           mkdir -p "${WORK_DIR}/app/server"
 
+          # Copy server source and pre-installed node_modules
           cp "${ROOT_DIR}/server/package.json" "${WORK_DIR}/app/server/"
           cp -R "${ROOT_DIR}/server/src" "${ROOT_DIR}/server/public" "${WORK_DIR}/app/server/"
           cp -R "${ROOT_DIR}/server/node_modules" "${WORK_DIR}/app/server/"
@@ -173,7 +72,7 @@ jobs:
           find "${WORK_DIR}" -name ".DS_Store" -delete
           find "${WORK_DIR}/cmd" -type f -exec chmod +x {} \;
           rm -f "${WORK_DIR}/app/bin/fngram-downloader"
-          chmod +x "${WORK_DIR}/app/bin/node"
+          chmod +x "${WORK_DIR}/app/ui/proxy.cgi" "${WORK_DIR}/app/bin/node"
 
           (
             cd "${WORK_DIR}"
@@ -187,17 +86,15 @@ jobs:
             tar -czf "${RELEASE_DIR}/${PKG_NAME}.fpk" *
           )
 
-          echo "FPK package created: ${RELEASE_DIR}/${PKG_NAME}.fpk"
           ls -lh "${RELEASE_DIR}/${PKG_NAME}.fpk"
 
       - name: Upload FPK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: fngram-fpk-${{ matrix.platform }}
+          name: fngram-fpk-x64
           path: release/*.fpk
 
       - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
@@ -205,12 +102,12 @@ jobs:
           body: |
             ## Fngram ${{ github.ref_name }}
 
-            ${{ matrix.platform == 'x64' && 'x86_64' || 'ARM64' }} FPK 安装包，适用于飞牛 OS / fnOS ${{ matrix.platform == 'x64' && 'x86_64' || 'ARM64' }} 设备。
+            x86_64 FPK 安装包，适用于飞牛 OS / fnOS x86_64 设备。
 
             ### 安装方式
             1. 下载下方 .fpk 文件
             2. 在 fnOS 应用中心上传安装
             3. 或在 Fngram 管理后台「运行诊断」中一键下载更新
-          files: release*.fpk
+          files: release/*.fpk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,118 @@
+name: Build Fngram FPK (ARM64)
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: 'npm'
+          cache-dependency-path: |
+            client/package-lock.json
+            server/package-lock.json
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          ffmpeg -version
+
+      - name: Install client dependencies
+        run: npm --prefix client ci
+
+      - name: Install server dependencies
+        run: npm --prefix server ci
+
+      - name: Set up QEMU for ARM64
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Build FPK (ARM64)
+        env:
+          TARGET_ARCH: arm64
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          ROOT_DIR="${{ github.workspace }}"
+          PKG_NAME="fngram-${{ github.ref_name }}-arm64"
+          RELEASE_DIR="${ROOT_DIR}/release"
+          WORK_DIR="${RELEASE_DIR}/${PKG_NAME}"
+          PACKAGE_SRC="${ROOT_DIR}/fnos-native-package"
+
+          # Prepare runtime (downloads Node.js ARM64 binary)
+          "${ROOT_DIR}/scripts/prepare-native-runtime.sh"
+
+          # Build client
+          npm --prefix "${ROOT_DIR}/client" run build
+          rm -rf "${ROOT_DIR}/server/public"
+          cp -R "${ROOT_DIR}/client/dist" "${ROOT_DIR}/server/public"
+
+          # Prepare work directory
+          rm -rf "${WORK_DIR}" "${RELEASE_DIR}/${PKG_NAME}.fpk"
+          mkdir -p "${WORK_DIR}"
+          cp -R "${PACKAGE_SRC}/." "${WORK_DIR}/"
+          rm -rf "${WORK_DIR}/app/server"
+          mkdir -p "${WORK_DIR}/app/server"
+
+          # Copy server source and pre-installed node_modules
+          cp "${ROOT_DIR}/server/package.json" "${WORK_DIR}/app/server/"
+          cp -R "${ROOT_DIR}/server/src" "${ROOT_DIR}/server/public" "${WORK_DIR}/app/server/"
+          cp -R "${ROOT_DIR}/server/node_modules" "${WORK_DIR}/app/server/"
+          rm -rf "${WORK_DIR}/app/server/src/downloader"
+
+          find "${WORK_DIR}" -name ".DS_Store" -delete
+          find "${WORK_DIR}/cmd" -type f -exec chmod +x {} \;
+          rm -f "${WORK_DIR}/app/bin/fngram-downloader"
+          chmod +x "${WORK_DIR}/app/ui/proxy.cgi" "${WORK_DIR}/app/bin/node"
+
+          (
+            cd "${WORK_DIR}"
+            mkdir -p app_payload
+            cp -R app/server app_payload/server
+            cp -R app/bin app_payload/bin
+            cp -R app/ui app_payload/ui
+            cp -R config app_payload/config
+            tar -czf app.tgz -C app_payload server bin ui config
+            rm -rf app app_payload
+            tar -czf "${RELEASE_DIR}/${PKG_NAME}.fpk" *
+          )
+
+          ls -lh "${RELEASE_DIR}/${PKG_NAME}.fpk"
+
+      - name: Upload FPK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fngram-fpk-arm64
+          path: release/*.fpk
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Fngram ${{ github.ref_name }}
+          body: |
+            ## Fngram ${{ github.ref_name }}
+
+            ARM64 FPK 安装包，适用于飞牛 OS / fnOS ARM 设备。
+
+            ### 安装方式
+            1. 下载下方 .fpk 文件
+            2. 在 fnOS 应用中心上传安装
+            3. 或在 Fngram 管理后台「运行诊断」中一键下载更新
+          files: release/*.fpk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
