@@ -1,4 +1,4 @@
-name: Build Fngram FPK (x86_64)
+name: Build Fngram FPK
 
 on:
   workflow_dispatch:
@@ -12,9 +12,21 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    strategy:
+      matrix:
+        platform: [x64, arm64]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: 'npm'
+          cache-dependency-path: |
+            client/package-lock.json
+            server/package-lock.json
 
       - name: Install ffmpeg
         run: |
@@ -22,45 +34,97 @@ jobs:
           sudo apt-get install -y ffmpeg
           ffmpeg -version
 
-      - name: Install client dependencies
-        run: |
-          echo "Installing client dependencies with npm ci..."
-          cd "${{ github.workspace }}/client" && npm ci
-          echo "Client dependencies installed"
-
       - name: Install server dependencies
         run: |
-          echo "=== Debug: listing server directory ==="
-          ls -la server/
-          echo "=== Running npm ci in server ==="
+          echo "Installing server dependencies..."
           cd server && npm ci
           echo "Server dependencies installed"
 
-      - name: Download Node.js x64 binary
-        env:
-          TARGET_ARCH: x64
+      - name: Install client dependencies
         run: |
-          "${{ github.workspace }}/scripts/prepare-native-runtime.sh"
-          echo "Node.js version: $("${{ github.workspace }}/fnos-native-package/app/bin/node" --version)"
+          echo "Installing client dependencies..."
+          cd client && npm ci
+          echo "Client dependencies installed"
+
+      - name: Download Node.js binary for runtime
+        id: node-download
+        env:
+          TARGET_ARCH: ${{ matrix.platform }}
+        run: |
+          echo "Downloading Node.js binary for ${TARGET_ARCH}..."
+          ROOT_DIR="${{ github.workspace }}"
+          NODE_VERSION="20.18.0"
+          if [ "${TARGET_ARCH}" = "arm64" ]; then
+            ARCHIVE="node-v${NODE_VERSION}-linux-arm64.tar.xz"
+          else
+            ARCHIVE="node-v${NODE_VERSION}-linux-x64.tar.xz"
+          fi
+          
+          # Try multiple mirrors
+          URLS=(
+            "https://nodejs.org/dist/v${NODE_VERSION}/${ARCHIVE}"
+            "https://npmmirror.com/mirrors/node/v${NODE_VERSION}/${ARCHIVE}"
+            "https://mirrors.tuna.tsinghua.edu.cn/nodejs-release/v${NODE_VERSION}/${ARCHIVE}"
+          )
+          
+          TMP_DIR="${ROOT_DIR}/tmp/node-runtime"
+          mkdir -p "${TMP_DIR}"
+          DOWNLOAD_SUCCESS=0
+          
+          for url in "${URLS[@]}"; do
+            echo "Trying to download from: $url"
+            if curl -fL --connect-timeout 30 --max-time 180 --retry 3 --retry-delay 5 -o "${TMP_DIR}/${ARCHIVE}" "$url"; then
+              if [ -s "${TMP_DIR}/${ARCHIVE}" ]; then
+                echo "Download successful from: $url"
+                DOWNLOAD_SUCCESS=1
+                break
+              else
+                echo "Downloaded file is empty or invalid"
+              fi
+            else
+              echo "Failed to download from: $url"
+            fi
+          done
+          
+          if [ $DOWNLOAD_SUCCESS -ne 1 ]; then
+            echo "ERROR: All download attempts failed"
+            exit 1
+          fi
+          
+          echo "Extracting Node.js..."
+          tar -xJf "${TMP_DIR}/${ARCHIVE}" -C "${TMP_DIR}"
+          mkdir -p "${ROOT_DIR}/fnos-native-package/app/bin"
+          cp "${TMP_DIR}/node-v${NODE_VERSION}-linux-${TARGET_ARCH}/bin/node" "${ROOT_DIR}/fnos-native-package/app/bin/node"
+          chmod +x "${ROOT_DIR}/fnos-native-package/app/bin/node"
+          echo "Node.js binary installed at ${ROOT_DIR}/fnos-native-package/app/bin/node"
+          
+          # Cleanup
+          rm -rf "${TMP_DIR}"
+          
+          echo "Node.js version: $("${ROOT_DIR}/fnos-native-package/app/bin/node" --version)"
 
       - name: Build client
         run: |
-          echo "Building client with npx vite..."
-          cd "${{ github.workspace }}/client" && npx vite build
+          echo "Building client with Vite..."
+          cd client && npx vite build
           echo "Client build completed"
 
       - name: Prepare server public
         run: |
+          echo "Preparing server public directory..."
           rm -rf "${{ github.workspace }}/server/public"
           cp -R "${{ github.workspace }}/client/dist" "${{ github.workspace }}/server/public"
+          echo "Server public directory prepared"
 
-      - name: Package FPK (x86_64)
+      - name: Package FPK
         env:
+          PLATFORM: ${{ matrix.platform }}
           VERSION: ${{ github.ref_name }}
         run: |
+          echo "Packaging FPK for ${PLATFORM}..."
           set -euo pipefail
           ROOT_DIR="${{ github.workspace }}"
-          PKG_NAME="fngram-${{ github.ref_name }}-x64"
+          PKG_NAME="fngram-${{ github.ref_name }}-${PLATFORM}"
           RELEASE_DIR="${ROOT_DIR}/release"
           WORK_DIR="${RELEASE_DIR}/${PKG_NAME}"
           PACKAGE_SRC="${ROOT_DIR}/fnos-native-package"
@@ -93,12 +157,13 @@ jobs:
             tar -czf "${RELEASE_DIR}/${PKG_NAME}.fpk" *
           )
 
+          echo "FPK package created: ${RELEASE_DIR}/${PKG_NAME}.fpk"
           ls -lh "${RELEASE_DIR}/${PKG_NAME}.fpk"
 
       - name: Upload FPK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: fngram-fpk-x64
+          name: fngram-fpk-${{ matrix.platform }}
           path: release/*.fpk
 
       - name: Create GitHub Release
@@ -110,7 +175,7 @@ jobs:
           body: |
             ## Fngram ${{ github.ref_name }}
 
-            x86_64 FPK 安装包，适用于飞牛 OS / fnOS x86_64 设备。
+            ${{ matrix.platform == 'x64' && 'x86_64' || 'ARM64' }} FPK 安装包，适用于飞牛 OS / fnOS ${{ matrix.platform == 'x64' && 'x86_64' || 'ARM64' }} 设备。
 
             ### 安装方式
             1. 下载下方 .fpk 文件
