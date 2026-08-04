@@ -121,17 +121,23 @@ jobs:
           echo "Client build completed"
           ls -la dist/ 2>&1 || echo "dist directory not found"
 
-      - name: Prepare server public
+- name: Prepare server public
         run: |
           echo "Preparing server public directory..."
           echo "Current directory: $(pwd)"
+          echo "Listing all directories:"
+          ls -la
           echo "Checking if client/dist exists:"
           ls -la client/dist/ 2>&1 || echo "dist directory not found in client/"
           echo "Checking if ${{ github.workspace }}/client/dist exists:"
           ls -la "${{ github.workspace }}/client/dist/" 2>&1 || echo "dist directory not found in workspace/client/"
+          echo "Checking if ${{ github.workspace }}/client exists:"
+          ls -la "${{ github.workspace }}/client/" 2>&1 || echo "client directory not found"
           rm -rf "${{ github.workspace }}/server/public"
+          echo "Copying dist to server/public..."
           cp -R "${{ github.workspace }}/client/dist" "${{ github.workspace }}/server/public"
           echo "Server public directory prepared"
+          ls -la "${{ github.workspace }}/server/public/"
 
       - name: Package FPK
         env:
