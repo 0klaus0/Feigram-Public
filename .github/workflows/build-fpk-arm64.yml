@@ -56,7 +56,14 @@ jobs:
           echo "Version: ${{ github.ref_name }}"
           
           echo "=== Step 1: Prepare native runtime ==="
-          bash scripts/prepare-native-runtime.sh
+          echo "Listing script files..."
+          ls -la scripts/
+          echo "Checking script file..."
+          ls -la scripts/prepare-native-runtime.sh
+          echo "Running prepare-native-runtime.sh with debug..."
+          set -x
+          bash scripts/prepare-native-runtime.sh 2>&1 | tee prepare.log
+          set +x
           echo "=== Runtime prepared successfully ==="
           
           echo "=== Step 2: Build client ==="
