@@ -15,6 +15,18 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.62",
+    title: "Fngram 2.0.62 更新",
+    version: "2.0.62",
+    level: "success",
+    createdAt: "2026-08-05T02:00:00.000Z",
+    body: [
+      "修復 CI 構建：client/package-lock.json 此前在 arm64 環境生成，packages 段只記錄了 @rollup/rollup-linux-arm64-gnu，缺少 @rollup/rollup-linux-x64-gnu 條目。",
+      "導致 x64 CI 上 npm ci 不會安裝 rollup 的 x64 native 包，vite build 時 rollup 報「Cannot find module @rollup/rollup-linux-x64-gnu」並退出（v2.0.61 即死於此）。",
+      "已在 lock 文件補入 x64-gnu / x64-musl 兩條目（版本 4.61.1，與 arm64 對齊），arm64 與 x64 兩個 workflow 現在均能正常 npm ci 並完成 vite build。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.61",
     title: "Fngram 2.0.61 更新",
     version: "2.0.61",
