@@ -15,6 +15,19 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.63",
+    title: "Fngram 2.0.63 更新",
+    version: "2.0.63",
+    level: "success",
+    createdAt: "2026-08-05T15:00:00.000Z",
+    body: [
+      "修復直播流無法播放的核心問題：ARM64 設備上 libx264 軟編碼 720p 視頻 speed 僅 0.001x，導致 ffmpeg 在輸出 3 幀後永久停滯，累計丟棄 34 幀。",
+      "改用 -c copy 直接複製 H.264 流，零 CPU 開銷，實時輸出 HLS 分片。",
+      "修復後續 chunk 缺少 SPS/PPS 導致解碼器只能解碼前 3 幀的問題：extractH264AnnexB 新增全局 SPS/PPS 緩存，每個 IDR 幀前自動注入。",
+      "補全 execFileSync 導入，修復硬件編碼器檢測時的 ReferenceError。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.62",
     title: "Fngram 2.0.62 更新",
     version: "2.0.62",

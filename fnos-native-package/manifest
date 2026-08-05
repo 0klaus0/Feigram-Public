@@ -1,5 +1,5 @@
 appname=fngram
-version=2.0.62
+version=2.0.63
 display_name=Fngram
 desc="""<p><strong>Fngram 2.0 fnOS Client Edition</strong> 是第三方开发的非官方 Telegram 客户端，支持管理员后台、飞牛账户隔离、加密 Telegram session、Telegram 文件夹、媒体预览、后台任务恢复、运行诊断和更新检测。</p><p>基于 Feigram-Public 二次开发，感谢原项目 g-star1024/Feigram-Public。</p><p>适用于 x86_64 / amd64 / arm64 飞牛 OS 设备。</p>"""
 platform=all
@@ -12,4 +12,4 @@ desktop_uidir=ui
 desktop_applaunchname=fngram.proxy.Application
 service_port=3088
 checkport=true
-changelog=修復 CI 構建：client/package-lock.json 在 arm64 環境生成，缺少 @rollup/rollup-linux-x64-gnu 條目，導致 x64 CI 的 npm ci 不安裝 rollup native 包，vite build 報 Cannot find module。已補入 x64-gnu/x64-musl 條目，arm64 與 x64 兩平台均可正常構建。
+changelog=修復直播流播放失敗：1) 放棄 libx264 重編碼改用 -c copy 直接複製 H.264 流（ARM64 上重編碼 speed=0.001x 導致 frame=3 停滯、drop 累計 34 幀）；2) extractH264AnnexB 新增 SPS/PPS 全局緩存，每個 IDR 幀前自動注入，解決後續 chunk 缺參數集導致解碼器只能解 3 幀；3) 補全 execFileSync 導入；4) 新會話重置全局狀態防止跨會話污染。
