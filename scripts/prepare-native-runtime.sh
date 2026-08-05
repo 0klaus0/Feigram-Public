@@ -28,26 +28,30 @@ if [ ! -x "${TARGET}" ]; then
   chmod +x "${TARGET}"
 fi
 
-# Install ffmpeg for live stream transcoding
-echo "Installing ffmpeg for live stream support..."
-if command -v apt-get >/dev/null 2>&1; then
-  # Debian/Ubuntu based systems (including fnOS)
-  apt-get update >/dev/null 2>&1
-  apt-get install -y ffmpeg >/dev/null 2>&1
-  echo "ffmpeg installed successfully"
-elif command -v apk >/dev/null 2>&1; then
-  # Alpine Linux
-  apk add --no-cache ffmpeg >/dev/null 2>&1
-  echo "ffmpeg installed successfully"
-elif command -v yum >/dev/null 2>&1; then
-  # RHEL/CentOS/Fedora
-  yum install -y ffmpeg >/dev/null 2>&1
-  echo "ffmpeg installed successfully"
+# Install ffmpeg for live stream transcoding (skip if already available)
+if command -v ffmpeg >/dev/null 2>&1; then
+  echo "ffmpeg already installed: $(ffmpeg -version | head -n1)"
 else
-  echo "Warning: Could not auto-install ffmpeg. Please install ffmpeg manually."
-  echo "On Debian/Ubuntu: apt-get install ffmpeg"
-  echo "On Alpine: apk add ffmpeg"
-  echo "On RHEL/CentOS: yum install ffmpeg"
+  echo "Installing ffmpeg for live stream support..."
+  if command -v apt-get >/dev/null 2>&1; then
+    # Debian/Ubuntu based systems (including fnOS)
+    sudo apt-get update >/dev/null 2>&1 || true
+    sudo apt-get install -y ffmpeg >/dev/null 2>&1 || true
+    echo "ffmpeg install attempted"
+  elif command -v apk >/dev/null 2>&1; then
+    # Alpine Linux
+    apk add --no-cache ffmpeg >/dev/null 2>&1 || true
+    echo "ffmpeg install attempted"
+  elif command -v yum >/dev/null 2>&1; then
+    # RHEL/CentOS/Fedora
+    sudo yum install -y ffmpeg >/dev/null 2>&1 || true
+    echo "ffmpeg install attempted"
+  else
+    echo "Warning: Could not auto-install ffmpeg. Please install ffmpeg manually."
+    echo "On Debian/Ubuntu: apt-get install ffmpeg"
+    echo "On Alpine: apk add ffmpeg"
+    echo "On RHEL/CentOS: yum install ffmpeg"
+  fi
 fi
 
 # Check ffmpeg availability and show encoder info

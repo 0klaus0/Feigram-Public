@@ -15,6 +15,17 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.61",
+    title: "Fngram 2.0.61 更新",
+    version: "2.0.61",
+    level: "success",
+    createdAt: "2026-08-05T01:30:00.000Z",
+    body: [
+      "修復 CI 構建：prepare-native-runtime.sh 中 apt-get install ffmpeg 不帶 sudo，在 GitHub Actions runner 上權限不足（exit code 100）導致構建失敗。",
+      "改為先檢查 ffmpeg 是否已安裝（workflow 前置步驟已用 sudo 安裝），已安裝則跳過；未安裝時加 sudo 並容錯。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.60",
     title: "Fngram 2.0.60 更新",
     version: "2.0.60",
