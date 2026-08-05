@@ -15,6 +15,19 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.64",
+    title: "Fngram 2.0.64 更新",
+    version: "2.0.64",
+    level: "success",
+    createdAt: "2026-08-05T16:00:00.000Z",
+    body: [
+      "v2.0.63 嘗試的 Copy 模式因 Telegram 分片流（1秒1片）邊界處參數集不全導致失敗，ffmpeg 報 sps_id out of range 錯誤。",
+      "本次更換更可靠的解決方案：改用 libx264 ultrafast 預設進行重編碼。",
+      "優點：重編碼會自動生成正確的 SPS/PPS，解決所有參數集錯誤問題。ultrafast 是 libx264 中最快的預設，犧牲少量壓縮率換取極快編碼速度，確保直播流實時輸出。",
+      "簡化了 H.264 提取邏輯，移除了複雜的 SPS/PPS 手動注入代碼。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.63",
     title: "Fngram 2.0.63 更新",
     version: "2.0.63",
