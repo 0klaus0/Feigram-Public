@@ -1,5 +1,5 @@
 appname=fngram
-version=2.0.55
+version=2.0.60
 display_name=Fngram
 desc="""<p><strong>Fngram 2.0 fnOS Client Edition</strong> 是第三方开发的非官方 Telegram 客户端，支持管理员后台、飞牛账户隔离、加密 Telegram session、Telegram 文件夹、媒体预览、后台任务恢复、运行诊断和更新检测。</p><p>基于 Feigram-Public 二次开发，感谢原项目 g-star1024/Feigram-Public。</p><p>适用于 x86_64 / amd64 / arm64 飞牛 OS 设备。</p>"""
 platform=all
@@ -12,4 +12,4 @@ desktop_uidir=ui
 desktop_applaunchname=fngram.proxy.Application
 service_port=3088
 checkport=true
-changelog=徹底解決直播流無法播放：放棄 HLS（需要關鍵幀切分）改用 MPEG-TS（連續流、無切分需求），配合 wallclock 時間戳，徹底繞開裸 H.264 管道的時間戳與關鍵幀問題。
+changelog=修復構建失敗：server 依賴 @gramjs/telegram 不存在（404），恢復為正確的 telegram 包；前端播放器恢復為 hls.js 與後端 HLS 輸出匹配。

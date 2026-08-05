@@ -15,6 +15,17 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.60",
+    title: "Fngram 2.0.60 更新",
+    version: "2.0.60",
+    level: "success",
+    createdAt: "2026-08-05T00:00:00.000Z",
+    body: [
+      "修復構建失敗：server/package.json 中 @gramjs/telegram@^3.0.0 在 npm 不存在（404），導致 CI 構建一直失敗。恢復為正確的 telegram@^2.26.22 包。",
+      "修復前後端不匹配：前端播放器從 mpegts.js 恢復為 hls.js，與後端 HLS 輸出（stream.m3u8）匹配。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.55",
     title: "Fngram 2.0.55 更新",
     version: "2.0.55",
