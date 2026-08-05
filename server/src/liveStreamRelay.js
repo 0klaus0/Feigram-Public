@@ -14,9 +14,8 @@
  *       tgroupcall-dl/chunk.go — UnmarshalBinary() 反序列化
  */
 
-const { execFile } = require("child_process");
+const { execFile, execFileSync, spawn } = require("child_process");
 const { promisify } = require("util");
-const { spawn } = require("child_process");
 const fs = require("fs-extra");
 const path = require("path");
 const { Api } = require("telegram");
@@ -230,14 +229,23 @@ function stripTelegramHeader(rawBuffer) {
  * mdat 中的數據為 AVCC 格式（4字節大端長度前綴 + NAL unit）
  * 轉換為 Annex B 格式（00 00 00 01 起始碼 + NAL unit）供 ffmpeg 直接解碼
  *
+ * 關鍵修復：
+ * - 全局緩存 SPS/PPS NAL 單元
+ * - 在每個 IDR 幀（NAL type=5）前自動插入 SPS/PPS
+ * - 解決後續 chunk 缺少 SPS/PPS 導致解碼器只能解碼前幾幀的問題
+ *
  * @param {Buffer} mp4Data - 剝離 Telegram 頭後的 MP4 數據
  * @returns {Buffer} H.264 Annex B 位流
  */
 let h264DebugDone = false;
+let cachedSps = null;   // 全局緩存 SPS
+let cachedPps = null;   // 全局緩存 PPS
 
 function extractH264AnnexB(mp4Data) {
   let offset = 0;
   const chunks = [];
+  let hasSpsInThisChunk = false;
+  let hasPpsInThisChunk = false;
 
   while (offset + 8 <= mp4Data.length) {
     let boxSize = mp4Data.readUInt32BE(offset);
@@ -268,13 +276,38 @@ function extractH264AnnexB(mp4Data) {
 
         if (nalLength <= 0 || nalLength > mdatData.length - pos) break;
 
+        const nalData = mdatData.slice(pos, pos + nalLength);
+        const nalType = nalData[0] & 0x1f;
+
+        // 緩存 SPS/PPS
+        if (nalType === 7) {
+          cachedSps = Buffer.from(nalData);
+          hasSpsInThisChunk = true;
+        } else if (nalType === 8) {
+          cachedPps = Buffer.from(nalData);
+          hasPpsInThisChunk = true;
+        }
+
+        // 關鍵：遇到 IDR 幀時，如果本 chunk 沒有 SPS/PPS，就插入緩存的 SPS/PPS
+        if (nalType === 5) {
+          if (!hasSpsInThisChunk && cachedSps) {
+            chunks.push(Buffer.from([0x00, 0x00, 0x00, 0x01]));
+            chunks.push(cachedSps);
+            hasSpsInThisChunk = true; // 本 chunk 已補過
+          }
+          if (!hasPpsInThisChunk && cachedPps) {
+            chunks.push(Buffer.from([0x00, 0x00, 0x00, 0x01]));
+            chunks.push(cachedPps);
+            hasPpsInThisChunk = true;
+          }
+        }
+
         // Annex B 起始碼
         chunks.push(Buffer.from([0x00, 0x00, 0x00, 0x01]));
         // NAL unit 數據
-        chunks.push(mdatData.slice(pos, pos + nalLength));
+        chunks.push(nalData);
 
-        if (!h264DebugDone && nalCount < 5) {
-          const nalType = mdatData[pos] & 0x1f;
+        if (!h264DebugDone && nalCount < 8) {
           const nalNames = { 1: "non-IDR", 5: "IDR", 6: "SEI", 7: "SPS", 8: "PPS" };
           console.log(`[liveStreamRelay]   NAL[${nalCount}]: type=${nalType} (${nalNames[nalType] || "unknown"}), size=${nalLength}`);
           nalCount++;
@@ -295,7 +328,7 @@ function extractH264AnnexB(mp4Data) {
   const result = Buffer.concat(chunks);
   if (!h264DebugDone) {
     h264DebugDone = true;
-    console.log(`[liveStreamRelay] extractH264AnnexB: extracted ${result.length} bytes H.264 from ${mp4Data.length} bytes MP4`);
+    console.log(`[liveStreamRelay] extractH264AnnexB: extracted ${result.length} bytes H.264 from ${mp4Data.length} bytes MP4, cachedSps=${cachedSps?.length || 0}, cachedPps=${cachedPps?.length || 0}`);
   }
   return result;
 }
@@ -449,101 +482,62 @@ async function downloadStreamChunk(client, inputCall, timeMs, videoChannel, stre
 /**
  * 啟動 ffmpeg 進程，將 H.264 Annex B 位流轉為 HLS 輸出
  *
- * 策略 (v2.0.56+)：
- * - 輸出 HLS (.m3u8 + .ts segments) 而非 MPEG-TS
- * - HLS 配合 -g 關鍵幀間隔精確對齊分片邊界，解決 copy 模式 PTS/DTS 缺失問題
- * - libx264 重編碼生成正確單調 PTS/DTS，配合 -g 50 (2秒@25fps) 強制關鍵幀
- * - 硬件編碼器自動檢測：h264_v4l2m2m (ARM64) > h264_omx (Pi) > h264_vaapi (Intel) > libx264
- * - 縮小 probing：analyzeduration 500ms + probesize 32KB，首個 chunk 後即可探測完成
- * - 移除 -use_wallclock_as_timestamps (導致 DTS 跳變)，改用 ffmpeg 內部 PTS 生成
- * - HLS flags: delete_segments+append_list+program_date_time+omit_endlist
+ * 策略 (v2.0.62+ 關鍵修復)：
+ * ─────────────────────────────────────────────
+ *  重大問題修復：
+ *  1. 放棄 libx264 重編碼 -> 改用 -c copy 直接複製 H.264 流
+ *     原因：舊版重編碼在 ARM64 上 speed=0.001x，完全無法實時處理
+ *           導致 frame=3 長期停滯、drop 累計到 34，最終只有 0.12 秒輸出
+ *  2. -c copy 模式複製流零 CPU 開銷，speed≈1x，實時輸出
+ *  3. SPS/PPS 在 extractH264AnnexB 中已按 IDR 幀自動重複注入
+ *  4. 使用 -fflags +genpts +igndts 自動生成/修復時間戳
+ *  5. 添加 -bsf:v h264_metadata 修復流中繼性問題
+ *
+ *  HLS 參數：
+ *  - hls_time 1：1 秒分片（與 Telegram chunk 粒度一致）
+ *  - hls_flags：independent_segments 確保每個分片自解碼
+ *  - 允許時長浮動，不強制對齊 GOP
+ * ─────────────────────────────────────────────
  */
 function spawnFfmpeg(outputDir) {
   const hlsPath = path.join(outputDir, "stream.m3u8");
   const segmentPattern = path.join(outputDir, "segment_%03d.ts");
 
-  // === 硬件編碼器檢測 ===
-  let cachedEncoder = null;
-  function detectEncoder() {
-    if (cachedEncoder) return cachedEncoder;
-    const candidates = [
-      { name: "h264_v4l2m2m", device: "/dev/video10" },    // ARM64 (Rockchip/Allwinner/Sunxi)
-      { name: "h264_omx", device: null },                   // Raspberry Pi / Broadcom
-      { name: "h264_vaapi", device: "/dev/dri/renderD128" }, // Intel/AMD VAAPI
-      { name: "libx264", device: null }                     // 軟編碼兜底
-    ];
-    for (const enc of candidates) {
-      if (enc.device && !fs.existsSync(enc.device)) continue;
-      try {
-        const out = execFileSync("ffmpeg", ["-hide_banner", "-encoders"], { encoding: "utf8", timeout: 3000 });
-        if (out.includes(enc.name)) {
-          cachedEncoder = enc.name;
-          console.log(`[liveStreamRelay] Hardware encoder detected: ${cachedEncoder}`);
-          return cachedEncoder;
-        }
-      } catch {}
-    }
-    cachedEncoder = "libx264";
-    console.log(`[liveStreamRelay] Using software encoder: ${cachedEncoder}`);
-    return cachedEncoder;
-  }
-
-  const encoder = detectEncoder();
-  const isHardware = encoder !== "libx264";
-
   const args = [
     "-y",
-    // 輸入容錯：裸 H.264 管道可能有 POC 不連續、NAL 邊界錯位
-    "-fflags", "+genpts+nobuffer+discardcorrupt",
-    "-flags", "low_delay",
+    // === 輸入參數 ===
+    "-fflags", "+genpts+nobuffer+discardcorrupt+igndts", // 生成PTS/忽略壞DTS
+    "-flags", "low_delay+global_header",
     "-err_detect", "ignore_err",
-    // 縮小 probing：raw H.264 只需 SPS/PPS 即可確定格式
-    "-analyzeduration", "500000",
-    "-probesize", "32768",
+    "-avioflags", "direct",
+    // 輸入探測：raw H.264 只需較小 probing（SPS/PPS 已在首 chunk）
+    "-analyzeduration", "1000000",
+    "-probesize", "1048576",
     "-f", "h264",
+    "-r", "25",           // 假設 25fps（用於 genpts 生成時間戳）
     "-i", "pipe:0",
-  ];
 
-  if (isHardware) {
-    // 硬件編碼路徑
-    args.push(
-      "-c:v", encoder,
-      "-b:v", "2000k",
-      "-maxrate", "2500k",
-      "-bufsize", "4000k",
-      "-g", "50",           // 關鍵幀間隔 50 幀 = 2 秒 @ 25fps，對齊 HLS 分片
-      "-keyint_min", "50",
-      "-sc_threshold", "0", // 禁用場景切換檢測，強制固定 GOP
-      "-pix_fmt", "yuv420p"
-    );
-  } else {
-    // 軟編碼兜底
-    args.push(
-      "-c:v", "libx264",
-      "-preset", "veryfast",
-      "-tune", "zerolatency",
-      "-profile:v", "baseline",
-      "-level", "3.1",
-      "-r", "25",
-      "-g", "50",
-      "-keyint_min", "50",
-      "-sc_threshold", "0",
-      "-pix_fmt", "yuv420p"
-    );
-  }
+    // === 流處理：直接 copy，不重編碼 ===
+    "-c:v", "copy",
+    // 比特流濾鏡：確保 H.264 流正確，修復中繼問題
+    "-bsf:v", "h264_metadata,h264_mp4toannexb",
+    "-avoid_negative_ts", "make_zero",
 
-  // HLS 輸出
-  args.push(
-    "-an",  // 無音頻（Telegram 直播流通常無音頻，或單獨處理）
+    // === HLS 輸出 ===
+    "-an",
     "-f", "hls",
-    "-hls_time", "2",                    // 2 秒分片，匹配 GOP
-    "-hls_list_size", "6",               // 保留 6 個分片 = 12 秒窗口
-    "-hls_flags", "delete_segments+append_list+program_date_time+omit_endlist",
+    "-hls_time", "1",                     // 1 秒分片，與 Telegram chunk 匹配
+    "-hls_list_size", "10",               // 保留 10 個分片 = 10 秒窗口
+    "-hls_flags",
+      "delete_segments+append_list+program_date_time+omit_endlist+independent_segments",
     "-hls_segment_type", "mpegts",
     "-hls_segment_filename", segmentPattern,
-    "-use_wallclock_as_timestamps", "0", // 關鍵：關閉牆鐘時間戳，避免 DTS 跳變
+    "-hls_allow_cache", "0",              // 直播禁止緩存
+    "-strftime_mkdir", "0",
     hlsPath
-  );
+  ];
+
+  console.log(`[liveStreamRelay] ffmpeg args (copy mode): ${args.join(" ")}`);
 
   const ffmpeg = spawn("ffmpeg", args, { stdio: ["pipe", "pipe", "pipe"] });
 
@@ -556,9 +550,9 @@ function spawnFfmpeg(outputDir) {
     for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed) continue;
-      // 前 30 行全部記錄，之後只記錄錯誤/警告 / HLS 分片創建 / 關鍵進度
-      const isImportant = /error|warning|invalid|failed|no such|cannot|conversion|opening.*\.ts|opening.*\.m3u8|frame=.*fps|size=.*time|speed=/i.test(trimmed);
-      if (stderrLineCount < 30 || isImportant) {
+      // 更積極地記錄進度，方便觀察 copy 模式是否正常
+      const isImportant = /error|warning|invalid|failed|no such|cannot|conversion|opening.*\.ts|opening.*\.m3u8|frame=.*fps|size=.*time|speed=|out_time|drop=|dup=/i.test(trimmed);
+      if (stderrLineCount < 50 || isImportant) {
         console.log(`[ffmpeg] ${trimmed}`);
       }
       stderrLineCount++;
@@ -568,8 +562,8 @@ function spawnFfmpeg(outputDir) {
   ffmpeg.on("exit", (code, signal) => {
     console.log(`[liveStreamRelay] ffmpeg exited: code=${code} signal=${signal}`);
     if (code !== 0 && code !== null) {
-      const tail = stderrBuffer.slice(-500);
-      console.error("[liveStreamRelay] ffmpeg last stderr:", tail);
+      const tail = stderrBuffer.slice(-1000);
+      console.error("[liveStreamRelay] ffmpeg last stderr:\n" + tail);
     }
   });
 
@@ -806,8 +800,14 @@ const relay = {
 
   activeRelays.set(sessionId, relay);
 
+  // ★ 新會話開始前重置所有全局狀態：防止上一個直播流的 SPS/PPS / debug 標誌污染
+  headerDebugDone = false;
+  h264DebugDone = false;
+  cachedSps = null;
+  cachedPps = null;
+
 // 啟動 ffmpeg（直接從 stdin 讀取 H.264 數據，輸出 HLS）
-  console.log("[liveStreamRelay] Spawning ffmpeg (HLS mode)...");
+  console.log("[liveStreamRelay] Spawning ffmpeg (copy-mode HLS)...");
   const { ffmpeg, hlsPath } = spawnFfmpeg(outputDir);
   relay.ffmpeg = ffmpeg;
   relay.hlsPath = hlsPath;
