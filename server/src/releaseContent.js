@@ -15,6 +15,21 @@ const about = {
 
 const announcements = [
   {
+    id: "release-2.0.65",
+    title: "Fngram 2.0.65 更新",
+    version: "2.0.65",
+    level: "success",
+    createdAt: "2026-08-05T23:30:00.000Z",
+    body: [
+      "全新逐片處理架構，徹底解決直播流播放問題。",
+      "根因分析：v2.0.43~v2.0.64 歷經 20+ 版本反覆嘗試，frame=3 停滯的根因是連續流模式下 Telegram 分片間 POC（圖像順序計數）不連續，導致解碼器只能解出 3 幀後停滯。speed=0.001x 不是 CPU 不足，而是解碼器停滯後編碼器空轉的症狀。",
+      "解決方案：放棄單一 ffmpeg 進程處理連續流，改為每個 Telegram chunk（1 秒視頻）獨立調用 ffmpeg 轉出一個 .ts 分片。每片獨立解碼、獨立編碼、獨立輸出，徹底繞開跨片 POC 問題。",
+      "恢復 SPS/PPS 全局快取，為每個 chunk 注入參數集（逐片處理的 ffmpeg 進程需要）。",
+      "手動生成 HLS 播放列表，原子寫入防止播放器讀到半成品。",
+      "一片處理失敗不影響後續片，容錯性極強。"
+    ].join("\n")
+  },
+  {
     id: "release-2.0.64",
     title: "Fngram 2.0.64 更新",
     version: "2.0.64",

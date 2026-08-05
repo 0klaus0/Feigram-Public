@@ -238,6 +238,8 @@ function stripTelegramHeader(rawBuffer) {
  * @returns {Buffer} H.264 Annex B 位流
  */
 let h264DebugDone = false;
+let cachedSps = null;
+let cachedPps = null;
 
 function extractH264AnnexB(mp4Data) {
   let offset = 0;
@@ -271,6 +273,10 @@ function extractH264AnnexB(mp4Data) {
         const nalData = mdatData.slice(pos, pos + nalLength);
         const nalType = nalData[0] & 0x1f;
 
+        // 快取 SPS/PPS（逐片處理時每個 ffmpeg 進程都需要）
+        if (nalType === 7) cachedSps = Buffer.from(nalData);
+        else if (nalType === 8) cachedPps = Buffer.from(nalData);
+
         chunks.push(Buffer.from([0x00, 0x00, 0x00, 0x01]));
         chunks.push(nalData);
 
@@ -295,9 +301,24 @@ function extractH264AnnexB(mp4Data) {
   const result = Buffer.concat(chunks);
   if (!h264DebugDone) {
     h264DebugDone = true;
-    console.log(`[liveStreamRelay] extractH264AnnexB: extracted ${result.length} bytes H.264 from ${mp4Data.length} bytes MP4`);
+    console.log(`[liveStreamRelay] extractH264AnnexB: extracted ${result.length} bytes H.264 from ${mp4Data.length} bytes MP4, sps=${cachedSps?.length || 0}, pps=${cachedPps?.length || 0}`);
   }
   return result;
+}
+
+/**
+ * 為每個 chunk 的 H.264 數據前注入快取的 SPS/PPS
+ * 逐片處理時每個 ffmpeg 進程都是獨立的，需要 SPS/PPS 才能解碼
+ */
+function prepareChunkForFfmpeg(h264Data) {
+  if (cachedSps && cachedPps) {
+    return Buffer.concat([
+      Buffer.from([0x00, 0x00, 0x00, 0x01]), cachedSps,
+      Buffer.from([0x00, 0x00, 0x00, 0x01]), cachedPps,
+      h264Data
+    ]);
+  }
+  return h264Data;
 }
 
 /**
@@ -447,98 +468,152 @@ async function downloadStreamChunk(client, inputCall, timeMs, videoChannel, stre
 }
 
 /**
- * 啟動 ffmpeg 進程，將 H.264 Annex B 位流轉為 HLS 輸出
+ * 逐片處理：將單個 chunk 的 H.264 數據轉為一個 .ts 分片
  *
- * 策略 (v2.0.63+ 更可靠方案)：
+ * v2.0.65 全新架構：
  * ─────────────────────────────────────────────
- *  為什麼放棄 Copy 模式（v2.0.62 方案）？
- *  - Telegram 分片流是破碎的（1秒1片，邊界處參數集可能不全）
- *  - Copy 模式要求完美的連續參數集，遇到破碎流時 ffmpeg 報
- *    "sps_id 0 out of range" 和 "non-existing PPS 0 referenced"
- *    最終導致 Output file is empty，無任何輸出幀
+ *  核心改變：不再用單一 ffmpeg 進程處理連續流，改為每個 chunk
+ *  獨立調用 ffmpeg 轉出一個 .ts 分片。
  *
- *  為什麼選擇 libx264 ultrafast？
- *  1. 重編碼會自動生成正確的 SPS/PPS，解決所有參數集錯誤
- *  2. ultrafast 是 libx264 中最快的預設（比 veryfast 快數倍）
- *     犧牲壓縮率和畫質（直播流用戶感知不明顯）換取實時性能
- *  3. 配合 zerolatency tune，確保最低延遲
- *  4. 寬鬆的輸入容錯參數，接受破碎的 Telegram 分片流
+ *  為什麼這樣更可靠？
+ *  1. 每 chunk 只有 1 秒視頻（~25 幀），即使 ultrafast 也能瞬間完成
+ *  2. 每片獨立解碼，不存在跨片 POC 不連續問題
+ *  3. 每片自帶 SPS/PPS（由 prepareChunkForFfmpeg 注入），解碼器不會迷路
+ *  4. 一片失敗不影響後續片，容錯性極強
+ *  5. 重編碼自動生成正確時間戳和參數集
  * ─────────────────────────────────────────────
+ *
+ * @param {Buffer} h264Data - H.264 Annex B 位流
+ * @param {number} segmentIndex - 分片序號
+ * @param {string} outputDir - 輸出目錄
+ * @returns {Promise<{success: boolean, segmentFile: string|null, duration: number}>}
  */
-function spawnFfmpeg(outputDir) {
-  const hlsPath = path.join(outputDir, "stream.m3u8");
-  const segmentPattern = path.join(outputDir, "segment_%03d.ts");
+function processChunkToSegment(h264Data, segmentIndex, outputDir) {
+  return new Promise((resolve) => {
+    const segmentFile = path.join(outputDir, `segment_${String(segmentIndex).padStart(3, "0")}.ts`);
+    const startTime = Date.now();
 
-  const args = [
-    "-y",
-    // === 輸入參數：最大化容錯，接受破碎流 ===
-    "-fflags", "+genpts+igndts+discardcorrupt", // 生成PTS/忽略壞DTS/丟棄損壞包
-    "-flags", "low_delay+global_header",
-    "-err_detect", "ignore_err",           // 忽略所有錯誤
-    "-avioflags", "direct",
-    "-analyzeduration", "1000000",         // 1MB 緩衝
-    "-probesize", "1048576",
-    "-f", "h264",
-    "-r", "25",
-    "-i", "pipe:0",
+    const args = [
+      "-y",
+      "-fflags", "+genpts+igndts+discardcorrupt",
+      "-err_detect", "ignore_err",
+      "-f", "h264",
+      "-r", "25",
+      "-i", "pipe:0",
+      "-c:v", "libx264",
+      "-preset", "ultrafast",
+      "-tune", "zerolatency",
+      "-profile:v", "baseline",
+      "-level", "3.0",
+      "-pix_fmt", "yuv420p",
+      "-r", "25",
+      "-g", "25",
+      "-keyint_min", "25",
+      "-sc_threshold", "0",
+      "-b:v", "1500k",
+      "-maxrate", "2000k",
+      "-bufsize", "3000k",
+      "-an",
+      "-f", "mpegts",
+      "-mpegts_flags", "+resend_headers",
+      segmentFile
+    ];
 
-    // === 重編碼：libx264 ultrafast ===
-    "-c:v", "libx264",
-    "-preset", "ultrafast",                // 最快預設
-    "-tune", "zerolatency",                // 零延遲調優
-    "-profile:v", "baseline",
-    "-level", "3.0",
-    "-pix_fmt", "yuv420p",
-    "-r", "25",
-    "-g", "50",                            // 關鍵幀間隔 50 幀 = 2 秒 @ 25fps
-    "-keyint_min", "25",                   // 最小關鍵幀間隔
-    "-sc_threshold", "0",                  // 禁用場景切換檢測，強制 GOP
-    "-b:v", "2000k",
-    "-maxrate", "2500k",
-    "-bufsize", "4000k",
+    const ffmpeg = spawn("ffmpeg", args, { stdio: ["pipe", "pipe", "pipe"] });
 
-    // === HLS 輸出 ===
-    "-an",
-    "-f", "hls",
-    "-hls_time", "2",
-    "-hls_list_size", "10",
-    "-hls_flags", "delete_segments+append_list+program_date_time+omit_endlist+independent_segments",
-    "-hls_segment_type", "mpegts",
-    "-hls_segment_filename", segmentPattern,
-    "-hls_allow_cache", "0",
-    hlsPath
-  ];
+    let stderr = "";
+    ffmpeg.stderr.on("data", (data) => {
+      stderr += data.toString();
+    });
 
-  console.log(`[liveStreamRelay] ffmpeg args (ultrafast re-encode): ${args.join(" ")}`);
-
-  const ffmpeg = spawn("ffmpeg", args, { stdio: ["pipe", "pipe", "pipe"] });
-
-  let stderrBuffer = "";
-  let stderrLineCount = 0;
-  ffmpeg.stderr.on("data", (data) => {
-    const text = data.toString();
-    stderrBuffer += text;
-    const lines = text.trim().split("\n");
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      const isImportant = /error|warning|invalid|failed|no such|cannot|conversion|opening.*\.ts|opening.*\.m3u8|frame=.*fps|size=.*time|speed=|drop=|dup=|SPS|PPS|err/i.test(trimmed);
-      if (stderrLineCount < 50 || isImportant) {
-        console.log(`[ffmpeg] ${trimmed}`);
+    ffmpeg.stdin.on("error", (err) => {
+      if (err.code !== "EPIPE") {
+        console.error(`[liveStreamRelay] chunk ffmpeg stdin error:`, err.message);
       }
-      stderrLineCount++;
+    });
+
+    ffmpeg.on("exit", (code, signal) => {
+      const elapsed = Date.now() - startTime;
+      if (code === 0) {
+        const size = fs.existsSync(segmentFile) ? fs.statSync(segmentFile).size : 0;
+        if (size > 0) {
+          console.log(`[liveStreamRelay] Segment #${segmentIndex} created: ${size} bytes, ${elapsed}ms`);
+          resolve({ success: true, segmentFile, duration: 1.0 });
+        } else {
+          console.log(`[liveStreamRelay] Segment #${segmentIndex} ffmpeg exit=0 but empty output, ${elapsed}ms`);
+          resolve({ success: false, segmentFile: null, duration: 0 });
+        }
+      } else {
+        const tail = stderr.slice(-300).replace(/\n/g, " ");
+        console.log(`[liveStreamRelay] Segment #${segmentIndex} ffmpeg failed: code=${code}, ${elapsed}ms, stderr: ${tail}`);
+        resolve({ success: false, segmentFile: null, duration: 0 });
+      }
+    });
+
+    // 寫入數據並關閉 stdin（讓 ffmpeg 知道輸入結束）
+    try {
+      ffmpeg.stdin.write(h264Data);
+      ffmpeg.stdin.end();
+    } catch (err) {
+      // EPIPE is expected if ffmpeg exited early
+      if (err.code !== "EPIPE") {
+        console.error(`[liveStreamRelay] chunk ffmpeg write error:`, err.message);
+      }
     }
   });
+}
 
-  ffmpeg.on("exit", (code, signal) => {
-    console.log(`[liveStreamRelay] ffmpeg exited: code=${code} signal=${signal}`);
-    if (code !== 0 && code !== null) {
-      const tail = stderrBuffer.slice(-1000);
-      console.error("[liveStreamRelay] ffmpeg last stderr:\n" + tail);
+/**
+ * 更新 HLS 播放列表（.m3u8）
+ * 手動生成播放列表，保留最近 windowSize 個分片
+ *
+ * @param {string} outputDir - 輸出目錄
+ * @param {number} totalSegments - 已生成的分片總數
+ * @param {number} windowSize - 播放列表窗口大小
+ */
+function updateHlsPlaylist(outputDir, totalSegments, windowSize = 10) {
+  const playlistPath = path.join(outputDir, "stream.m3u8");
+  const startIdx = Math.max(0, totalSegments - windowSize);
+
+  let playlist = "#EXTM3U\n";
+  playlist += "#EXT-X-VERSION:3\n";
+  playlist += "#EXT-X-TARGETDURATION:2\n";
+  playlist += `#EXT-X-MEDIA-SEQUENCE:${startIdx}\n`;
+
+  for (let i = startIdx; i < totalSegments; i++) {
+    const segFile = `segment_${String(i).padStart(3, "0")}.ts`;
+    const segPath = path.join(outputDir, segFile);
+    if (fs.existsSync(segPath)) {
+      playlist += "#EXTINF:1.0,\n";
+      playlist += segFile + "\n";
     }
-  });
+  }
 
-  return { ffmpeg, hlsPath };
+  // 直播流不加 #EXT-X-ENDLIST
+
+  // 原子寫入：先寫臨時文件再重命名，防止播放器讀到半成品
+  const tmpPath = playlistPath + ".tmp";
+  fs.writeFileSync(tmpPath, playlist);
+  fs.renameSync(tmpPath, playlistPath);
+}
+
+/**
+ * 清理舊的分片文件（超出窗口大小）
+ */
+function cleanupOldSegments(outputDir, currentSegmentIndex, windowSize) {
+  const keepFromIdx = Math.max(0, currentSegmentIndex - windowSize);
+  try {
+    const files = fs.readdirSync(outputDir);
+    for (const f of files) {
+      const match = f.match(/^segment_(\d+)\.ts$/);
+      if (match) {
+        const idx = parseInt(match[1], 10);
+        if (idx < keepFromIdx) {
+          fs.removeSync(path.join(outputDir, f));
+        }
+      }
+    }
+  } catch {}
 }
 
 /**
@@ -733,102 +808,65 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
     throw new Error("無法獲取直播流頻道信息。該群組可能使用的是 WebRTC 視頻通話而非 RTMP 直播，目前不支持應用內播放。");
   }
 
-  let stopped = false;
-  let consecutiveFailures = 0;
-  let consecutiveFloodWaits = 0;
-
-const relay = {
+  let stopped = false;
+  let consecutiveFailures = 0;
+  let consecutiveFloodWaits = 0;
+  let segmentIndex = 0;
+
+  const relay = {
     sessionId,
     outputDir,
-    hlsPath: null,  // v2.0.56: HLS 播放列表路徑
-    ffmpeg: null,
+    hlsPath: path.join(outputDir, "stream.m3u8"),
     startedAt: Date.now(),
     lastViewerAt: Date.now(),
     lastChunkAt: 0,
     chunkCount: 0,
-    bytesWritten: 0,
     status: "starting",
     errorMessage: null,
     stop: async () => {
       if (stopped) return;
       stopped = true;
       relay.status = "stopped";
-      try { relay.ffmpeg?.stdin?.end(); } catch {}
-      setTimeout(() => {
-        try { relay.ffmpeg?.kill("SIGKILL"); } catch {}
-      }, 2000);
-      if (!hasLeftCall) {
-        hasLeftCall = true;
-        leaveGroupCall(client, inputCall, callSelfSource).catch(() => {});
-      }
-      activeRelays.delete(sessionId);
-      setTimeout(async () => {
-        await fs.remove(outputDir).catch(() => {});
-      }, 5000);
-      onStatus?.("stopped");
-    }
-  };
-
+      if (!hasLeftCall) {
+        hasLeftCall = true;
+        leaveGroupCall(client, inputCall, callSelfSource).catch(() => {});
+      }
+      activeRelays.delete(sessionId);
+      setTimeout(async () => {
+        await fs.remove(outputDir).catch(() => {});
+      }, 5000);
+      onStatus?.("stopped");
+    }
+  };
+
   activeRelays.set(sessionId, relay);
 
-  // ★ 新會話開始前重置所有全局狀態：防止上一個直播流的 SPS/PPS / debug 標誌污染
+  // ★ 新會話開始前重置全局狀態
   headerDebugDone = false;
   h264DebugDone = false;
   cachedSps = null;
   cachedPps = null;
 
-// 啟動 ffmpeg（直接從 stdin 讀取 H.264 數據，輸出 HLS）
-  console.log("[liveStreamRelay] Spawning ffmpeg (copy-mode HLS)...");
-  const { ffmpeg, hlsPath } = spawnFfmpeg(outputDir);
-  relay.ffmpeg = ffmpeg;
-  relay.hlsPath = hlsPath;
-
-  // ★ 關鍵：處理 ffmpeg stdin 的 EPIPE 錯誤，防止服務器崩潰
-  relay.ffmpeg.stdin.on("error", (err) => {
-    if (err.code === "EPIPE") {
-      console.log("[liveStreamRelay] ffmpeg stdin EPIPE (ffmpeg exited), stopping gracefully...");
-    } else {
-      console.error("[liveStreamRelay] ffmpeg stdin error:", err.message);
-    }
-    // 不讓錯誤冒泡到 process 級別
-  });
-
-  console.log(`[liveStreamRelay] Stream params: scale=0(fixed), videoChannel=${videoChannel}, bootstrapTs=${lastTimestampMs}, segmentDurationMs=${SEGMENT_DURATION_MS}`);
-
-  relay.ffmpeg.on("exit", (code, signal) => {
-    if (!stopped) {
-      relay.status = "error";
-      relay.errorMessage = `ffmpeg 異常退出 (code=${code})`;
-      onStatus?.("ffmpeg_exited");
-    }
-    activeRelays.delete(sessionId);
-  });
-
-  const startupTimer = setTimeout(() => {
-    if (relay.status === "starting" && relay.chunkCount === 0) {
-      console.error("[liveStreamRelay] Startup timeout - no chunks received in 30s");
-      relay.status = "error";
-      relay.errorMessage = "啟動超時：30 秒內未收到任何視頻數據。可能是 DC 路由問題或直播流不可用。";
-      relay.stop();
-    }
-  }, STARTUP_TIMEOUT);
-
-  // ★ 步驟 3：主循環 — 持續下載分片、剝離頭部、寫入 ffmpeg
-  (async () => {
-    while (!stopped) {
-      if (Date.now() - relay.lastViewerAt > RELAY_IDLE_TIMEOUT) {
-        console.log("[liveStreamRelay] idle timeout, stopping relay");
-        relay.stop();
-        break;
-      }
-
-      if (relay.ffmpeg.exitCode !== null || relay.ffmpeg.signalCode) {
-        console.log("[liveStreamRelay] ffmpeg dead, stopping loop");
-        relay.status = "error";
-        relay.errorMessage = relay.errorMessage || "ffmpeg 進程已退出";
-        break;
-      }
-
+  console.log(`[liveStreamRelay] Stream params (per-chunk mode): videoChannel=${videoChannel}, bootstrapTs=${lastTimestampMs}, segmentDurationMs=${SEGMENT_DURATION_MS}`);
+
+  const startupTimer = setTimeout(() => {
+    if (relay.status === "starting" && relay.chunkCount === 0) {
+      console.error("[liveStreamRelay] Startup timeout - no chunks received in 30s");
+      relay.status = "error";
+      relay.errorMessage = "啟動超時：30 秒內未收到任何視頻數據。可能是 DC 路由問題或直播流不可用。";
+      relay.stop();
+    }
+  }, STARTUP_TIMEOUT);
+
+  // ★ 步驟 3：主循環 — 逐片下載、獨立處理、生成 HLS 分片
+  (async () => {
+    while (!stopped) {
+      if (Date.now() - relay.lastViewerAt > RELAY_IDLE_TIMEOUT) {
+        console.log("[liveStreamRelay] idle timeout, stopping relay");
+        relay.stop();
+        break;
+      }
+
       const loopStart = Date.now();
       console.log(`[liveStreamRelay] loop: requesting chunk ts=${lastTimestampMs}`);
 
@@ -850,30 +888,29 @@ const relay = {
           console.log(`[liveStreamRelay] First chunk received: ${rawChunk.length} bytes (raw), status=running`);
         }
 
-        // ★ 關鍵：剝離 Telegram 自定義頭，提取 MP4，再從 mdat 提取 H.264 Annex B 位流
+        // ★ 剝離 Telegram 頭 → 提取 H.264 → 注入 SPS/PPS → 逐片轉碼
         const mp4Data = stripTelegramHeader(rawChunk);
         const h264Data = extractH264AnnexB(mp4Data);
 
         if (h264Data.length > 0) {
-          try {
-            // 直接寫入 ffmpeg stdin（不再通過 tail -F 中間件，避免緩衝延遲）
-            const ok = relay.ffmpeg.stdin.write(h264Data);
-            relay.bytesWritten += h264Data.length;
+          // 為每個 chunk 注入快取的 SPS/PPS（逐片處理必需）
+          const preparedData = prepareChunkForFfmpeg(h264Data);
+
+          // 獨立調用 ffmpeg 處理這一 chunk → 輸出一個 .ts 分片
+          const result = await processChunkToSegment(preparedData, segmentIndex, outputDir);
+
+          if (result.success) {
+            segmentIndex++;
+            // 更新 HLS 播放列表
+            updateHlsPlaylist(outputDir, segmentIndex, 10);
+            // 清理舊分片
+            cleanupOldSegments(outputDir, segmentIndex - 1, 15);
+
             if (relay.chunkCount <= 3 || relay.chunkCount % 10 === 0) {
-              console.log(`[liveStreamRelay] Wrote ${h264Data.length} bytes H.264 to ffmpeg stdin (total=${relay.bytesWritten}, chunk #${relay.chunkCount})`);
+              console.log(`[liveStreamRelay] Chunk #${relay.chunkCount} → segment #${segmentIndex - 1} OK (h264=${h264Data.length} bytes)`);
             }
-// 檢查 HLS 播放列表是否已生成（延長到 chunk #30）
-            if (relay.chunkCount <= 30 && !relay._streamLogged) {
-              if (fs.existsSync(relay.hlsPath)) {
-                relay._streamLogged = true;
-                console.log(`[liveStreamRelay] HLS playlist created! (stream.m3u8 ready after chunk #${relay.chunkCount})`);
-              } else if (relay.chunkCount >= 10 && relay.chunkCount % 5 === 0) {
-                const files = fs.readdirSync(relay.outputDir).filter((f) => f.endsWith(".ts") || f.endsWith(".m3u8"));
-                console.log(`[liveStreamRelay] HLS NOT ready after chunk #${relay.chunkCount}, files: ${files.join(", ") || "none"}`);
-              }
-            }
-          } catch (writeErr) {
-            console.error("[liveStreamRelay] ffmpeg stdin write error:", writeErr.message);
+          } else {
+            console.log(`[liveStreamRelay] Chunk #${relay.chunkCount} processing failed, skipping`);
           }
         }
 

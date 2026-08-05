@@ -1,5 +1,5 @@
 appname=fngram
-version=2.0.64
+version=2.0.65
 display_name=Fngram
 desc="""<p><strong>Fngram 2.0 fnOS Client Edition</strong> 是第三方开发的非官方 Telegram 客户端，支持管理员后台、飞牛账户隔离、加密 Telegram session、Telegram 文件夹、媒体预览、后台任务恢复、运行诊断和更新检测。</p><p>基于 Feigram-Public 二次开发，感谢原项目 g-star1024/Feigram-Public。</p><p>适用于 x86_64 / amd64 / arm64 飞牛 OS 设备。</p>"""
 platform=all
@@ -12,4 +12,4 @@ desktop_uidir=ui
 desktop_applaunchname=fngram.proxy.Application
 service_port=3088
 checkport=true
-changelog=更可靠的直播流解決方案：放棄 Copy 模式（因 Telegram 分片流破碎導致 SPS/PPS 參數錯誤），改用 libx264 ultrafast 重編碼。此方案犧牲少量壓縮率換取極快編碼速度，自動重建正確的 SPS/PPS，解決所有參數集錯誤問題，確保 HLS 分片穩定輸出。
+changelog=全新逐片處理架構：放棄單一 ffmpeg 連續流模式（v2.0.43~v2.0.64 歷經 20+ 版本均失敗），改為每個 Telegram chunk 獨立調用 ffmpeg 轉出一個 .ts 分片。根因分析：連續流模式下跨片 POC 不連續導致解碼器只能解出 3 幀（frame=3 停滯），speed=0.001x 是解碼器停滯後編碼器空轉的症狀而非 CPU 不足。逐片處理徹底繞開此問題：每片 1 秒視頻獨立解碼、獨立編碼、獨立輸出，互不影響。
