@@ -522,6 +522,23 @@ function processChunkToSegment(h264Data, segmentIndex, outputDir) {
     const ffmpeg = spawn("ffmpeg", args, { stdio: ["pipe", "pipe", "pipe"] });
 
     let stderr = "";
+    let resolved = false;
+
+    const done = (result) => {
+      if (resolved) return;
+      resolved = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+
+    // 超时保护：10 秒未完成则杀掉
+    const timer = setTimeout(() => {
+      try { ffmpeg.kill("SIGKILL"); } catch {}
+      const elapsed = Date.now() - startTime;
+      console.log(`[liveStreamRelay] Segment #${segmentIndex} TIMEOUT after ${elapsed}ms, killing ffmpeg`);
+      done({ success: false, segmentFile: null, duration: 0 });
+    }, 10000);
+
     ffmpeg.stderr.on("data", (data) => {
       stderr += data.toString();
     });
@@ -538,15 +555,15 @@ function processChunkToSegment(h264Data, segmentIndex, outputDir) {
         const size = fs.existsSync(segmentFile) ? fs.statSync(segmentFile).size : 0;
         if (size > 0) {
           console.log(`[liveStreamRelay] Segment #${segmentIndex} created: ${size} bytes, ${elapsed}ms`);
-          resolve({ success: true, segmentFile, duration: 1.0 });
+          done({ success: true, segmentFile, duration: 1.0 });
         } else {
           console.log(`[liveStreamRelay] Segment #${segmentIndex} ffmpeg exit=0 but empty output, ${elapsed}ms`);
-          resolve({ success: false, segmentFile: null, duration: 0 });
+          done({ success: false, segmentFile: null, duration: 0 });
         }
       } else {
         const tail = stderr.slice(-300).replace(/\n/g, " ");
         console.log(`[liveStreamRelay] Segment #${segmentIndex} ffmpeg failed: code=${code}, ${elapsed}ms, stderr: ${tail}`);
-        resolve({ success: false, segmentFile: null, duration: 0 });
+        done({ success: false, segmentFile: null, duration: 0 });
       }
     });
 
@@ -555,7 +572,6 @@ function processChunkToSegment(h264Data, segmentIndex, outputDir) {
       ffmpeg.stdin.write(h264Data);
       ffmpeg.stdin.end();
     } catch (err) {
-      // EPIPE is expected if ffmpeg exited early
       if (err.code !== "EPIPE") {
         console.error(`[liveStreamRelay] chunk ffmpeg write error:`, err.message);
       }
@@ -812,6 +828,7 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
   let consecutiveFailures = 0;
   let consecutiveFloodWaits = 0;
   let segmentIndex = 0;
+  let encodingQueue = Promise.resolve(); // 串行编码队列：确保分片顺序
 
   const relay = {
     sessionId,
@@ -895,23 +912,28 @@ async function startRelay(sessionId, client, callInfo, onStatus) {
         if (h264Data.length > 0) {
           // 為每個 chunk 注入快取的 SPS/PPS（逐片處理必需）
           const preparedData = prepareChunkForFfmpeg(h264Data);
+          const currentSegIdx = segmentIndex;
+          segmentIndex++;
 
-          // 獨立調用 ffmpeg 處理這一 chunk → 輸出一個 .ts 分片
-          const result = await processChunkToSegment(preparedData, segmentIndex, outputDir);
+          // ★ 非阻塞流水線：將編碼任務放入隊列，不等待完成就繼續下載下一個 chunk
+          // 隊列保證分片按順序處理和更新播放列表
+          encodingQueue = encodingQueue.then(async () => {
+            if (stopped) return;
+            const result = await processChunkToSegment(preparedData, currentSegIdx, outputDir);
 
-          if (result.success) {
-            segmentIndex++;
-            // 更新 HLS 播放列表
-            updateHlsPlaylist(outputDir, segmentIndex, 10);
-            // 清理舊分片
-            cleanupOldSegments(outputDir, segmentIndex - 1, 15);
+            if (result.success) {
+              updateHlsPlaylist(outputDir, currentSegIdx + 1, 10);
+              cleanupOldSegments(outputDir, currentSegIdx, 15);
 
-            if (relay.chunkCount <= 3 || relay.chunkCount % 10 === 0) {
-              console.log(`[liveStreamRelay] Chunk #${relay.chunkCount} → segment #${segmentIndex - 1} OK (h264=${h264Data.length} bytes)`);
+              if (relay.chunkCount <= 3 || relay.chunkCount % 10 === 0) {
+                console.log(`[liveStreamRelay] Chunk #${relay.chunkCount} → segment #${currentSegIdx} OK (h264=${h264Data.length} bytes)`);
+              }
+            } else {
+              console.log(`[liveStreamRelay] Chunk #${relay.chunkCount} → segment #${currentSegIdx} FAILED, skipping`);
             }
-          } else {
-            console.log(`[liveStreamRelay] Chunk #${relay.chunkCount} processing failed, skipping`);
-          }
+          }).catch((err) => {
+            console.error(`[liveStreamRelay] Segment #${currentSegIdx} encoding error:`, err.message);
+          });
         }
 
         relay.lastChunkAt = Date.now();
